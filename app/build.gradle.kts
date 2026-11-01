@@ -24,6 +24,8 @@ android {
         buildConfigField("String", "SUPABASE_URL", buildConfigString(configValue("TZINDA_SUPABASE_URL")))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", buildConfigString(configValue("TZINDA_SUPABASE_PUBLISHABLE_KEY")))
         buildConfigField("String", "SUPABASE_REDIRECT_URL", buildConfigString(configValue("TZINDA_SUPABASE_REDIRECT_URL").ifBlank { "com.guardian.tzindaapp.v2://auth-callback" }))
+        buildConfigField("String", "NVIDIA_API_KEY", buildConfigString(configValue("TZINDA_NVIDIA_API_KEY")))
+        buildConfigField("String", "NVIDIA_VISION_MODEL", buildConfigString(configValue("TZINDA_NVIDIA_VISION_MODEL").ifBlank { "nvidia/nemotron-3.5-super-vl-120b-a12b" }))
     }
     buildFeatures { buildConfig = true
         mlModelBinding = true
@@ -50,6 +52,8 @@ dependencies {
     implementation(platform("io.github.jan-tennert.supabase:bom:3.2.4"))
     implementation("io.github.jan-tennert.supabase:realtime-kt")
     implementation("io.ktor:ktor-client-cio:3.3.0")
+    // Supabase Realtime logs through SLF4J; provide a no-op binding instead of noisy warnings.
+    implementation("org.slf4j:slf4j-nop:2.0.16")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     implementation("androidx.activity:activity:1.10.1")
     implementation("androidx.core:core:1.17.0")
@@ -58,8 +62,13 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.6.2")
     implementation("androidx.camera:camera-view:1.6.2")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    // Lectura del texto de la caja o receta en el propio teléfono: el modelo va incluido en la app
+    // y la imagen nunca sale del dispositivo.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.mediapipe:tasks-vision:1.1.1")
     testImplementation("junit:junit:4.13.2")
+    // The Android org.json stubs throw on JVM tests; this real implementation covers the parser.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

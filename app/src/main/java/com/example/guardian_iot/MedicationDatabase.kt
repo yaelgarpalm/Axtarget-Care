@@ -9,7 +9,7 @@ import java.time.Instant
 
 /** Private, durable store for prescriptions, scheduled instances, and their sync outbox. */
 class MedicationDatabase(context: Context) : SQLiteOpenHelper(
-    context.applicationContext, "tzinda_medications.db", null, 1,
+    context.applicationContext, "tzinda_medications.db", null, 2,
 ) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE medications (
@@ -25,6 +25,7 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
             id TEXT PRIMARY KEY NOT NULL, medication_id TEXT NOT NULL, owner_user_id TEXT NOT NULL,
             schedule_instance_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL, action_at INTEGER,
             status TEXT NOT NULL, snoozed_until INTEGER, snooze_count INTEGER NOT NULL DEFAULT 0,
+            actor_user_id TEXT,
             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
             sync_state TEXT NOT NULL DEFAULT 'pending', retry_count INTEGER NOT NULL DEFAULT 0,
             UNIQUE(owner_user_id, schedule_instance_id)
@@ -34,7 +35,12 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
         db.execSQL("CREATE INDEX medication_intakes_medication_idx ON medication_intakes(medication_id, scheduled_at)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            // Trazabilidad de quién confirmó cada toma (persona protegida o cuidador vinculado).
+            db.execSQL("ALTER TABLE medication_intakes ADD COLUMN actor_user_id TEXT")
+        }
+    }
 
     @Synchronized
     fun saveMedication(medication: Medication): Medication {
@@ -167,24 +173,30 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
         val db = writableDatabase
         db.beginTransaction()
         try {
-            deleteSyncedRowsMissing(db, "medication_intakes", ownerId, intakeIds)
-            deleteSyncedRowsMissing(db, "medications", ownerId, medicationIds)
+            deleteLocalRowsMissing(db, "medication_intakes", ownerId, intakeIds)
+            deleteLocalRowsMissing(db, "medications", ownerId, medicationIds)
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
 
-    private fun deleteSyncedRowsMissing(db: SQLiteDatabase, table: String, ownerId: String, ids: Set<String>) {
+    /**
+     * El teléfono del cuidador es solo un caché de lectura: lo remoto es la única fuente válida.
+     * Borramos cualquier fila local que no venga en el set remoto sin importar su sync_state, para
+     * que también se limpien residuos 'pending'/'failed' de versiones previas que nunca pudieron
+     * subirse (el cuidador no puede empujar) y que antes quedaban atascados para siempre.
+     */
+    private fun deleteLocalRowsMissing(db: SQLiteDatabase, table: String, ownerId: String, ids: Set<String>) {
         require(table in setOf("medications", "medication_intakes"))
         val notIn = if (ids.isEmpty()) "" else " AND id NOT IN (${ids.joinToString(",") { "?" }})"
         db.execSQL(
-            "DELETE FROM $table WHERE owner_user_id=? AND sync_state='synced'$notIn",
+            "DELETE FROM $table WHERE owner_user_id=?$notIn",
             arrayOf(ownerId, *ids.toTypedArray()),
         )
     }
 
     /** Returns false for duplicate, stale, or already-completed notification actions. */
     @Synchronized
-    fun recordAction(id: String, status: String, actionAt: Long = System.currentTimeMillis(), snoozeUntil: Long? = null): Boolean {
+    fun recordAction(id: String, status: String, actionAt: Long = System.currentTimeMillis(), snoozeUntil: Long? = null, actorUserId: String? = null): Boolean {
         require(status in setOf("taken", "skipped", "snoozed"))
         val row = getIntake(id) ?: return false
         val allowed = when (status) {
@@ -195,6 +207,7 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
         val values = ContentValues().apply {
             put("status", status); put("action_at", actionAt); put("updated_at", actionAt)
             put("sync_state", "pending"); put("retry_count", 0)
+            if (actorUserId != null) put("actor_user_id", actorUserId)
             if (status == "snoozed") { put("snoozed_until", snoozeUntil ?: actionAt + 10 * 60_000L); put("snooze_count", row.snoozeCount + 1) }
         }
         return writableDatabase.update("medication_intakes", values, "id=? AND status IN ('pending','snoozed','overdue')", arrayOf(id)) == 1
@@ -228,9 +241,39 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     @Synchronized
+    fun clearAll() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("medication_intakes", null, null)
+            db.delete("medications", null, null)
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    @Synchronized
+    fun retryFailed() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("UPDATE medications SET retry_count=0, sync_state='pending' WHERE sync_state='failed'")
+            db.execSQL("UPDATE medication_intakes SET retry_count=0, sync_state='pending' WHERE sync_state='failed'")
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    @Synchronized
     fun syncPendingCount(ownerId: String): Int = readableDatabase.rawQuery(
         "SELECT (SELECT COUNT(*) FROM medications WHERE owner_user_id=? AND sync_state IN ('pending','failed')) + " +
             "(SELECT COUNT(*) FROM medication_intakes WHERE owner_user_id=? AND sync_state IN ('pending','failed'))",
+        arrayOf(ownerId, ownerId),
+    ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+
+    /** Filas aún reintentables (excluye las agotadas con retry_count>=8, que ya no se empujan). */
+    @Synchronized
+    fun retryablePendingCount(ownerId: String): Int = readableDatabase.rawQuery(
+        "SELECT (SELECT COUNT(*) FROM medications WHERE owner_user_id=? AND sync_state='pending' AND retry_count<8) + " +
+            "(SELECT COUNT(*) FROM medication_intakes WHERE owner_user_id=? AND sync_state='pending' AND retry_count<8)",
         arrayOf(ownerId, ownerId),
     ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
 
@@ -268,6 +311,7 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
         put("scheduled_at", scheduledAtMillis); if (actionAtMillis == null) putNull("action_at") else put("action_at", actionAtMillis)
         put("status", status); if (snoozedUntilMillis == null) putNull("snoozed_until") else put("snoozed_until", snoozedUntilMillis)
         put("snooze_count", snoozeCount); put("created_at", createdAtMillis); put("updated_at", updatedAtMillis); put("sync_state", syncState)
+        if (actorUserId == null) putNull("actor_user_id") else put("actor_user_id", actorUserId)
     }
 
     private fun android.database.Cursor.intake() = MedicationIntake(
@@ -279,6 +323,7 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
         snoozedUntilMillis = if (isNull(getColumnIndexOrThrow("snoozed_until"))) null else getLong(getColumnIndexOrThrow("snoozed_until")),
         snoozeCount = getInt(getColumnIndexOrThrow("snooze_count")), createdAtMillis = getLong(getColumnIndexOrThrow("created_at")),
         updatedAtMillis = getLong(getColumnIndexOrThrow("updated_at")), syncState = getString(getColumnIndexOrThrow("sync_state")),
+        actorUserId = if (isNull(getColumnIndexOrThrow("actor_user_id"))) null else getString(getColumnIndexOrThrow("actor_user_id")),
     )
 
     companion object {
@@ -294,4 +339,5 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
 
 internal fun String?.toEpochMillisOrNull(): Long? = this?.takeIf(String::isNotBlank)?.let { value ->
     runCatching { Instant.parse(value).toEpochMilli() }.getOrNull()
+        ?: runCatching { java.time.OffsetDateTime.parse(value).toInstant().toEpochMilli() }.getOrNull()
 }

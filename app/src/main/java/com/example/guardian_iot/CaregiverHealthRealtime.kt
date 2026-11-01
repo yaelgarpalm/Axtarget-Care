@@ -31,12 +31,15 @@ class CaregiverHealthRealtime(
     private val onFallEvent: (JSONObject) -> Unit,
     private val onPhoneMotion: (JSONObject) -> Unit,
     private val onRealtimeError: ((String) -> Unit)? = null,
+    private val onCareDataChange: (() -> Unit)? = null,
 ) {
     @Volatile private var activeScope: CoroutineScope? = null
     @Volatile private var listeningKey: String? = null
     private var measurementChannel: io.github.jan.supabase.realtime.RealtimeChannel? = null
     private var fallChannel: io.github.jan.supabase.realtime.RealtimeChannel? = null
     private var phoneMotionChannel: io.github.jan.supabase.realtime.RealtimeChannel? = null
+    private var careRecordsChannel: io.github.jan.supabase.realtime.RealtimeChannel? = null
+    private var medicationsChannel: io.github.jan.supabase.realtime.RealtimeChannel? = null
     private var client: io.github.jan.supabase.SupabaseClient? = null
 
     fun start(ownerId: String, deviceId: String?) {
@@ -108,6 +111,30 @@ class CaregiverHealthRealtime(
                     }
                 }.launchIn(scope)
                 phoneMotion.subscribe(blockUntilSubscribed = true)
+
+                if (onCareDataChange != null) {
+                    val careRecords = supabase.realtime.channel("caregiver-care-records-$ownerId")
+                    careRecordsChannel = careRecords
+                    careRecords.postgresChangeFlow<PostgresAction>(schema = "public") {
+                        table = "care_records"
+                    }.onEach { action ->
+                        val record = action.recordOrNull() ?: return@onEach
+                        val row = runCatching { JSONObject(record.toString()) }.getOrNull() ?: return@onEach
+                        if (row.optString("owner_user_id") == ownerId) onCareDataChange()
+                    }.launchIn(scope)
+                    careRecords.subscribe(blockUntilSubscribed = true)
+
+                    val medications = supabase.realtime.channel("caregiver-medications-$ownerId")
+                    medicationsChannel = medications
+                    medications.postgresChangeFlow<PostgresAction>(schema = "public") {
+                        table = "medications"
+                    }.onEach { action ->
+                        val record = action.recordOrNull() ?: return@onEach
+                        val row = runCatching { JSONObject(record.toString()) }.getOrNull() ?: return@onEach
+                        if (row.optString("owner_user_id") == ownerId) onCareDataChange()
+                    }.launchIn(scope)
+                    medications.subscribe(blockUntilSubscribed = true)
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
@@ -122,13 +149,18 @@ class CaregiverHealthRealtime(
         val oldMeasurements = measurementChannel
         val oldFalls = fallChannel
         val oldPhoneMotion = phoneMotionChannel
+        val oldCareRecords = careRecordsChannel
+        val oldMedications = medicationsChannel
         val oldClient = client
         val oldScope = activeScope
-        measurementChannel = null; fallChannel = null; phoneMotionChannel = null; client = null; activeScope = null
+        measurementChannel = null; fallChannel = null; phoneMotionChannel = null
+        careRecordsChannel = null; medicationsChannel = null; client = null; activeScope = null
         oldScope?.launch {
             runCatching { oldMeasurements?.unsubscribe() }
             runCatching { oldFalls?.unsubscribe() }
             runCatching { oldPhoneMotion?.unsubscribe() }
+            runCatching { oldCareRecords?.unsubscribe() }
+            runCatching { oldMedications?.unsubscribe() }
             runCatching { oldClient?.realtime?.disconnect() }
             runCatching { oldClient?.close() }
         }?.invokeOnCompletion { oldScope.cancel() }

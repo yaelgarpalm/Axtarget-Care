@@ -52,9 +52,51 @@ class MedicationSchedulePolicyTest {
         assertTrue(runCatching { java.util.UUID.fromString(first) }.isSuccess)
     }
 
-    private fun medication(frequency: String, end: String? = null) = Medication(
+    @Test
+    fun acceptsOnlyIntervalsThatRepeatWithinADay() {
+        assertEquals(8, MedicationSchedulePolicy.intervalHours("Cada 8 horas"))
+        assertEquals(24, MedicationSchedulePolicy.intervalHours("cada 24 horas"))
+        assertEquals(4, MedicationSchedulePolicy.intervalHours("Cada 4 horas"))
+        assertNull(MedicationSchedulePolicy.intervalHours("Cada 5 horas"))
+        assertNull(MedicationSchedulePolicy.intervalHours("Cada 48 horas"))
+        assertNull(MedicationSchedulePolicy.intervalHours("Diaria"))
+        assertEquals("Cada 12 horas", MedicationSchedulePolicy.intervalFrequency(12))
+        assertNull(MedicationSchedulePolicy.intervalFrequency(5))
+    }
+
+    @Test
+    fun generatesIntervalTimesFromTheFirstDose() {
+        assertEquals(listOf("02:00", "10:00", "18:00"), MedicationSchedulePolicy.intervalTimes("10:00", 8))
+        assertEquals(listOf("00:00", "12:00"), MedicationSchedulePolicy.intervalTimes("00:00", 12))
+        assertEquals(listOf("07:30"), MedicationSchedulePolicy.intervalTimes("07:30", 24))
+        assertNull(MedicationSchedulePolicy.intervalTimes("10:00", 5))
+        assertNull(MedicationSchedulePolicy.intervalTimes("25:00", 8))
+        assertEquals("02:00", MedicationSchedulePolicy.intervalAnchor(listOf("18:00", "10:00", "02:00")))
+    }
+
+    @Test
+    fun validatesIntervalSchedulesAgainstTheGeneratedSlots() {
+        val aligned = listOf("02:00", "10:00", "18:00")
+        assertNull(MedicationSchedulePolicy.validate("Medicamento", "1 tableta", "Cada 8 horas", aligned, "2026-10-24", null))
+        assertNotNull(MedicationSchedulePolicy.validate("Medicamento", "1 tableta", "Cada 8 horas", listOf("08:00", "20:00"), "2026-10-24", null))
+        assertNull(MedicationSchedulePolicy.validate("Medicamento", "1 tableta", "Cada 24 horas", listOf("07:30"), "2026-10-24", null))
+    }
+
+    @Test
+    fun schedulesIntervalFrequencyEveryDay() {
+        val start = LocalDate.parse("2026-10-24")
+        val intervalMedication = medication("Cada 8 horas", times = listOf("02:00", "10:00", "18:00"))
+        val afterMorning = start.atTime(11, 0).atZone(zone).toInstant().toEpochMilli()
+        val next = MedicationSchedulePolicy.nextOccurrence(intervalMedication, "18:00", afterMorning, zone)
+        assertEquals(start.atTime(18, 0).atZone(zone).toInstant().toEpochMilli(), next)
+        val afterNight = start.atTime(19, 0).atZone(zone).toInstant().toEpochMilli()
+        val nextDay = MedicationSchedulePolicy.nextOccurrence(intervalMedication, "02:00", afterNight, zone)
+        assertEquals(start.plusDays(1).atTime(2, 0).atZone(zone).toInstant().toEpochMilli(), nextDay)
+    }
+
+    private fun medication(frequency: String, end: String? = null, times: List<String> = listOf("08:00")) = Medication(
         id = "med-1", ownerUserId = "owner-1", name = "Prueba", prescribedDose = "Como indicada",
-        presentation = "", frequency = frequency, scheduleTimes = listOf("08:00"),
+        presentation = "", frequency = frequency, scheduleTimes = times,
         startDate = "2026-10-24", endDate = end, instructions = "", isActive = true,
     )
 }

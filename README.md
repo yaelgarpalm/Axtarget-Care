@@ -13,13 +13,15 @@ La vinculación de persona, cuidador y cámara usa Supabase por Internet; no req
 
 La pulsera envía pulso, SpO₂ y detecciones de golpe/caída. El teléfono protegido inicia una cuenta regresiva de 20 segundos; si no se cancela, solicita SMS y llamada a los contactos configurados. Cuando varias fuentes reportan el mismo incidente, la app deduplica el aviso para evitar llamadas repetidas.
 
-**Medicamentos:** la persona protegida puede guardar medicamentos, dosis indicadas y horarios en una base local, recibir recordatorios de Android sin Internet, confirmar/posponer/omitir tomas y consultar el historial. La sincronización de cada registro con Supabase incluye una opción de compartir desactivada por defecto. Un cuidador vinculado solo puede leer los medicamentos que se hayan compartido; no puede editarlos ni confirmar tomas.
+**Medicamentos:** la persona protegida puede guardar medicamentos, dosis indicadas y horarios en una base local, recibir recordatorios de Android sin Internet, confirmar/posponer/omitir tomas y consultar el historial. Las recetas por intervalo («cada 8, 12 o 24 horas») generan sus horarios a partir de la primera toma y, si una toma se registra a otra hora, la app propone —solo con confirmación— mover los próximos avisos desde esa hora. El formulario permite escanear la caja o la receta para leer el nombre, la dosis y la presentación; el reconocimiento usa un catálogo de medicamentos frecuentes para corregir lecturas dudosas y todo se revisa antes de guardar. La lectura puede hacerse en el teléfono, sin conexión, o con un modelo de visión de NVIDIA NIM configurando `TZINDA_NVIDIA_API_KEY`: al elegir esa opción la foto se envía a NVIDIA para analizarla (TzindaApp no la guarda) y, si falla, la app vuelve a la lectura local. La opción en el teléfono no envía la imagen. La sincronización de cada registro con Supabase incluye una opción de compartir desactivada por defecto. Un cuidador vinculado solo puede leer los medicamentos que se hayan compartido; no puede editarlos ni confirmar tomas.
 
 ## Supabase
 
 El backend incluye autenticación, perfiles, vínculos, dispositivos, mediciones, eventos y Realtime con políticas RLS. La configuración y despliegue están descritos en [docs/supabase-backend.md](docs/supabase-backend.md); las migraciones están en [supabase/migrations](supabase/migrations).
 
 Gradle lee `TZINDA_SUPABASE_URL`, `TZINDA_SUPABASE_PUBLISHABLE_KEY` y `TZINDA_SUPABASE_REDIRECT_URL` del entorno o de un archivo local `.env.local`. Copia [.env.example](.env.example) como plantilla. No guardes contraseñas, claves privadas ni la clave `service_role` en el APK o el repositorio. La clave `service_role` solo se configura en el entorno servidor de Supabase.
+
+Para la lectura opcional con NVIDIA agrega `TZINDA_NVIDIA_API_KEY` (y, si hace falta, `TZINDA_NVIDIA_VISION_MODEL`) a `.env.local`. La clave se compila dentro del APK y se puede extraer: usa una clave dedicada, rótala si compartes el APK y, para distribución pública, mueve la llamada a un backend que la guarde como secreto. Sin clave, el escaneo se hace solo en el teléfono.
 
 ## Arduino UNO Q
 

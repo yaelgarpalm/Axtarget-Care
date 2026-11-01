@@ -9,6 +9,12 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 import java.util.UUID
 
+data class LocalVitalHistory(
+    val capturedAtMillis: Long,
+    val heartRateBpm: Double?,
+    val spo2Percent: Double?,
+)
+
 /** On-device telemetry and durable outbox for background Supabase synchronization. */
 class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
     context.applicationContext,
@@ -42,6 +48,7 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createSyncTables(db)
+        if (oldVersion < 3) createLocationSyncTable(db)
     }
 
     @Synchronized
@@ -89,7 +96,7 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     @Synchronized
-    fun recordLocation(latitude: Double, longitude: Double, capturedAt: Long) {
+    fun recordLocation(latitude: Double, longitude: Double, capturedAt: Long, accuracyM: Float? = null) {
         insert(
             ContentValues().apply {
                 put("captured_at", capturedAt)
@@ -98,7 +105,65 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
                 put("longitude", longitude)
             },
         )
+        queueLocationForSync(latitude, longitude, capturedAt, accuracyM)
     }
+
+    /** Keeps the remote history at a bounded resolution regardless of the listener rate. */
+    private fun queueLocationForSync(latitude: Double, longitude: Double, capturedAt: Long, accuracyM: Float?) {
+        val db = writableDatabase
+        val lastQueued = db.rawQuery(
+            "SELECT MAX(captured_at) FROM sync_locations", null,
+        ).use { if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else 0L }
+        if (capturedAt - lastQueued < LOCATION_QUEUE_INTERVAL_MS) return
+        db.insertWithOnConflict(
+            "sync_locations", null,
+            ContentValues().apply {
+                put("id", UUID.randomUUID().toString())
+                put("latitude", latitude); put("longitude", longitude)
+                if (accuracyM != null && accuracyM.isFinite() && accuracyM >= 0) put("accuracy_m", accuracyM.toDouble()) else putNull("accuracy_m")
+                put("captured_at", capturedAt); put("sync_state", "pending")
+            },
+            SQLiteDatabase.CONFLICT_IGNORE,
+        )
+    }
+
+    @Synchronized
+    fun pendingLocations(limit: Int = MAX_SYNC_BATCH): List<LocalLocationRecord> {
+        val db = writableDatabase
+        db.delete("sync_locations", "sync_state = 'synced' AND captured_at < ?",
+            arrayOf((System.currentTimeMillis() - LOCATION_RETENTION_MS).toString()))
+        return db.rawQuery(
+            "SELECT id, latitude, longitude, accuracy_m, captured_at FROM sync_locations " +
+                "WHERE sync_state = 'pending' AND retry_count < ? ORDER BY captured_at ASC LIMIT ?",
+            arrayOf(MAX_SYNC_ATTEMPTS.toString(), limit.toString()),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(
+                    LocalLocationRecord(
+                        id = cursor.getString(0), latitude = cursor.getDouble(1), longitude = cursor.getDouble(2),
+                        accuracyM = if (cursor.isNull(3)) null else cursor.getDouble(3), capturedAtMillis = cursor.getLong(4),
+                    ),
+                )
+            }
+        }
+    }
+
+    /** Most recent known fix, uploaded or not, used to refresh the live remote position. */
+    @Synchronized
+    fun latestLocation(): LocalLocationRecord? = readableDatabase.rawQuery(
+        "SELECT id, latitude, longitude, accuracy_m, captured_at FROM sync_locations ORDER BY captured_at DESC LIMIT 1", null,
+    ).use { cursor ->
+        if (cursor.moveToFirst()) LocalLocationRecord(
+            id = cursor.getString(0), latitude = cursor.getDouble(1), longitude = cursor.getDouble(2),
+            accuracyM = if (cursor.isNull(3)) null else cursor.getDouble(3), capturedAtMillis = cursor.getLong(4),
+        ) else null
+    }
+
+    @Synchronized
+    fun markLocationSynced(id: String) = markSyncState("sync_locations", id, "synced")
+
+    @Synchronized
+    fun markLocationFailure(id: String) = incrementSyncFailure("sync_locations", id)
 
     @Synchronized
     fun recordEvent(message: String, incident: String, capturedAt: Long = System.currentTimeMillis()) {
@@ -346,6 +411,20 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
         return result
     }
 
+    /** Real samples only; null means the sensor did not provide that metric for the sample. */
+    @Synchronized
+    fun recentArduinoVitalHistory(limit: Int = 30): List<LocalVitalHistory> = readableDatabase.rawQuery(
+        "SELECT captured_at, heart_rate_bpm, spo2_percent FROM readings " +
+            "WHERE source=? AND (heart_rate_bpm > 0 OR spo2_percent > 0) ORDER BY captured_at DESC, id DESC LIMIT ?",
+        arrayOf(SOURCE_ARDUINO, limit.coerceIn(1, 200).toString()),
+    ).use { cursor -> buildList {
+        while (cursor.moveToNext()) add(LocalVitalHistory(
+            capturedAtMillis = cursor.getLong(0),
+            heartRateBpm = if (cursor.isNull(1)) null else cursor.getDouble(1).takeIf { it > 0.0 && it < 300.0 },
+            spo2Percent = if (cursor.isNull(2)) null else cursor.getDouble(2).takeIf { it > 0.0 && it <= 100.0 },
+        ))
+    } }
+
     @Synchronized
     fun pendingMeasurements(limit: Int = MAX_SYNC_BATCH): List<LocalMeasurementRecord> = readableDatabase.rawQuery(
         "SELECT id, measurement_type, value, unit, captured_at, source, is_valid FROM sync_measurements " +
@@ -377,9 +456,11 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
         ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
         return SyncStateSummary(
             pending = count("sync_events", "pending") + count("sync_attempts", "pending") +
-                count("sync_contacts", "pending") + count("sync_measurements", "pending"),
+                count("sync_contacts", "pending") + count("sync_measurements", "pending") +
+                count("sync_locations", "pending"),
             failed = count("sync_events", "failed") + count("sync_attempts", "failed") +
-                count("sync_contacts", "failed") + count("sync_measurements", "failed"),
+                count("sync_contacts", "failed") + count("sync_measurements", "failed") +
+                count("sync_locations", "failed"),
         )
     }
 
@@ -388,7 +469,7 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
         val db = writableDatabase
         db.beginTransaction()
         try {
-            listOf("readings", "sync_events", "sync_attempts", "sync_contacts", "sync_measurements").forEach { db.delete(it, null, null) }
+            listOf("readings", "sync_events", "sync_attempts", "sync_contacts", "sync_measurements", "sync_locations").forEach { db.delete(it, null, null) }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
@@ -398,7 +479,7 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
         val db = writableDatabase
         db.beginTransaction()
         try {
-            listOf("sync_events", "sync_attempts", "sync_contacts", "sync_measurements").forEach { table ->
+            listOf("sync_events", "sync_attempts", "sync_contacts", "sync_measurements", "sync_locations").forEach { table ->
                 db.execSQL("UPDATE " + table + " SET retry_count = 0, sync_state = 'pending' WHERE sync_state = 'failed'")
             }
             db.setTransactionSuccessful()
@@ -458,6 +539,15 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
             sync_state TEXT NOT NULL DEFAULT 'pending', retry_count INTEGER NOT NULL DEFAULT 0
         )""")
         db.execSQL("CREATE INDEX IF NOT EXISTS sync_measurements_pending_idx ON sync_measurements(sync_state, captured_at)")
+        createLocationSyncTable(db)
+    }
+
+    private fun createLocationSyncTable(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS sync_locations (
+            id TEXT PRIMARY KEY NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL, accuracy_m REAL,
+            captured_at INTEGER NOT NULL, sync_state TEXT NOT NULL DEFAULT 'pending', retry_count INTEGER NOT NULL DEFAULT 0
+        )""")
+        db.execSQL("CREATE INDEX IF NOT EXISTS sync_locations_pending_idx ON sync_locations(sync_state, captured_at)")
     }
 
     @Synchronized
@@ -516,8 +606,10 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
             }
 
         private const val DATABASE_NAME = "tzinda_local_telemetry.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
         private const val RETENTION_MS = 30L * 24 * 60 * 60 * 1000
+        private const val LOCATION_QUEUE_INTERVAL_MS = 30_000L
+        private const val LOCATION_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
         private const val PRUNE_EVERY_WRITES = 500
         private const val MAX_ROWS = 100_000
         const val MAX_SYNC_ATTEMPTS = 8
@@ -549,6 +641,10 @@ data class LocalContactRecord(
 data class LocalMeasurementRecord(
     val id: String, val type: String, val value: Double, val unit: String, val capturedAtMillis: Long,
     val source: String, val isValid: Boolean?,
+)
+
+data class LocalLocationRecord(
+    val id: String, val latitude: Double, val longitude: Double, val accuracyM: Double?, val capturedAtMillis: Long,
 )
 
 data class SyncStateSummary(val pending: Int, val failed: Int)

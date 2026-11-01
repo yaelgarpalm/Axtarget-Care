@@ -201,10 +201,25 @@ class AppStore(context: Context) {
     fun applyRemoteProfile(fullName: String, role: String?, updatedAtMillis: Long) {
         val profile = profile().put("fullName", fullName)
         val editor = prefs.edit().putString("profile", profile.toString())
-        if (role == ROLE_WEARER || role == ROLE_CAREGIVER || role == ROLE_CAMERA) editor.putString("user_role", role)
+        when (role) {
+            ROLE_WEARER, ROLE_CAREGIVER, ROLE_CAMERA -> editor.putString("user_role", role)
+            // Remoto autoritativo: si el perfil remoto no tiene rol, el local heredado se descarta
+            // para que la pantalla de selección de rol vuelva a aparecer.
+            null, "" -> editor.remove("user_role").remove("role_updated_at")
+        }
         val syncedAt = System.currentTimeMillis()
         editor.putLong("profile_updated_at", updatedAtMillis).putLong("profile_sync_at", syncedAt)
             .putLong("role_sync_at", syncedAt).apply()
+    }
+
+    /**
+     * Cachés derivadas de remoto: vínculo de cuidador, datos compartidos y códigos de
+     * emparejamiento pendientes. Se descartan al cerrar sesión o cuando Supabase confirma
+     * que el vínculo ya no existe, para no mostrar información de perfiles anteriores.
+     */
+    fun clearRemoteDerivedCaches() {
+        val stale = prefs.all.keys.filter { it.startsWith("caregiver_") || it.startsWith("pending_pairing_") }
+        prefs.edit().apply { stale.forEach { remove(it) } }.commit()
     }
 
     fun prepareContactsForUser(userId: String) {
@@ -227,6 +242,41 @@ class AppStore(context: Context) {
     fun clearAccountData() {
         prefs.edit().remove("profile").remove("contacts").remove("events").remove("user_role")
             .remove("profile_updated_at").remove("profile_sync_at").remove("role_updated_at").commit()
+        telemetry.clearAllData()
+    }
+
+    /**
+     * Los datos locales pertenecen a una sola cuenta de Supabase. Al iniciar sesión con una
+     * cuenta distinta (p. ej. tras borrar y recrear la base remota) se borra todo rastro local
+     * de la cuenta anterior para no mezclar perfiles, roles ni datos ajenos.
+     * Devuelve true cuando hubo borrado.
+     */
+    fun bindLocalDataToUser(userId: String): Boolean {
+        if (userId.isBlank()) return false
+        val owner = prefs.getString(LOCAL_DATA_OWNER_KEY, "").orEmpty()
+        if (owner == userId) return false
+        if (owner.isNotBlank()) clearStaleLocalData()
+        prefs.edit().putString(LOCAL_DATA_OWNER_KEY, userId).commit()
+        return owner.isNotBlank()
+    }
+
+    private fun clearStaleLocalData() {
+        clearAccountData()
+        runCatching { MedicationDatabase.getInstance(appContext).clearAll() }
+        runCatching { CareFeatureStore(appContext).clearAll() }
+        val staleKeys = prefs.all.keys.filter { key ->
+            key.startsWith("caregiver_") || key.startsWith("phone_motion_last_uploaded_at_") ||
+                key.startsWith("pending_pairing_") || key.startsWith("camera_") ||
+                key.startsWith("paired_camera") ||
+                key in setOf(
+                    "medication_local_data_claimed_by", "local_device_id", "fall_sensor_device_id",
+                    "wearable_device_id", "arduino_device_id", "local_camera_device_id",
+                    "registered_cameras", "device_sync_configured", "sync_global_failures",
+                    "last_sync_success_at", "sync_status", "sync_location_last_upsert_at",
+                    "privacy_notice_version", "privacy_consent_at",
+                )
+        }
+        prefs.edit().apply { staleKeys.forEach { remove(it) } }.commit()
         telemetry.clearAllData()
     }
 
@@ -289,6 +339,7 @@ class AppStore(context: Context) {
         const val BRACELET_MODE_BLE = "ble"
         const val BRACELET_MODE_WIFI = "wifi"
         const val DEFAULT_ARDUINO_BASE_URL = "http://192.168.18.35:8081"
+        private const val LOCAL_DATA_OWNER_KEY = "local_data_owner_id"
         private val lock = Any()
     }
 }

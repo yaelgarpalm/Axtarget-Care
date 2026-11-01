@@ -25,23 +25,23 @@ class PoseOverlayView @JvmOverloads constructor(
 
     private val density = resources.displayMetrics.density
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xDDF0F4E8.toInt()
+        color = 0xDD22C55E.toInt()
         strokeWidth = density * 2.4f
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
-    private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFE5F2D8.toInt() }
-    private val referencePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFD166.toInt() }
+    private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF008744.toInt() }
+    private val referencePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFB800.toInt() }
     private val boundsPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xD99CE0A8.toInt()
+        color = 0xD90E48D6.toInt()
         style = Paint.Style.STROKE
         strokeWidth = density * 1.8f
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
-    private val labelBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xE6244C3C.toInt() }
+    private val labelBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xEE0E48D6.toInt() }
     private val labelTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFF5F7F2.toInt()
+        color = 0xFFFFFFFF.toInt()
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     }
 

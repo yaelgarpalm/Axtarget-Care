@@ -157,6 +157,20 @@ class SupabaseBackend(
         )
     }
 
+    /** Recrea la fila de perfil cuando no existe en remoto (p. ej. tras una limpieza de datos). */
+    fun upsertProfile(fullName: String, role: String?, preferences: JSONObject) {
+        val session = requireSession()
+        val body = JSONObject().put("user_id", session.userId).put("full_name", fullName.take(120)).put("preferences", preferences)
+        body.put("role", role?.takeIf { it in setOf(AppStore.ROLE_WEARER, AppStore.ROLE_CAREGIVER, AppStore.ROLE_CAMERA) } ?: JSONObject.NULL)
+        request(
+            "POST",
+            "/rest/v1/profiles?on_conflict=user_id",
+            body,
+            needsSession = true,
+            prefer = "resolution=merge-duplicates,return=minimal",
+        )
+    }
+
     fun userDevices(userId: String): JSONArray = request(
         "GET",
         "/rest/v1/devices?select=id,logical_id,name,device_type,link_status,last_sync_at&user_id=eq." +
@@ -267,13 +281,27 @@ class SupabaseBackend(
         )
     }
 
-    fun medicationIntakeRecords(ownerUserId: String): JSONArray = request(
-        "GET",
-        "/rest/v1/medication_intakes?select=id,medication_id,owner_user_id,schedule_instance_id,scheduled_at,action_at,status,snoozed_until,snooze_count,created_at,updated_at" +
-            "&owner_user_id=eq." + encode(ownerUserId) + "&order=scheduled_at.desc&limit=1000",
-        null,
-        true,
-    ).optJSONArray("data") ?: JSONArray()
+    fun medicationIntakeRecords(ownerUserId: String): JSONArray {
+        val tail = "&owner_user_id=eq." + encode(ownerUserId) + "&order=scheduled_at.desc&limit=1000"
+        return try {
+            request(
+                "GET",
+                "/rest/v1/medication_intakes?select=id,medication_id,owner_user_id,schedule_instance_id,scheduled_at,action_at,status,snoozed_until,snooze_count,actor_user_id,created_at,updated_at$tail",
+                null,
+                true,
+            ).optJSONArray("data") ?: JSONArray()
+        } catch (failure: BackendFailure) {
+            // Remoto sin la columna actor_user_id (migración pendiente): degradar el select en vez
+            // de romper toda la descarga de tomas del cuidador.
+            if (failure.status != 400) throw failure
+            request(
+                "GET",
+                "/rest/v1/medication_intakes?select=id,medication_id,owner_user_id,schedule_instance_id,scheduled_at,action_at,status,snoozed_until,snooze_count,created_at,updated_at$tail",
+                null,
+                true,
+            ).optJSONArray("data") ?: JSONArray()
+        }
+    }
 
     fun upsertMedicationIntake(record: MedicationIntake) {
         val body = JSONObject()
@@ -286,12 +314,19 @@ class SupabaseBackend(
             .put("status", record.status)
             .put("snoozed_until", record.snoozedUntilMillis?.let(::isoTime) ?: JSONObject.NULL)
             .put("snooze_count", record.snoozeCount)
+            .put("actor_user_id", record.actorUserId ?: JSONObject.NULL)
             .put("created_at", isoTime(record.createdAtMillis))
             .put("updated_at", isoTime(record.updatedAtMillis))
-        request(
-            "POST", "/rest/v1/medication_intakes?on_conflict=id", body, true,
-            prefer = "resolution=merge-duplicates,return=minimal",
-        )
+        val path = "/rest/v1/medication_intakes?on_conflict=id"
+        val prefer = "resolution=merge-duplicates,return=minimal"
+        try {
+            request("POST", path, body, true, prefer = prefer)
+        } catch (failure: BackendFailure) {
+            // Si el remoto aún no tiene actor_user_id, reintentar sin la columna para no perder la toma.
+            if (failure.status != 400) throw failure
+            body.remove("actor_user_id")
+            request("POST", path, body, true, prefer = prefer)
+        }
     }
 
     fun insertFallEvent(event: PendingFallEvent) {
@@ -411,6 +446,15 @@ class SupabaseBackend(
             ?: result
     }
 
+    fun insertLocationHistory(record: LocalLocationRecord, deviceId: String) {
+        val body = JSONObject().put("id", record.id).put("device_id", deviceId)
+            .put("latitude", record.latitude).put("longitude", record.longitude)
+            .put("captured_at", isoTime(record.capturedAtMillis))
+        record.accuracyM?.let { body.put("accuracy_m", it) }
+        request("POST", "/rest/v1/location_history?on_conflict=id", body, true,
+            prefer = "resolution=ignore-duplicates,return=minimal")
+    }
+
     fun upsertCaregiverLocation(deviceId: String, latitude: Double, longitude: Double, accuracyMeters: Float?, capturedAt: Long) {
         val body = JSONObject().put("device_id", deviceId).put("latitude", latitude).put("longitude", longitude)
             .put("captured_at", isoTime(capturedAt))
@@ -440,6 +484,18 @@ class SupabaseBackend(
         return request(
             "GET",
             "/rest/v1/caregiver_links?select=id,owner_user_id,device_id,created_at,status&caregiver_user_id=eq." +
+                encode(session.userId) + "&status=eq.active&order=created_at.desc",
+            null,
+            true,
+        ).optJSONArray("data") ?: JSONArray()
+    }
+
+    /** Active caregiver accounts for the current protected person. */
+    fun linkedCaregivers(): JSONArray {
+        val session = requireSession()
+        return request(
+            "GET",
+            "/rest/v1/caregiver_links?select=id,caregiver_user_id,created_at,status&owner_user_id=eq." +
                 encode(session.userId) + "&status=eq.active&order=created_at.desc",
             null,
             true,
@@ -502,6 +558,44 @@ class SupabaseBackend(
         null,
         true,
     ).optJSONArray("data")?.optJSONObject(0)
+
+    fun upsertCareRecord(ownerId: String, record: JSONObject) {
+        val body = JSONObject().put("id", record.optString("id")).put("owner_user_id", ownerId)
+            .put("record_kind", record.optString("kind")).put("record", record)
+            .put("shared_with_caregiver", record.optBoolean("sharedWithCaregiver", false))
+            .put("updated_at", isoTime(record.optLong("updatedAt", System.currentTimeMillis())))
+        request("POST", "/rest/v1/care_records?on_conflict=id", body, true,
+            prefer = "resolution=merge-duplicates,return=minimal")
+    }
+
+    fun deleteCareRecord(ownerId: String, id: String) {
+        request("DELETE", "/rest/v1/care_records?id=eq." + encode(id) + "&owner_user_id=eq." + encode(ownerId),
+            null, true, prefer = "return=minimal")
+    }
+
+    fun insertAlertFollowup(ownerId: String, followup: JSONObject) {
+        // A follow-up can be recorded offline. The account that performs the action is resolved
+        // from the live session at sync time, which also satisfies the actor RLS policy.
+        val actor = followup.optString("actorUserId").ifBlank { sessions.read()?.userId.orEmpty() }
+        val body = JSONObject().put("id", followup.optString("id")).put("owner_user_id", ownerId)
+            .put("fall_event_id", followup.optString("fallEventId")).put("actor_user_id", actor)
+            .put("status", followup.optString("status")).put("reason", followup.optString("reason"))
+            .put("created_at", isoTime(followup.optLong("occurredAt", System.currentTimeMillis())))
+        // alert_followups es append-only y solo tiene grant select+insert. Usar merge-duplicates
+        // generaba "ON CONFLICT DO UPDATE", que exige privilegio UPDATE y devolvía 403 en cada alta.
+        request("POST", "/rest/v1/alert_followups?on_conflict=id", body, true,
+            prefer = "resolution=ignore-duplicates,return=minimal")
+    }
+
+    fun sharedAlertFollowups(ownerId: String): JSONArray = request(
+        "GET", "/rest/v1/alert_followups?select=id,owner_user_id,fall_event_id,actor_user_id,status,reason,created_at&owner_user_id=eq." +
+            encode(ownerId) + "&order=created_at.desc&limit=200", null, true,
+    ).optJSONArray("data") ?: JSONArray()
+
+    fun sharedCareRecords(ownerId: String): JSONArray = request(
+        "GET", "/rest/v1/care_records?select=id,owner_user_id,record_kind,record,updated_at&owner_user_id=eq." +
+            encode(ownerId) + "&shared_with_caregiver=eq.true&order=updated_at.desc&limit=200", null, true,
+    ).optJSONArray("data") ?: JSONArray()
 
     fun linkedDevices(ownerId: String, deviceId: String): JSONObject? = request(
         "GET",

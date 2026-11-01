@@ -38,10 +38,19 @@ data class MedicationIntake(
     val createdAtMillis: Long,
     val updatedAtMillis: Long,
     val syncState: String = "pending",
+    /** Quién registró la acción (taken/skipped/snoozed). Null en tomas aún sin confirmar. */
+    val actorUserId: String? = null,
 )
 
 object MedicationSchedulePolicy {
     private val timePattern = Regex("^(?:[01]\\d|2[0-3]):[0-5]\\d$")
+    private val intervalHoursPattern = Regex("^cada (\\d{1,2}) horas?$")
+
+    /** Frecuencias que el formulario ofrece; las de intervalo se repiten dentro del mismo día. */
+    val frequencyOptions = listOf(
+        "Diaria", "Cada 2 días", "Cada 3 días", "Semanal",
+        "Cada 4 horas", "Cada 6 horas", "Cada 8 horas", "Cada 12 horas", "Cada 24 horas",
+    )
 
     fun validate(
         name: String,
@@ -55,10 +64,17 @@ object MedicationSchedulePolicy {
         if (name.trim().length > 120) return "El nombre no puede superar 120 caracteres."
         if (dose.trim().isEmpty()) return "Escribe la dosis tal como fue indicada."
         if (dose.trim().length > 120) return "La dosis no puede superar 120 caracteres."
-        if (frequencyIntervalDays(frequency) == null) return "Selecciona una frecuencia disponible."
+        val interval = intervalHours(frequency)
+        if (interval == null && frequencyIntervalDays(frequency) == null) return "Selecciona una frecuencia disponible."
         if (times.isEmpty() || times.size > 12 || times.any { !timePattern.matches(it) })
             return "Escribe uno o más horarios válidos en formato HH:mm, separados por coma."
         if (times.distinct().size != times.size) return "Quita los horarios repetidos."
+        if (interval != null) {
+            val expected = intervalTimes(times.minOrNull().orEmpty(), interval).orEmpty().sorted()
+            if (times.sorted() != expected) {
+                return "Con «$frequency» los horarios deben repetirse cada $interval horas. Vuelve a elegir la primera toma."
+            }
+        }
         val start = runCatching { LocalDate.parse(startDate) }.getOrNull()
             ?: return "La fecha de inicio debe usar el formato AAAA-MM-DD."
         if (endDate != null) {
@@ -68,6 +84,31 @@ object MedicationSchedulePolicy {
         }
         return null
     }
+
+    /**
+     * Horas entre tomas cuando la receta dice "cada N horas". Solo se aceptan divisores de 24
+     * para que los horarios se repitan igual todos los días.
+     */
+    fun intervalHours(frequency: String): Int? {
+        val hours = intervalHoursPattern.matchEntire(frequency.trim().lowercase())?.groupValues?.get(1)?.toIntOrNull()
+            ?: return null
+        return hours.takeIf { it in 2..24 && 24 % it == 0 }
+    }
+
+    fun intervalFrequency(hours: Int): String? =
+        "Cada $hours horas".takeIf { intervalHours(it) != null }
+
+    /** Genera los horarios del día a partir de la primera toma (por ejemplo 10:00 cada 8 h). */
+    fun intervalTimes(anchorTime: String, hours: Int): List<String>? {
+        if (!timePattern.matches(anchorTime) || hours !in 2..24 || 24 % hours != 0) return null
+        val anchor = LocalTime.parse(anchorTime)
+        return (0 until 24 / hours).map { index ->
+            anchor.plusHours((index * hours).toLong()).toString()
+        }.sorted()
+    }
+
+    /** Primera toma de referencia al editar un medicamento por intervalo. */
+    fun intervalAnchor(times: List<String>): String = times.minOrNull().orEmpty()
 
     fun frequencyIntervalDays(frequency: String): Int? = when (frequency.trim().lowercase()) {
         "diaria", "cada día", "cada dia", "daily" -> 1

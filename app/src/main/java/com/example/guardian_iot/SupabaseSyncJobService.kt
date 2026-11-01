@@ -13,6 +13,8 @@ import java.util.concurrent.Future
 
 object SyncScheduler {
     private const val JOB_ID = 712045
+    private const val PERIODIC_JOB_ID = 712046
+    private const val PERIODIC_INTERVAL_MS = 6 * 60 * 60 * 1000L
     private val immediateExecutor = Executors.newSingleThreadExecutor()
     @Volatile private var immediateSyncInFlight = false
 
@@ -20,7 +22,13 @@ object SyncScheduler {
         val app = context.applicationContext
         val sessions = EncryptedSessionStore(app)
         val backend = SupabaseBackend(sessions)
-        if (!backend.isConfigured || sessions.read() == null) return
+        if (!backend.isConfigured || sessions.read() == null) {
+            android.util.Log.w(
+                "SyncScheduler",
+                "Sync no encolado: configurado=${backend.isConfigured}, sesion=${sessions.read() != null}",
+            )
+            return
+        }
         val scheduler = app.getSystemService(JobScheduler::class.java)
         if (scheduler != null) {
             val job = JobInfo.Builder(JOB_ID, ComponentName(app, SupabaseSyncJobService::class.java))
@@ -29,6 +37,17 @@ object SyncScheduler {
                 .setBackoffCriteria(30_000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
                 .build()
             scheduler.schedule(job)
+            // Respaldo periódico: revive la sincronización aunque una corrida anterior
+            // haya agotado los reintentos (jobFinished(retry=false)).
+            if (scheduler.getPendingJob(PERIODIC_JOB_ID) == null) {
+                scheduler.schedule(
+                    JobInfo.Builder(PERIODIC_JOB_ID, ComponentName(app, SupabaseSyncJobService::class.java))
+                        .setPeriodic(PERIODIC_INTERVAL_MS)
+                        .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                        .setPersisted(true)
+                        .build(),
+                )
+            }
         }
         if (immediate && !immediateSyncInFlight) {
             immediateSyncInFlight = true
@@ -49,7 +68,18 @@ class SupabaseSyncJobService : JobService() {
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile private var active: Future<*>? = null
 
-    override fun onStartJob(parameters: JobParameters): Boolean {
+    override fun onStartJob(parameters: JobParameters): Boolean = startSync(parameters)
+
+    /**
+     * Without this override JobService logs “onNetworkChanged() not implemented” every time
+     * connectivity changes. If the previous run already finished, start it again so pending
+     * records are uploaded as soon as the network is back.
+     */
+    override fun onNetworkChanged(parameters: JobParameters) {
+        if (active?.isDone != false) startSync(parameters)
+    }
+
+    private fun startSync(parameters: JobParameters): Boolean {
         val backend = SupabaseBackend(EncryptedSessionStore(applicationContext))
         if (!backend.isConfigured || EncryptedSessionStore(applicationContext).read() == null) return false
         active = executor.submit {
@@ -86,8 +116,18 @@ private class SupabaseSyncRunner(context: Context) {
     private val backend = SupabaseBackend(sessions)
 
     fun run(): Boolean {
-        val session = backend.currentSession() ?: return false
-        store.prepareContactsForUser(session.userId)
+        val session = runCatching { backend.currentSession() }.getOrNull() ?: run {
+            store.prefs.edit().putString(
+                "sync_status",
+                "Sesión no disponible; abre la app e inicia sesión para reanudar la sincronización.",
+            ).apply()
+            return false
+        }
+        if (store.bindLocalDataToUser(session.userId)) {
+            android.util.Log.i("SyncRunner", "La sesión es de otra cuenta; se borraron los datos locales anteriores.")
+        }
+        runCatching { store.prepareContactsForUser(session.userId) }
+        validateCaregiverLink()
         var hasError = false
 
         try {
@@ -167,22 +207,70 @@ private class SupabaseSyncRunner(context: Context) {
             store.prefs.edit().putBoolean("device_sync_configured", true).apply()
         }
 
-        try { syncProfile() } catch (_: BackendFailure) { hasError = true }
+        try { syncProfile() } catch (_: Exception) { hasError = true }
         if (store.role() != AppStore.ROLE_CAMERA) {
             val caregiver = store.role() == AppStore.ROLE_CAREGIVER
             val medicationOwner = if (caregiver) store.prefs.getString("caregiver_owner_id", "").orEmpty() else session.userId
             if (medicationOwner.isNotBlank()) {
-                try { MedicationRepository(app, backend, store).synchronize(medicationOwner, readOnly = caregiver) }
-                catch (f: BackendFailure) { if (f.status != 404) hasError = true }
-                catch (_: Exception) {}
+                val medications = MedicationRepository(app, backend, store)
+                try {
+                    if (!caregiver) medications.currentOwnerScope()
+                    medications.synchronize(medicationOwner, readOnly = caregiver)
+                }
+                catch (f: BackendFailure) { android.util.Log.w("SyncRunner", "Medication sync failed: http=${f.status} ${f.category}: ${f.message}"); hasError = true }
+                catch (e: Exception) { android.util.Log.w("SyncRunner", "Medication sync failed: ${e.message}"); hasError = true }
             }
         }
         if (store.prefs.getBoolean("device_sync_configured", false)) {
-            try { syncContacts() } catch (_: BackendFailure) { hasError = true }
+            try { syncContacts() } catch (_: Exception) { hasError = true }
             syncEvents { hasError = true }
             syncNotificationAttempts { hasError = true }
             syncMeasurements { hasError = true }
+            syncLocationHistory { hasError = true }
             syncPhoneMotion(session.userId) { hasError = true }
+        }
+
+        val careFeatures = CareFeatureStore(app)
+        if (store.role() == AppStore.ROLE_CAREGIVER) {
+            val ownerId = store.prefs.getString("caregiver_owner_id", "").orEmpty()
+            if (ownerId.isNotBlank()) {
+                careFeatures.pendingDeletes().forEach { id ->
+                    try { backend.deleteCareRecord(ownerId, id); careFeatures.markDeletedSynced(id) }
+                    catch (e: Exception) { android.util.Log.w("CareSync", "delete care_record falló: ${syncError(e)}"); hasError = true }
+                }
+                careFeatures.rows("alert_followup").filter { it.optString("syncState") != "synced" }.forEach { followup ->
+                    try { backend.insertAlertFollowup(ownerId, followup); careFeatures.markSynced(followup.optString("id")) }
+                    catch (e: Exception) { android.util.Log.w("CareSync", "alert_followup falló: ${syncError(e)}"); hasError = true }
+                }
+                careFeatures.rows("zone").filter { it.optString("syncState") != "synced" }.forEach { zone ->
+                    try { backend.upsertCareRecord(zone.optString("ownerUserId", ownerId).ifBlank { ownerId }, zone); careFeatures.markSynced(zone.optString("id")) }
+                    catch (e: Exception) { android.util.Log.w("CareSync", "upsert zone falló: ${syncError(e)}"); hasError = true }
+                }
+                listOf("journal", "routine").forEach { kind ->
+                    careFeatures.rows(kind).filter { it.optString("syncState") != "synced" }.forEach { record ->
+                        try { backend.upsertCareRecord(record.optString("ownerUserId", ownerId).ifBlank { ownerId }, record); careFeatures.markSynced(record.optString("id")) }
+                        catch (e: Exception) { android.util.Log.w("CareSync", "upsert $kind falló: ${syncError(e)}"); hasError = true }
+                    }
+                }
+                try {
+                    val shared = backend.sharedCareRecords(ownerId)
+                    store.prefs.edit().putString("caregiver_shared_care_records", shared.toString()).apply()
+                    store.prefs.edit().putString("caregiver_shared_alert_followups", backend.sharedAlertFollowups(ownerId).toString()).apply()
+                } catch (e: Exception) { android.util.Log.w("CareSync", "lectura de care_records compartidos falló: ${syncError(e)}"); hasError = true }
+            }
+        } else {
+            careFeatures.rows("alert_followup").filter { it.optString("syncState") != "synced" }.forEach { followup ->
+                try { backend.insertAlertFollowup(session.userId, followup); careFeatures.markSynced(followup.optString("id")) }
+                catch (e: Exception) { android.util.Log.w("CareSync", "alert_followup falló: ${syncError(e)}"); hasError = true }
+            }
+            careFeatures.pendingDeletes().forEach { id ->
+                try { backend.deleteCareRecord(session.userId, id); careFeatures.markDeletedSynced(id) }
+                catch (e: Exception) { android.util.Log.w("CareSync", "delete care_record falló: ${syncError(e)}"); hasError = true }
+            }
+            careFeatures.rowsAll().filter { it.optString("kind") != "alert_followup" && it.optString("syncState") != "synced" }.forEach { record ->
+                try { backend.upsertCareRecord(record.optString("ownerUserId", session.userId).ifBlank { session.userId }, record); careFeatures.markSynced(record.optString("id")) }
+                catch (e: Exception) { android.util.Log.w("CareSync", "upsert ${record.optString("kind")} falló: ${syncError(e)}"); hasError = true }
+            }
         }
 
         val summary = database.syncStateSummary()
@@ -203,9 +291,32 @@ private class SupabaseSyncRunner(context: Context) {
         return retry
     }
 
+    /** Incluye el código HTTP y la categoría para que el logcat permita diagnosticar RLS vs red. */
+    private fun syncError(e: Exception): String =
+        (e as? BackendFailure)?.let { "http=${it.status} ${it.category}: ${it.message}" } ?: (e.message ?: e.toString())
+
+    /**
+     * El vínculo guardado en prefs puede quedar huérfano tras limpiezas remotas o cambios de
+     * cuenta. Si Supabase no lo confirma, se descarta la caché derivada para no mostrar datos
+     * de otra persona.
+     */
+    private fun validateCaregiverLink() {
+        val ownerId = store.prefs.getString("caregiver_owner_id", "").orEmpty()
+        if (ownerId.isBlank()) return
+        val links = runCatching { backend.linkedPeople() }.getOrNull() ?: return
+        val stillLinked = (0 until links.length()).any {
+            links.optJSONObject(it)?.optString("owner_user_id") == ownerId
+        }
+        if (!stillLinked) {
+            android.util.Log.i("SyncRunner", "El vínculo de cuidador con $ownerId ya no existe en Supabase; caché local descartada.")
+            store.clearRemoteDerivedCaches()
+        }
+    }
+
     private fun syncProfile() {
         val local = store.profile()
         val localName = local.text("fullName").trim()
+        val localRole = store.role()
         val remote = backend.fetchProfile()
         val remoteTime = remote?.optString("updated_at")?.toEpochMillis() ?: 0L
         val localTime = store.profileUpdatedAt()
@@ -214,9 +325,10 @@ private class SupabaseSyncRunner(context: Context) {
 
         if (localName.isBlank()) {
             if (remote != null) {
-                store.applyRemoteProfile(remote.optString("full_name"), remote.optString("role"), remoteTime)
-                if (hasUnsyncedLocalRole && store.role().isNotBlank()) {
-                    backend.updateProfile(remote.optString("full_name"), store.role(), JSONObject())
+                val roleToApply = if (hasUnsyncedLocalRole && localRole.isNotBlank()) localRole else remote.optString("role")
+                store.applyRemoteProfile(remote.optString("full_name"), roleToApply, remoteTime)
+                if (hasUnsyncedLocalRole && localRole.isNotBlank()) {
+                    backend.updateProfile(remote.optString("full_name"), localRole, JSONObject())
                     store.markProfileSynced()
                 }
             }
@@ -224,7 +336,7 @@ private class SupabaseSyncRunner(context: Context) {
         }
 
         if (remote != null && remoteTime > localTime && !hasUnsyncedLocalEdit) {
-            val mergedRole = if (hasUnsyncedLocalRole) store.role() else remote.optString("role")
+            val mergedRole = if (hasUnsyncedLocalRole) localRole else remote.optString("role")
             store.applyRemoteProfile(remote.optString("full_name"), mergedRole, remoteTime)
             if (hasUnsyncedLocalRole) {
                 backend.updateProfile(remote.optString("full_name"), mergedRole, JSONObject())
@@ -236,7 +348,10 @@ private class SupabaseSyncRunner(context: Context) {
         val preferences = JSONObject()
             .put("privacy_notice_version", store.prefs.getString("privacy_notice_version", ""))
             .put("privacy_consent_at", store.prefs.getLong("privacy_consent_at", 0L))
-        backend.updateProfile(localName, store.role().takeIf { it.isNotBlank() }, preferences)
+        val role = store.role().takeIf { it.isNotBlank() }
+        // Sin fila remota el PATCH actualiza 0 filas en silencio; el upsert la recrea.
+        if (remote == null) backend.upsertProfile(localName, role, preferences)
+        else backend.updateProfile(localName, role, preferences)
         store.markProfileSynced()
     }
 
@@ -293,7 +408,7 @@ private class SupabaseSyncRunner(context: Context) {
                     database.latestAlertState(incident),
                 )
                 database.markFallEventSynced(event.id)
-            } catch (_: BackendFailure) {
+            } catch (_: Exception) {
                 database.markFallEventFailure(event.id)
                 onError()
             }
@@ -313,7 +428,7 @@ private class SupabaseSyncRunner(context: Context) {
                     attempt.attemptedAtMillis, attempt.confirmedAtMillis, attempt.errorCode,
                 )
                 database.markAttemptSynced(attempt.id)
-            } catch (_: BackendFailure) {
+            } catch (_: Exception) {
                 database.markAttemptFailure(attempt.id)
                 onError()
             }
@@ -331,10 +446,40 @@ private class SupabaseSyncRunner(context: Context) {
                     reading.capturedAtMillis, reading.source, reading.isValid,
                 )
                 database.markMeasurementSynced(reading.id)
-            } catch (_: BackendFailure) {
+            } catch (_: Exception) {
                 database.markMeasurementFailure(reading.id)
                 onError()
             }
+        }
+    }
+
+    /** Uploads the queued GPS trail and refreshes the live position the caregiver watches. */
+    private inline fun syncLocationHistory(onError: () -> Unit) {
+        val phoneId = store.localDeviceId()
+        database.pendingLocations().forEach { record ->
+            try {
+                backend.insertLocationHistory(record, phoneId)
+                database.markLocationSynced(record.id)
+            } catch (failure: BackendFailure) {
+                if (failure.status == 404) {
+                    android.util.Log.w("SyncRunner", "location_history no existe en Supabase; aplica la migración 20261026120100.")
+                }
+                database.markLocationFailure(record.id)
+                onError()
+            } catch (_: Exception) {
+                database.markLocationFailure(record.id)
+                onError()
+            }
+        }
+        if (!store.prefs.getBoolean("include_location", false)) return
+        val latest = database.latestLocation() ?: return
+        if (latest.capturedAtMillis <= store.prefs.getLong("sync_location_last_upsert_at", 0L)) return
+        try {
+            backend.upsertCaregiverLocation(phoneId, latest.latitude, latest.longitude,
+                latest.accuracyM?.toFloat(), latest.capturedAtMillis)
+            store.prefs.edit().putLong("sync_location_last_upsert_at", latest.capturedAtMillis).apply()
+        } catch (_: Exception) {
+            onError()
         }
     }
 
@@ -356,7 +501,9 @@ private class SupabaseSyncRunner(context: Context) {
         }
     }
 
-    private fun String.toEpochMillis(): Long = runCatching { Instant.parse(this).toEpochMilli() }.getOrDefault(0L)
+    private fun String.toEpochMillis(): Long = runCatching { Instant.parse(this).toEpochMilli() }
+        .recoverCatching { java.time.OffsetDateTime.parse(this).toInstant().toEpochMilli() }
+        .getOrDefault(0L)
 
     companion object {
         private const val MAX_GLOBAL_RETRIES = 8

@@ -6,6 +6,15 @@ import org.json.JSONObject
 import java.time.Instant
 import java.util.UUID
 
+data class MedicationAdherenceSummary(
+    val scheduledDue: Int,
+    val taken: Int,
+    val pending: Int,
+    val omitted: Int,
+) {
+    val percentage: Int? get() = if (scheduledDue == 0) null else ((taken * 100.0) / scheduledDue).toInt()
+}
+
 /** Coordinates the offline SQLite source of truth with the authenticated Supabase session. */
 class MedicationRepository(
     context: Context,
@@ -64,10 +73,33 @@ class MedicationRepository(
 
     fun deleteMedication(ownerId: String, medicationId: String): Medication? = database.deleteMedication(ownerId, medicationId)
 
+    /** Counts only already-due schedules; future reminders never reduce adherence. */
+    fun adherence(ownerId: String, fromMillis: Long, nowMillis: Long = System.currentTimeMillis()): MedicationAdherenceSummary {
+        val due = database.intakes(ownerId, fromMillis, nowMillis + 1, limit = 2_000)
+            .filter { it.status != "cancelled" && it.scheduledAtMillis <= nowMillis }
+        return MedicationAdherenceSummary(
+            scheduledDue = due.size,
+            taken = due.count { it.status == "taken" },
+            pending = due.count { it.status in setOf("pending", "snoozed") },
+            omitted = due.count { it.status in setOf("skipped", "overdue") },
+        )
+    }
+
+    /** Makes the existing medication list visible to the linked caregiver in one explicit action. */
+    fun shareAllWithCaregiver(ownerId: String): Int {
+        if (ownerId.isBlank() || ownerId.startsWith("local:")) return 0
+        val privateItems = database.medications(ownerId).filterNot { it.shareWithCaregiver || it.isDeleted }
+        privateItems.forEach { database.saveMedication(it.copy(shareWithCaregiver = true)) }
+        if (privateItems.isNotEmpty()) SyncScheduler.enqueue(app, immediate = true)
+        return privateItems.size
+    }
+
     fun acceptIntakeAction(intakeId: String, status: String): Boolean {
         val intake = database.getIntake(intakeId) ?: return false
+        // Trazabilidad: quien confirma la toma (dueño o cuidador vinculado) se guarda con la acción.
+        val actorId = runCatching { backend.currentSession()?.userId }.getOrNull()
         val snoozeUntil = if (status == "snoozed") System.currentTimeMillis() + SNOOZE_MS else null
-        val accepted = database.recordAction(intakeId, status, System.currentTimeMillis(), snoozeUntil)
+        val accepted = database.recordAction(intakeId, status, System.currentTimeMillis(), snoozeUntil, actorId)
         if (accepted) SyncScheduler.enqueue(app)
         return accepted
     }
@@ -78,14 +110,19 @@ class MedicationRepository(
         val session = backend.currentSession() ?: return
         if (!readOnly && session.userId != ownerId) throw BackendFailure(BackendFailure.Category.SESSION)
         if (!readOnly) {
+            // Una fila mala (FK huérfana, CHECK, etc.) no debe bloquear el resto de la cola:
+            // se marca su fallo y la corrida continúa con las demás.
+            var pushFailure: BackendFailure? = null
+            var missingRemoteTable = false
             database.pendingMedications(ownerId).forEach { item ->
                 try {
                     backend.upsertMedication(item)
                     database.markMedicationSynced(item.id, item.updatedAtMillis)
                 } catch (failure: BackendFailure) {
-                    if (failure.status != 404) {
+                    if (failure.status == 404) missingRemoteTable = true
+                    else {
                         database.failMedication(item.id)
-                        throw failure
+                        if (pushFailure == null) pushFailure = failure
                     }
                 }
             }
@@ -94,10 +131,32 @@ class MedicationRepository(
                     backend.upsertMedicationIntake(intake)
                     database.markIntakeSynced(intake.id, intake.updatedAtMillis)
                 } catch (failure: BackendFailure) {
-                    if (failure.status != 404) {
+                    if (failure.status == 404) missingRemoteTable = true
+                    else {
                         database.failIntake(intake.id)
-                        throw failure
+                        if (pushFailure == null) pushFailure = failure
                     }
+                }
+            }
+            if (missingRemoteTable) {
+                android.util.Log.w("MedicationSync", "El proyecto Supabase no expone medications/medication_intakes; aplica la migración 20261024103000.")
+                throw BackendFailure(BackendFailure.Category.TEMPORARY, 404)
+            }
+            pushFailure?.let { throw it }
+        }
+
+        if (readOnly) {
+            // El cuidador no crea ni edita medicamentos, pero sí puede confirmar tomas desde su
+            // teléfono. Solo empuja las acciones que él mismo registró (actor = su sesión); el RLS
+            // de medication_intakes exige actor_user_id = auth.uid() para el cuidador vinculado.
+            // No lanzamos error aquí: un fallo de red se reintenta en la próxima corrida sin
+            // bloquear la descarga de solo lectura.
+            database.pendingIntakes(ownerId).filter { it.actorUserId == session.userId }.forEach { intake ->
+                try {
+                    backend.upsertMedicationIntake(intake)
+                    database.markIntakeSynced(intake.id, intake.updatedAtMillis)
+                } catch (failure: BackendFailure) {
+                    if (failure.status != 404) database.failIntake(intake.id)
                 }
             }
         }
@@ -127,7 +186,11 @@ class MedicationRepository(
             }
         }
         if (readOnly) database.pruneRemoteSnapshot(ownerId, remoteMedicationIds, remoteIntakeIds)
-        if (database.syncPendingCount(ownerId) > 0) throw BackendFailure(BackendFailure.Category.TEMPORARY)
+        // El cuidador (readOnly) nunca empuja filas: contar sus restos locales como fallo
+        // convertía cada descarga correcta en "Supabase no está disponible". Solo el dueño
+        // reintenta, y únicamente por filas aún reintentables (no las agotadas con retry_count>=8,
+        // que antes dejaban este throw disparándose para siempre).
+        if (!readOnly && database.retryablePendingCount(ownerId) > 0) throw BackendFailure(BackendFailure.Category.TEMPORARY)
     }
 
     fun applyNotificationAction(intakeId: String, status: String): Boolean = acceptIntakeAction(intakeId, status)
@@ -162,6 +225,7 @@ class MedicationRepository(
             snoozedUntilMillis = row.optString("snoozed_until").toEpochMillisOrNull(), snoozeCount = row.optInt("snooze_count"),
             createdAtMillis = row.optString("created_at").toEpochMillisOrNull() ?: System.currentTimeMillis(),
             updatedAtMillis = row.optString("updated_at").toEpochMillisOrNull() ?: System.currentTimeMillis(), syncState = "synced",
+            actorUserId = row.optString("actor_user_id").takeIf { !row.isNull("actor_user_id") && it.isNotBlank() && it != "null" },
         )
     }.getOrNull()
 

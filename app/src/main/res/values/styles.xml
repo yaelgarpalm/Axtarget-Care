@@ -1,15 +1,33 @@
 <resources>
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans-serif</item>
-        <item name="android:colorAccent">#254D3A</item>
+        <item name="android:colorAccent">#0E48D6</item>
+        <item name="android:textColorPrimary">#0F172A</item>
+        <item name="android:textColorSecondary">#64748B</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#FDF9EE</item>
+        <item name="android:statusBarColor">#F8FAFC</item>
+        <item name="android:navigationBarColor">#FFFFFF</item>
+        <item name="android:windowBackground">#F8FAFC</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
     <style name="AppTheme.Dark" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans-serif</item>
-        <item name="android:colorAccent">#86D89B</item>
+        <!-- Light blue keeps dialog buttons and native controls readable on midnight surfaces. -->
+        <item name="android:colorAccent">#8FA9FF</item>
+        <item name="android:textColorPrimary">#F8FAFC</item>
+        <item name="android:textColorSecondary">#94A3B8</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:navigationBarColor">#101412</item>
+        <item name="android:statusBarColor">#07090D</item>
+        <item name="android:navigationBarColor">#07090D</item>
+        <item name="android:windowBackground">#07090D</item>
+        <item name="android:colorBackground">#07090D</item>
+        <item name="android:colorBackgroundFloating">#15181F</item>
+        <item name="android:alertDialogTheme">@style/TzindaDialogDark</item>
+    </style>
+    <style name="TzindaDialogDark" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#8FA9FF</item>
+        <item name="android:colorBackgroundFloating">#15181F</item>
+        <item name="android:textColorPrimary">#F8FAFC</item>
+        <item name="android:textColorSecondary">#94A3B8</item>
     </style>
 </resources>

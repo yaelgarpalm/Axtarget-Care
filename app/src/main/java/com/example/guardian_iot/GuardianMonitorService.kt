@@ -94,7 +94,7 @@ class GuardianMonitorService : Service(), SensorEventListener {
             .putBoolean("bracelet_connection_enabled", true)
             .commit()
         try {
-            val locationWanted = store.prefs.getBoolean("include_location", false) && hasLocation()
+            val locationWanted = (store.prefs.getBoolean("include_location", false) || store.prefs.getBoolean("safe_zones_enabled", false)) && hasLocation()
             val fromVisibleUser = intent?.getBooleanExtra("user_visible", false) == true
             locationForeground = locationWanted && (locationForeground || fromVisibleUser)
             val braceletBleActive = store.prefs.getBoolean("bracelet_connection_enabled", false) &&
@@ -117,8 +117,8 @@ class GuardianMonitorService : Service(), SensorEventListener {
         if (!locationForeground) {
             locationListener?.let { runCatching { (getSystemService(LOCATION_SERVICE) as LocationManager).removeUpdates(it) } }
             locationListener = null
-            clearRemoteLocation()
         }
+        if (!store.prefs.getBoolean("include_location", false)) clearRemoteLocation()
         if (locationForeground && locationListener == null) startLocation()
         configureArduinoConnection()
         when (intent?.action) {
@@ -291,7 +291,9 @@ class GuardianMonitorService : Service(), SensorEventListener {
             // The counter resets after a board restart, so always store its latest value as baseline.
             store.prefs.edit().putLong("arduino_fall_count", count).apply()
         }
-        if (changed) SyncScheduler.enqueue(applicationContext)
+        // Measurements are safety-relevant: request the immediate sync path so a linked
+        // caregiver does not wait for the platform's deferred job window.
+        if (changed) SyncScheduler.enqueue(applicationContext, immediate = true)
     }
 
     private fun updateArduinoStatus(status: String, recordEvent: Boolean = true) {
@@ -489,9 +491,10 @@ class GuardianMonitorService : Service(), SensorEventListener {
         return true
     }
 
-    private fun parseEventTime(value: String): Long = runCatching {
-        java.time.Instant.parse(value).toEpochMilli()
-    }.getOrDefault(0L)
+    private fun parseEventTime(value: String): Long =
+        runCatching { java.time.Instant.parse(value).toEpochMilli() }.getOrNull()
+            ?: runCatching { java.time.OffsetDateTime.parse(value).toInstant().toEpochMilli() }.getOrNull()
+            ?: 0L
 
     private val tick = object : Runnable {
         override fun run() {
@@ -754,7 +757,15 @@ class GuardianMonitorService : Service(), SensorEventListener {
     private fun saveLocation(location: Location) {
         store.prefs.edit().putString("latitude", location.latitude.toString()).putString("longitude", location.longitude.toString())
             .putLong("location_time", location.time).apply()
-        runCatching { store.telemetry.recordLocation(location.latitude, location.longitude, location.time) }
+        runCatching {
+            store.telemetry.recordLocation(location.latitude, location.longitude, location.time,
+                if (location.hasAccuracy()) location.accuracy else null)
+        }
+        if (store.prefs.getBoolean("safe_zones_enabled", false)) {
+            val transitions = runCatching { CareFeatureStore(this).onLocation(location.latitude, location.longitude,
+                if (location.hasAccuracy()) location.accuracy else Float.MAX_VALUE, location.time) }.getOrDefault(emptyList())
+            if (transitions.isNotEmpty()) SyncScheduler.enqueue(applicationContext)
+        }
         if (!locationForeground || !monitoring || !store.prefs.getBoolean("include_location", false) || !hasLocation()) return
         val now = System.currentTimeMillis()
         if (now - lastLocationUploadQueuedAt < 8_000L || !locationUploadInFlight.compareAndSet(false, true)) return
@@ -771,8 +782,11 @@ class GuardianMonitorService : Service(), SensorEventListener {
                     }
                     backend.upsertCaregiverLocation(deviceId, location.latitude, location.longitude,
                         if (location.hasAccuracy()) location.accuracy else null, location.time)
-                } catch (_: Exception) {
-                    // Location collection remains local when the account or network is unavailable.
+                } catch (e: Exception) {
+                    // The fix stays queued in sync_locations; the sync runner retries it and
+                    // refreshes the live remote position once connectivity/session recover.
+                    android.util.Log.w("GuardianMonitor", "Live location upload failed: ${e.message}")
+                    SyncScheduler.enqueue(applicationContext)
                 } finally {
                     locationUploadInFlight.set(false)
                 }
