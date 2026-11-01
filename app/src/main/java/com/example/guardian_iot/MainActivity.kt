@@ -498,14 +498,24 @@ class MainActivity : ComponentActivity() {
         if (!backend.isConfigured || sessions.read() == null) { status?.text = "Inicia sesión antes de vincular."; return }
         status?.text = "Vinculando cámara…"
         io.execute {
+            runCatching { backend.unlinkPairedCamera() }
             val result = runCatching { backend.acceptCameraDeviceInvite(code) }
             runOnUiThread {
                 result.onSuccess { linked ->
-                    store.prefs.edit().putString("paired_camera_owner_id", linked.optString("owner_user_id"))
+                    val ownerName = linked.optString("owner_name").takeUnless { it.isBlank() || it == "null" }
+                    val deviceName = linked.optString("device_name").takeUnless { it.isBlank() || it == "null" } ?: "Cámara vinculada"
+                    val editor = store.prefs.edit()
+                        .putString("paired_camera_owner_id", linked.optString("owner_user_id"))
                         .putString("paired_camera_device_id", linked.optString("device_id"))
-                        .putString("paired_camera_name", linked.optString("device_name"))
-                        .remove("pending_pairing_type").remove("pending_pairing_code").apply()
-                    toast("Cámara vinculada a ${linked.optString("device_name")}.")
+                        .putString("paired_camera_name", deviceName)
+                        .remove("pending_pairing_type").remove("pending_pairing_code")
+                    if (!ownerName.isNullOrBlank()) {
+                        editor.putString("paired_camera_owner_name", ownerName)
+                    } else {
+                        editor.remove("paired_camera_owner_name")
+                    }
+                    editor.apply()
+                    toast("Cámara vinculada a ${ownerName ?: deviceName}.")
                     tab = 0; render()
                 }.onFailure { status?.text = it.message ?: "No se pudo vincular la cámara."; if (status == null) toast(it.message ?: "Código inválido o vencido.", true) }
             }
@@ -543,11 +553,72 @@ class MainActivity : ComponentActivity() {
                 clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Código de vinculación", normalizedCode))
                 toast("Código copiado.")
             })
+            addView(text("Esperando a que el otro dispositivo se conecte…", 13, color = accent).apply {
+                gravity = Gravity.CENTER; setPadding(0, dp(6), 0, 0)
+            })
             addView(text("Código de un solo uso · vence a las $expiresAt\n\nSi no puede escanearlo, puede escribir los 8 caracteres.", 14, color = muted).apply {
                 gravity = Gravity.CENTER; setPadding(dp(4), dp(10), dp(4), 0)
             })
         }
-        AlertDialog.Builder(this).setView(content).setPositiveButton("Listo", null).show()
+        val dialog = AlertDialog.Builder(this).setView(content).setPositiveButton("Listo", null).create()
+        val pollHandler = Handler(Looper.getMainLooper())
+        var dismissed = false
+        val pollRunnable = object : Runnable {
+            override fun run() {
+                if (dismissed || !backend.isConfigured || sessions.read() == null) return
+                io.execute {
+                    try {
+                        if (type == "camera") {
+                            val cams = backend.linkedCamerasForOwner()
+                            var newlyLinked = false
+                            for (i in 0 until cams.length()) {
+                                val item = cams.optJSONObject(i) ?: continue
+                                val devId = item.optString("id")
+                                val devName = item.optString("device_name").ifBlank { "Cámara" }
+                                if (devId.isNotBlank() && !store.registeredCameras().any { it.id == devId }) {
+                                    store.upsertRegisteredCamera(devId, devName, enqueueSync = false)
+                                    newlyLinked = true
+                                }
+                            }
+                            if (newlyLinked && !dismissed) {
+                                runOnUiThread {
+                                    if (!dismissed) {
+                                        dismissed = true
+                                        runCatching { dialog.dismiss() }
+                                        toast("¡Cámara vinculada exitosamente!")
+                                        render()
+                                    }
+                                }
+                                return@execute
+                            }
+                        } else if (type == "caregiver") {
+                            val caregivers = backend.activeCaregiversForOwner()
+                            if (caregivers.length() > 0 && !dismissed) {
+                                store.prefs.edit().putBoolean("wearer_has_linked_caregiver", true).apply()
+                                runOnUiThread {
+                                    if (!dismissed) {
+                                        dismissed = true
+                                        runCatching { dialog.dismiss() }
+                                        toast("¡Cuidador/a vinculado exitosamente!")
+                                        render()
+                                    }
+                                }
+                                return@execute
+                            }
+                        }
+                    } catch (_: Exception) {}
+                    if (!dismissed) {
+                        pollHandler.postDelayed(this, 2500L)
+                    }
+                }
+            }
+        }
+        dialog.setOnDismissListener {
+            dismissed = true
+            pollHandler.removeCallbacksAndMessages(null)
+        }
+        dialog.show()
+        pollHandler.postDelayed(pollRunnable, 2500L)
     }
     private fun createQrBitmap(payload: String, size: Int): android.graphics.Bitmap {
         val matrix = com.google.zxing.qrcode.QRCodeWriter().encode(payload, com.google.zxing.BarcodeFormat.QR_CODE,
@@ -1132,6 +1203,7 @@ class MainActivity : ComponentActivity() {
         val linkId = store.prefs.getString("paired_camera_device_id", "").orEmpty()
         val linked = linkId.isNotBlank()
         val cameraName = store.prefs.getString("paired_camera_name", "").orEmpty().ifBlank { "Cámara Tzinda" }
+        val ownerName = store.prefs.getString("paired_camera_owner_name", "").orEmpty()
         heading(
             body,
             "MODO CÁMARA",
@@ -1140,6 +1212,9 @@ class MainActivity : ComponentActivity() {
         )
         val status = card(body)
         status.addView(statusPill(TzindaStatusCopy.cameraLink(linked, cameraName)))
+        if (linked && ownerName.isNotBlank()) {
+            status.addView(text("Protegiendo a: $ownerName", 15, true, ink).apply { setPadding(0, dp(6), 0, 0) })
+        }
         status.addView(text(if (linked) "Los eventos se guardan aquí y se envían cuando hay Internet. La cámara solo se activa al abrirla." else "Escanea el QR o escribe el código de 8 caracteres generado en el teléfono de la persona protegida.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
         status.addView(button(if (linked) "Abrir cámara de apoyo" else "Vincular con QR o código") {
             if (linked) openCameraScreen() else selectTab(2)
@@ -1188,9 +1263,13 @@ class MainActivity : ComponentActivity() {
             ) { authMode = AuthMode.LOGIN; render() }
         }
         val current = store.prefs.getString("paired_camera_device_id", "").orEmpty()
+        val ownerName = store.prefs.getString("paired_camera_owner_name", "").orEmpty()
         if (current.isNotBlank()) {
             val linked = card(body)
             linked.addView(statusPill(TzindaStatusCopy.cameraLink(true, store.prefs.getString("paired_camera_name", "").orEmpty())))
+            if (ownerName.isNotBlank()) {
+                linked.addView(text("Persona protegida: $ownerName", 15, true, ink).apply { setPadding(0, dp(2), 0, 0) })
+            }
             linked.addView(text("Los avisos se sincronizan por Internet cuando este teléfono tiene conexión. La cámara solo se activa cuando la abres.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
             linked.addView(button("Desvincular cámara", false) { unlinkCameraAccess() })
         }
@@ -1238,7 +1317,7 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 result.onSuccess {
                     store.prefs.edit().remove("paired_camera_device_id").remove("paired_camera_owner_id")
-                        .remove("paired_camera_name").apply()
+                        .remove("paired_camera_name").remove("paired_camera_owner_name").apply()
                     toast("Cámara desvinculada."); render()
                 }.onFailure { toast(it.message ?: "No se pudo desvincular la cámara.", true) }
             }
@@ -2856,7 +2935,32 @@ class MainActivity : ComponentActivity() {
         val statusCopy = TzindaStatusCopy.vitals(hasReading, capturedAt, arduinoConnectionAvailable())
         patientVitalsStatus?.text = "${statusCopy.title}. ${statusCopy.detail}"
     }
+    private fun refreshRemoteDevicesIfStale() {
+        if (!backend.isConfigured || sessions.read() == null || isCaregiver || isCameraRole) return
+        val lastCheck = store.prefs.getLong("last_device_remote_sync", 0L)
+        if (System.currentTimeMillis() - lastCheck < 5_000L) return
+        store.prefs.edit().putLong("last_device_remote_sync", System.currentTimeMillis()).apply()
+        io.execute {
+            runCatching {
+                val devices = backend.linkedCamerasForOwner()
+                for (i in 0 until devices.length()) {
+                    val dev = devices.optJSONObject(i) ?: continue
+                    val id = dev.optString("id")
+                    val name = dev.optString("device_name").ifBlank { "Cámara" }
+                    if (id.isNotBlank()) store.upsertRegisteredCamera(id, name, enqueueSync = false)
+                }
+                val caregivers = backend.activeCaregiversForOwner()
+                store.prefs.edit().putBoolean("wearer_has_linked_caregiver", caregivers.length() > 0).apply()
+            }.onSuccess {
+                runOnUiThread {
+                    if (tab == DEVICE_TAB) render()
+                }
+            }
+        }
+    }
+
     private fun deviceLinkScreen(body: LinearLayout) {
+        refreshRemoteDevicesIfStale()
         cameraRegistryRenderedRevision = store.prefs.getLong("camera_registry_revision", 0L)
         heading(body, "CONECTAR DISPOSITIVOS", "Dispositivos y enlaces", "Gestiona la pulsera, las cámaras y la vinculación con tu red de apoyo.")
         if (isCaregiver) {
@@ -2958,10 +3062,15 @@ class MainActivity : ComponentActivity() {
                 showDivider = index < registered.size - 1,
             ) {
                 AlertDialog.Builder(this).setTitle("Quitar cámara")
-                    .setMessage("Se quitará ${camera.name} de este inventario. Los eventos ya guardados no se eliminarán.")
+                    .setMessage("Se quitará ${camera.name} de este inventario y se desvinculará del sistema. Los eventos ya guardados no se eliminarán.")
                     .setNegativeButton("Cancelar", null)
                     .setPositiveButton("Quitar") { _, _ ->
-                        runCatching { store.removeRegisteredCamera(camera.id) }
+                        runCatching {
+                            store.removeRegisteredCamera(camera.id)
+                            if (backend.isConfigured && sessions.read() != null) {
+                                io.execute { runCatching { backend.unlinkCameraDeviceByOwner(camera.id) } }
+                            }
+                        }
                             .onSuccess { updateServiceIfActive(); toast("Cámara quitada."); render() }
                             .onFailure { toast(it.message ?: "No se pudo quitar la cámara.", true) }
                     }.show()

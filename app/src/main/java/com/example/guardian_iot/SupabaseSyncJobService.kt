@@ -1,4 +1,4 @@
-﻿package com.example.guardian_iot
+package com.example.guardian_iot
 
 import android.app.job.JobInfo
 import android.app.job.JobParameters
@@ -138,9 +138,15 @@ private class SupabaseSyncRunner(context: Context) {
                 val dev = existing.optJSONObject(i) ?: continue
                 val devId = dev.optString("id")
                 val logId = dev.optString("logical_id")
+                val devType = dev.optString("device_type")
+                val linkStatus = dev.optString("link_status")
+                val devName = dev.optString("device_name").takeUnless { it.isBlank() } ?: "Cámara"
                 if (devId.isNotBlank()) allExistingIds.add(devId)
                 if (logId.isNotBlank() && devId.isNotBlank()) {
                     byLogicalId[logId] = devId
+                }
+                if (devType == "camera" && linkStatus == "linked" && logId != "camera-phone-local" && devId.isNotBlank()) {
+                    store.upsertRegisteredCamera(devId, devName, enqueueSync = false)
                 }
             }
 
@@ -186,11 +192,13 @@ private class SupabaseSyncRunner(context: Context) {
             )
 
             store.registeredCameras().forEach { camera ->
-                val existingReg = byLogicalId["camera-${camera.id}"]
-                val regFallback = existingReg ?: camera.id
-                backend.registerOrUpdateDevice(
-                    existingReg, regFallback, "camera-${camera.id}", camera.name, "camera", "unlinked"
-                )
+                if (!allExistingIds.contains(camera.id)) {
+                    val existingReg = byLogicalId["camera-${camera.id}"]
+                    val regFallback = existingReg ?: camera.id
+                    backend.registerOrUpdateDevice(
+                        existingReg, regFallback, "camera-${camera.id}", camera.name, "camera", "unlinked"
+                    )
+                }
             }
 
             store.prefs.edit()
@@ -219,6 +227,12 @@ private class SupabaseSyncRunner(context: Context) {
                 }
                 catch (f: BackendFailure) { android.util.Log.w("SyncRunner", "Medication sync failed: http=${f.status} ${f.category}: ${f.message}"); hasError = true }
                 catch (e: Exception) { android.util.Log.w("SyncRunner", "Medication sync failed: ${e.message}"); hasError = true }
+            }
+            if (store.role() == AppStore.ROLE_WEARER) {
+                try {
+                    val caregivers = backend.activeCaregiversForOwner()
+                    store.prefs.edit().putBoolean("wearer_has_linked_caregiver", caregivers.length() > 0).apply()
+                } catch (_: Exception) {}
             }
         }
         if (store.prefs.getBoolean("device_sync_configured", false)) {
