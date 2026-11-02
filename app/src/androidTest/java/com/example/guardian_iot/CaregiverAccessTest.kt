@@ -37,7 +37,9 @@ class CaregiverAccessTest {
 
     @Test fun selectingAnotherPersonClearsDerivedCachesAndRejectsOldResponse() {
         store.saveProfile(JSONObject().put("fullName", "Caregiver profile").put("dataConsent", true))
+        store.saveRole(AppStore.ROLE_WEARER)
         CareFeatureStore(context).upsert("journal", JSONObject().put("description", "Pending local note"))
+        store.saveRole(AppStore.ROLE_CAREGIVER)
         assertTrue(access.select(link("a"), actor))
         val before = access.snapshot()!!
         assertTrue(access.write(before) {

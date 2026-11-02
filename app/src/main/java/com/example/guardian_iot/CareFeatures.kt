@@ -8,53 +8,120 @@ import kotlin.math.*
 
 /** Offline-first records for shared care notes, safe zones and user-authored routines. */
 class CareFeatureStore(context: Context) {
-    private val prefs = AccountStorage.capture(context).getSharedPreferences("tzinda_care_features", Context.MODE_PRIVATE)
+    private val app = AccountStorage.capture(context)
+    private val prefs = app.getSharedPreferences("tzinda_care_features", Context.MODE_PRIVATE)
+    private val accountPrefs = app.getSharedPreferences("tzinda_native", Context.MODE_PRIVATE)
     companion object { private val lock = Any() }
+
+    private fun localOwner(): String = prefs.getString("local_owner_scope", "").orEmpty().ifBlank {
+        "local:${UUID.randomUUID()}".also { check(prefs.edit().putString("local_owner_scope", it).commit()) }
+    }
+    fun currentOwner(): String? = synchronized(lock) {
+        when (accountPrefs.getString("user_role", "")) {
+            AppStore.ROLE_CAMERA -> null
+            AppStore.ROLE_CAREGIVER -> if (accountPrefs.getString("caregiver_link_id", "").isNullOrBlank()) null
+                else accountPrefs.getString("caregiver_owner_id", "").orEmpty().takeIf(String::isNotBlank)
+            else -> accountPrefs.getString("local_data_owner_id", "").orEmpty().ifBlank { localOwner() }
+        }
+    }
     fun rows(kind: String): List<JSONObject> = synchronized(lock) {
-        val all = runCatching { JSONArray(prefs.getString("records", "[]")) }.getOrDefault(JSONArray())
-        (0 until all.length()).mapNotNull { all.optJSONObject(it) }.filter { it.optString("kind") == kind }
+        val owner = currentOwner() ?: return emptyList()
+        rowsAll().filter { it.optString("kind") == kind && it.optString("ownerUserId") == owner }
             .sortedByDescending { it.optLong("updatedAt") }
     }
     fun upsert(kind: String, values: JSONObject): JSONObject = synchronized(lock) {
+        val owner = currentOwner() ?: error("Selecciona una persona vinculada antes de guardar cuidados.")
         val id = values.optString("id").takeIf { runCatching { UUID.fromString(it) }.isSuccess } ?: UUID.randomUUID().toString()
         val current = rowsAll()
-        val row = JSONObject(values.toString()).put("id", id).put("kind", kind)
-            .put("updatedAt", maxOf(System.currentTimeMillis(), (current.firstOrNull { it.optString("id") == id }?.optLong("updatedAt") ?: 0L) + 1)).put("syncState", "pending")
+        val existing = current.firstOrNull { it.optString("id") == id }
+        check(existing == null || existing.optString("ownerUserId").isNotBlank()) { "Sincroniza para confirmar el propietario del registro antiguo." }
+        val priorDeletion = pendingDeleteRecords().firstOrNull { it.optString("id") == id }?.optLong("deletedAt") ?: 0L
+        val requestedOwner = values.optString("ownerUserId").ifBlank { existing?.optString("ownerUserId").orEmpty().ifBlank { owner } }
+        check(requestedOwner == owner && (existing == null || existing.optString("ownerUserId").ifBlank { requestedOwner } == owner)) {
+            "El registro pertenece a otra persona. Vuelve a abrir sus cuidados."
+        }
+        val row = JSONObject(values.toString()).put("id", id).put("kind", kind).put("ownerUserId", owner)
+            .put("actorUserId", accountPrefs.getString("local_data_owner_id", "").orEmpty().ifBlank { localOwner() })
+            .put("updatedAt", maxOf(System.currentTimeMillis(), (existing?.optLong("updatedAt") ?: 0L) + 1, priorDeletion + 1)).put("syncState", "pending")
         val next = JSONArray()
         current.filterNot { it.optString("id") == id }.forEach { next.put(it) }
         next.put(row)
-        check(prefs.edit().putString("records", next.toString()).commit()) { "No se pudo guardar el registro local." }
+        val deletes = JSONArray().apply { pendingDeleteRecords().filterNot { it.optString("id") == id }.forEach { put(it) } }
+        check(prefs.edit().putString("records", next.toString()).putString("deleted", deletes.toString()).commit())
         row
     }
-    fun rowsAll(): List<JSONObject> {
+    fun rowsAll(): List<JSONObject> = synchronized(lock) {
         val all = runCatching { JSONArray(prefs.getString("records", "[]")) }.getOrDefault(JSONArray())
-        return (0 until all.length()).mapNotNull { all.optJSONObject(it) }
+        (0 until all.length()).mapNotNull { all.optJSONObject(it) }
     }
-    fun delete(kind: String, id: String) = synchronized(lock) {
-        val next = JSONArray()
-        rowsAll().filterNot { it.optString("id") == id && it.optString("kind") == kind }.forEach { next.put(it) }
-        val deleted = runCatching { JSONArray(prefs.getString("deleted", "[]")) }.getOrDefault(JSONArray())
-        if ((0 until deleted.length()).none { deleted.optString(it) == id }) deleted.put(id)
+    fun delete(kind: String, id: String, ownerId: String? = null) = synchronized(lock) {
+        val existing = rowsAll().firstOrNull { it.optString("id") == id && it.optString("kind") == kind }
+        val owner = existing?.optString("ownerUserId")?.takeIf(String::isNotBlank) ?: ownerId.orEmpty()
+        check(owner.isNotBlank() && owner == currentOwner()) { "No se pudo confirmar a quién pertenece el registro." }
+        val deletes = pendingDeleteRecords()
+        val oldVersion = deletes.firstOrNull { it.optString("id") == id }?.optLong("deletedAt") ?: 0L
+        val deleted = JSONArray().apply {
+            deletes.filterNot { it.optString("id") == id }.forEach { put(it) }
+            put(JSONObject().put("id", id).put("kind", kind).put("ownerUserId", owner)
+                .put("deletedAt", maxOf(System.currentTimeMillis(), oldVersion + 1, (existing?.optLong("updatedAt") ?: 0L) + 1)))
+        }
+        val next = JSONArray().apply { rowsAll().filterNot { it.optString("id") == id && it.optString("kind") == kind }.forEach { put(it) } }
         check(prefs.edit().putString("records", next.toString()).putString("deleted", deleted.toString()).commit())
     }
-    fun pendingDeletes(): List<String> {
+    fun pendingDeleteRecords(): List<JSONObject> = synchronized(lock) {
         val deleted = runCatching { JSONArray(prefs.getString("deleted", "[]")) }.getOrDefault(JSONArray())
-        return (0 until deleted.length()).map { deleted.optString(it) }.filter { it.isNotBlank() }
+        (0 until deleted.length()).mapNotNull { index ->
+            deleted.optJSONObject(index) ?: deleted.optString(index).takeIf(String::isNotBlank)?.let {
+                JSONObject().put("id", it).put("ownerUserId", "").put("deletedAt", 0)
+            }
+        }
     }
-    fun markDeletedSynced(id: String) = synchronized(lock) {
-        val next = JSONArray(); pendingDeletes().filterNot { it == id }.forEach { next.put(it) }
-        prefs.edit().putString("deleted", next.toString()).apply()
+    fun pendingDeletes(): List<String> = pendingDeleteRecords().map { it.optString("id") }
+    fun markDeletedSynced(id: String, ownerId: String, deletedAt: Long) = synchronized(lock) {
+        val next = JSONArray().apply { pendingDeleteRecords().filterNot {
+            it.optString("id") == id && it.optString("ownerUserId") == ownerId && it.optLong("deletedAt") == deletedAt
+        }.forEach { put(it) } }
+        check(prefs.edit().putString("deleted", next.toString()).commit())
     }
     fun markSynced(id: String, uploadedAt: Long) = synchronized(lock) {
         val next = JSONArray()
         rowsAll().forEach { next.put(if (it.optString("id") == id && it.optLong("updatedAt") == uploadedAt) it.put("syncState", "synced") else it) }
-        prefs.edit().putString("records", next.toString()).apply()
+        check(prefs.edit().putString("records", next.toString()).commit())
+    }
+    fun claimLocalData(userId: String) = synchronized(lock) {
+        check(accountPrefs.getString("local_data_owner_id", "") == userId)
+        val local = localOwner()
+        fun adopt(row: JSONObject): JSONObject {
+            if (row.optString("ownerUserId") == local) row.put("ownerUserId", userId)
+            if (row.optString("actorUserId") == local) row.put("actorUserId", userId)
+            return row
+        }
+        val rows = JSONArray().apply { rowsAll().forEach { put(adopt(it)) } }
+        val deletes = JSONArray().apply { pendingDeleteRecords().forEach { put(adopt(it)) } }
+        check(prefs.edit().putString("records", rows.toString()).putString("deleted", deletes.toString()).commit())
+    }
+    /** Only server-confirmed ID/owner pairs can assign ownership to legacy entries. */
+    fun reconcileOwners(remote: List<JSONObject>, ownerId: String) = synchronized(lock) {
+        check(remote.all { it.optString("owner_user_id") == ownerId && it.optString("id").isNotBlank() })
+        val ids = remote.map { it.optString("id") }.toSet()
+        fun reconcile(row: JSONObject): JSONObject {
+            if (row.optString("ownerUserId").isBlank() && row.optString("id") in ids) row.put("ownerUserId", ownerId)
+            return row
+        }
+        val rows = JSONArray().apply { rowsAll().forEach { put(reconcile(it)) } }
+        val deletes = JSONArray().apply { pendingDeleteRecords().forEach { put(reconcile(it)) } }
+        check(prefs.edit().putString("records", rows.toString()).putString("deleted", deletes.toString()).commit())
+    }
+    fun unassignedCount(): Int = synchronized(lock) {
+        rowsAll().count { it.optString("ownerUserId").isBlank() } + pendingDeleteRecords().count { it.optString("ownerUserId").isBlank() }
     }
     fun clearAll() = synchronized(lock) {
         prefs.edit().remove("records").remove("deleted").remove("zone_runtime").commit()
     }
     fun syncState(): SyncStateSummary = synchronized(lock) {
-        SyncStateSummary(rowsAll().count { it.optString("syncState") != "synced" } + pendingDeletes().size, 0)
+        val pending = rowsAll().count { it.optString("ownerUserId").isNotBlank() && it.optString("syncState") != "synced" } +
+            pendingDeleteRecords().count { it.optString("ownerUserId").isNotBlank() }
+        SyncStateSummary(pending, unassignedCount())
     }
 
     fun zones(): List<JSONObject> = synchronized(lock) {
@@ -74,6 +141,7 @@ class CareFeatureStore(context: Context) {
     }
     /** Only valid, reasonably accurate fixes produce a transition; first fix initializes state. */
     fun onLocation(latitude: Double, longitude: Double, accuracyM: Float, capturedAt: Long): List<JSONObject> {
+        if (accountPrefs.getString("user_role", "") in setOf(AppStore.ROLE_CAREGIVER, AppStore.ROLE_CAMERA)) return emptyList()
         if (!GeoFencePolicy.validFix(latitude, longitude, accuracyM, capturedAt)) return emptyList()
         val events = mutableListOf<JSONObject>()
         zones().filter { it.optBoolean("enabled", true) }.forEach { zone ->

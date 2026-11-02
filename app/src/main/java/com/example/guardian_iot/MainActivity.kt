@@ -1994,7 +1994,7 @@ class MainActivity : ComponentActivity() {
         actions.addView(bitacoraTile(R.drawable.ic_profile, "Contactos", "Red de apoyo SOS") { selectTab(2) },
             LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(8) })
         val moreCard = card(body)
-        tz.actionRow(moreCard, "Medicamentos compartidos", "Solo lectura", R.drawable.ic_medication) { openMedicationScreen() }
+        tz.actionRow(moreCard, "Medicamentos compartidos", "Consultar y registrar tomas", R.drawable.ic_medication) { openMedicationScreen() }
         tz.actionRow(moreCard, "Persona vinculada", "Administrar o desvincular", R.drawable.ic_profile, showDivider = false) { selectTab(2) }
         addCaregiverSyncControls(body)
     }
@@ -2014,12 +2014,15 @@ class MainActivity : ComponentActivity() {
     private fun careFeaturesScreen(body: LinearLayout) {
         val linkedCaregiver = isCaregiver && store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank()
         heading(body, "CUIDADOS Y ACTIVIDAD", "Bitácora y rutinas", "Registros guardados primero en este teléfono y sincronizados al volver a tener Internet.")
-        val pending = careFeatures.syncState().pending
+        val careState = careFeatures.syncState()
+        val pending = careState.pending
         val sync = card(body)
         sync.addView(text("Sincronización", 20, true))
-        val syncCopy = TzindaStatusCopy.sync(pending, 0, hasValidatedInternet(), sessions.read() != null)
+        val syncCopy = TzindaStatusCopy.sync(pending, careState.failed, hasValidatedInternet(), sessions.read() != null)
         sync.addView(statusPill(syncCopy))
         sync.addView(text(if (isCaregiver) "Vista de solo lectura de los registros compartidos. No puedes crear ni modificar rutinas." else syncCopy.detail, 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
+        val unassigned = careFeatures.unassignedCount()
+        if (unassigned > 0) sync.addView(text("Hay $unassigned registros o borrados antiguos sin propietario confirmado. Se conservan en este teléfono; no se asignan a la persona vinculada. Al sincronizar se compararán sus identificadores con la cuenta autorizada.", 14, color = muted))
         if (!isCaregiver) {
             sync.addView(button("Sincronizar ahora", false) {
                 SyncScheduler.enqueue(applicationContext, immediate = true)
@@ -2106,8 +2109,8 @@ class MainActivity : ComponentActivity() {
                 AlertDialog.Builder(this).setTitle(zone.optString("name")).setItems(arrayOf("Editar", if (zone.optBoolean("enabled", true)) "Pausar" else "Activar", "Eliminar")) { _, choice ->
                     when (choice) {
                         0 -> editSafeZone(zone)
-                        1 -> { careFeatures.upsert("zone", JSONObject(zone.toString()).put("enabled", !zone.optBoolean("enabled", true))); SyncScheduler.enqueue(applicationContext, immediate = true); render() }
-                        2 -> AlertDialog.Builder(this).setMessage("¿Eliminar esta zona?").setNegativeButton("Cancelar", null).setPositiveButton("Eliminar") { _, _ -> careFeatures.delete("zone", zone.optString("id")); SyncScheduler.enqueue(applicationContext, immediate = true); render() }.show()
+                        1 -> { if (persistCare("zone", JSONObject(zone.toString()).put("enabled", !zone.optBoolean("enabled", true)))) { SyncScheduler.enqueue(applicationContext, immediate = true); render() } }
+                        2 -> AlertDialog.Builder(this).setMessage("¿Eliminar esta zona?").setNegativeButton("Cancelar", null).setPositiveButton("Eliminar") { _, _ -> runCatching { careFeatures.delete("zone", zone.optString("id"), zone.optString("ownerUserId")) }.onSuccess { SyncScheduler.enqueue(applicationContext, immediate = true); render() }.onFailure { toast(it.message ?: "No se pudo eliminar la zona.", true) } }.show()
                     }
                 }.show()
             })
@@ -2132,8 +2135,8 @@ class MainActivity : ComponentActivity() {
             routines.addView(text("${routine.optString("time", "hora no definida")} · Días: ${days.sorted().joinToString(", ").ifBlank { "sin horario semanal" }}", 13, color = muted))
             if (due) routines.addView(statusPill(TzindaCopy("Programada hoy", "La persona puede marcarla como realizada.", TzindaTone.INFO)))
             if (!isCaregiver) routines.addView(button("Marcar como realizada", false) {
-                careFeatures.upsert("journal", JSONObject().put("type", "rutina_realizada").put("description", routine.optString("name"))
-                    .put("occurredAt", System.currentTimeMillis()).put("source", "user_action").put("sharedWithCaregiver", routine.optBoolean("sharedWithCaregiver")))
+                if (!persistCare("journal", JSONObject().put("ownerUserId", routine.optString("ownerUserId")).put("type", "rutina_realizada").put("description", routine.optString("name"))
+                    .put("occurredAt", System.currentTimeMillis()).put("source", "user_action").put("sharedWithCaregiver", routine.optBoolean("sharedWithCaregiver")))) return@button
                 SyncScheduler.enqueue(applicationContext); toast("Actividad registrada."); render()
             })
         }
@@ -2145,7 +2148,11 @@ class MainActivity : ComponentActivity() {
     private fun sharedCareRecords(): List<JSONObject> {
         if (isCaregiver && (store.prefs.getString("caregiver_link_id", "").orEmpty().isBlank() || store.prefs.getString("caregiver_owner_id", "").orEmpty().isBlank())) return emptyList()
         val array = runCatching { JSONArray(store.prefs.getString("caregiver_shared_care_records", "[]")) }.getOrDefault(JSONArray())
-        return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+        val owner = store.prefs.getString("caregiver_owner_id", "").orEmpty()
+        return (0 until array.length()).mapNotNull { array.optJSONObject(it) }.filter { it.optString("owner_user_id") == owner }.map { row ->
+            row.optJSONObject("record")?.put("ownerUserId", owner)?.put("id", row.optString("id"))
+            row
+        }
     }
 
     private fun sharedAlertFollowups(): List<JSONObject> {
@@ -2161,6 +2168,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun recordAlertFollowup(eventId: String) {
+        val formOwner = careFeatures.currentOwner() ?: return
         val options = arrayOf("Confirmada", "Atendida", "Descartada con motivo", "Cerrar seguimiento")
         AlertDialog.Builder(this).setTitle("Seguimiento de alerta").setItems(options) { _, selected ->
             val status = when (selected) { 0 -> "confirmed"; 1 -> "attended"; 2 -> "dismissed"; else -> "closed" }
@@ -2182,21 +2190,26 @@ class MainActivity : ComponentActivity() {
                         return@setOnClickListener
                     }
                     dialog.dismiss()
-                    saveAlertFollowup(eventId, status, message)
+                    saveAlertFollowup(eventId, status, message, formOwner)
                 } }
                 dialog.show()
-            } else saveAlertFollowup(eventId, status, "")
+            } else saveAlertFollowup(eventId, status, "", formOwner)
         }.show()
     }
 
-    private fun saveAlertFollowup(eventId: String, status: String, reason: String) {
+    private fun persistCare(kind: String, values: JSONObject): Boolean = runCatching {
+        careFeatures.upsert(kind, values)
+    }.onFailure { toast(it.message ?: "No se pudo guardar el cuidado. Vuelve a abrir la pantalla.", true) }.isSuccess
+
+    private fun saveAlertFollowup(eventId: String, status: String, reason: String, expectedOwner: String) {
+        if (careFeatures.currentOwner() != expectedOwner) { toast("La persona vinculada cambió. Vuelve a abrir su alerta.", true); return }
         val ownerId = store.prefs.getString("caregiver_owner_id", "").orEmpty()
         // The actor is filled from the active session when the follow-up is synced, so the state
         // can still be changed while the session is being renewed.
         val actorId = sessions.read()?.userId.orEmpty()
         if (ownerId.isBlank() || eventId.isBlank()) { toast("El vínculo o la alerta no están disponibles.", true); return }
-        careFeatures.upsert("alert_followup", JSONObject().put("fallEventId", eventId).put("actorUserId", actorId)
-            .put("status", status).put("reason", reason.take(500)).put("occurredAt", System.currentTimeMillis()))
+        if (!persistCare("alert_followup", JSONObject().put("ownerUserId", expectedOwner).put("fallEventId", eventId).put("actorUserId", actorId)
+            .put("status", status).put("reason", reason.take(500)).put("occurredAt", System.currentTimeMillis()))) return
         SyncScheduler.enqueue(applicationContext, immediate = true)
         toast(if (hasValidatedInternet()) "Estado de la alerta guardado; se sincronizará en unos segundos."
             else "Estado de la alerta guardado; se sincronizará cuando haya conexión.")
@@ -2204,6 +2217,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun createJournalEntry() {
+        val formOwner = careFeatures.currentOwner() ?: return
         val types = arrayOf("Observación", "Actividad", "Incidencia", "Cambio relevante", "Seguimiento de alerta")
         AlertDialog.Builder(this).setTitle("Tipo de registro").setItems(types) { _, which ->
             val panel = column().apply { setPadding(dp(2), dp(4), dp(2), dp(4)) }
@@ -2235,11 +2249,11 @@ class MainActivity : ComponentActivity() {
                     description.requestFocus()
                     return@setOnClickListener
                 }
-                careFeatures.upsert("journal", JSONObject().put("type", types[which].lowercase(Locale.ROOT).replace(' ', '_'))
+                if (!persistCare("journal", JSONObject().put("ownerUserId", formOwner).put("type", types[which].lowercase(Locale.ROOT).replace(' ', '_'))
                     .put("description", value.take(1000)).put("occurredAt", System.currentTimeMillis())
                     .put("comment", comment.text.toString().trim().take(500))
-                    .put("author", sessions.read()?.userId.orEmpty()).put("sharedWithCaregiver", share.isChecked))
-                SyncScheduler.enqueue(applicationContext)
+                    .put("author", sessions.read()?.userId.orEmpty()).put("sharedWithCaregiver", share.isChecked))) return@setOnClickListener
+            SyncScheduler.enqueue(applicationContext)
                 dialog.dismiss()
                 toast("Registro guardado en este teléfono.")
                 render()
@@ -2249,6 +2263,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun editSafeZone(existing: JSONObject?) {
+        val formOwner = careFeatures.currentOwner() ?: return
         val panel = column().apply { setPadding(dp(2), dp(4), dp(2), dp(4)) }
         panel.addView(text("La zona se calcula en este teléfono. Compartirla permite que el cuidador vinculado consulte si la persona está dentro o fuera; no activa un rastreo continuo.", 14, color = muted))
         val name = field(
@@ -2324,8 +2339,8 @@ class MainActivity : ComponentActivity() {
                 .put("latitude", a).put("longitude", o).put("radius", r!!.toInt()).put("enabled", enabled.isChecked)
                 .put("sharedWithCaregiver", share.isChecked)
                 .put("ownerUserId", existing?.optString("ownerUserId")?.takeIf { it.isNotBlank() }
-                    ?: if (isCaregiver) store.prefs.getString("caregiver_owner_id", "").orEmpty() else sessions.read()?.userId.orEmpty())
-            careFeatures.upsert("zone", item)
+                    ?: formOwner)
+            if (!persistCare("zone", item)) return@setOnClickListener
             SyncScheduler.enqueue(applicationContext, immediate = true)
             dialog.dismiss()
             toast("Zona guardada en este teléfono.")
@@ -2335,6 +2350,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun createRoutine() {
+        val formOwner = careFeatures.currentOwner() ?: return
         val panel = column().apply { setPadding(dp(2), dp(4), dp(2), dp(4)) }
         panel.addView(text("Una rutina es un recordatorio descriptivo. TzindaApp no marca actividades como realizadas automáticamente.", 14, color = muted))
         val name = field(panel, "Nombre de la rutina", "", tag = "routine_name", hintText = "Ej. Caminata matutina")
@@ -2367,8 +2383,8 @@ class MainActivity : ComponentActivity() {
             if (!Regex("^(?:[01]\\d|2[0-3]):[0-5]\\d$").matches(timeText)) { time.error = "Usa el formato HH:mm, por ejemplo 09:00."; valid = false }
             if (dayValues.isEmpty() || dayValues.any { it !in 1..7 }) { days.error = "Escribe días del 1 al 7 separados por coma."; valid = false }
             if (!valid) { tz.announce(name, "Revisa los campos marcados."); return@setOnClickListener }
-            careFeatures.upsert("routine", JSONObject().put("name", name.text.toString().trim().take(100)).put("description", description.text.toString().trim().take(500))
-                .put("time", timeText).put("days", JSONArray(dayValues.sorted())).put("sharedWithCaregiver", share.isChecked))
+            if (!persistCare("routine", JSONObject().put("ownerUserId", formOwner).put("name", name.text.toString().trim().take(100)).put("description", description.text.toString().trim().take(500))
+                .put("time", timeText).put("days", JSONArray(dayValues.sorted())).put("sharedWithCaregiver", share.isChecked))) return@setOnClickListener
             SyncScheduler.enqueue(applicationContext)
             dialog.dismiss()
             toast("Rutina guardada en este teléfono.")

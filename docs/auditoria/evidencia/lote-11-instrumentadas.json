@@ -1,0 +1,83 @@
+{
+  "source": "app/build/outputs/androidTest-results/connected/debug",
+  "suites": [
+    {
+      "name": "com.example.guardian_iot.CareOwnershipTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T23:35:28"
+    },
+    {
+      "name": "com.example.guardian_iot.CaregiverAccessTest",
+      "tests": "7",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T23:35:28"
+    },
+    {
+      "name": "com.example.guardian_iot.LocationSharingTest",
+      "tests": "10",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T23:35:28"
+    },
+    {
+      "name": "com.example.guardian_iot.MedicationHttpContractTest",
+      "tests": "7",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T23:35:28"
+    },
+    {
+      "name": "com.example.guardian_iot.MedicationAuthorizationTest",
+      "tests": "9",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T23:35:28"
+    },
+    {
+      "name": "com.example.guardian_iot.AccountStorageTest",
+      "tests": "4",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T23:35:28"
+    },
+    {
+      "name": "com.example.guardian_iot.ProfileIsolationTest",
+      "tests": "4",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T23:35:28"
+    },
+    {
+      "name": "com.example.guardian_iot.MedicationDatabaseTest",
+      "tests": "7",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T23:35:28"
+    },
+    {
+      "name": "com.example.guardian_iot.CareFeaturePersistenceTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T23:35:28"
+    }
+  ],
+  "totals": {
+    "tests": 57,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}

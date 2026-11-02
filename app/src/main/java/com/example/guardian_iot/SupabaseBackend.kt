@@ -264,13 +264,13 @@ class SupabaseBackend(
         request("DELETE", "/rest/v1/trusted_contacts?id=eq." + encode(id), null, needsSession = true)
     }
 
-    private fun medicationSnapshot(path: String): JSONArray = RemoteSnapshot.readAll { cursor ->
+    private fun paginatedSnapshot(path: String): JSONArray = RemoteSnapshot.readAll { cursor ->
         val after = cursor?.let { "&id=gt." + encode(it) }.orEmpty()
         request("GET", "$path&order=id.asc&limit=500$after", null, true)
             .optJSONArray("data") ?: throw BackendFailure(BackendFailure.Category.TEMPORARY)
     }
 
-    fun medicationRecords(ownerUserId: String): JSONArray = medicationSnapshot(
+    fun medicationRecords(ownerUserId: String): JSONArray = paginatedSnapshot(
         "/rest/v1/medications?select=id,owner_user_id,name,prescribed_dose,presentation,frequency,schedule_times,start_date,end_date,instructions,is_active,share_with_caregiver,is_deleted,created_at,updated_at" +
             "&owner_user_id=eq." + encode(ownerUserId),
     )
@@ -298,7 +298,7 @@ class SupabaseBackend(
         )
     }
 
-    fun medicationIntakeRecords(ownerUserId: String): JSONArray = medicationSnapshot(
+    fun medicationIntakeRecords(ownerUserId: String): JSONArray = paginatedSnapshot(
         "/rest/v1/medication_intakes?select=id,medication_id,owner_user_id,schedule_instance_id,scheduled_at,action_at,status,snoozed_until,snooze_count,actor_user_id,created_at,updated_at" +
             "&owner_user_id=eq." + encode(ownerUserId),
     )
@@ -608,6 +608,7 @@ class SupabaseBackend(
     ).optJSONArray("data")?.optJSONObject(0)
 
     fun upsertCareRecord(ownerId: String, record: JSONObject) {
+        if (ownerId.isBlank() || record.optString("ownerUserId") != ownerId) throw BackendFailure(BackendFailure.Category.VALIDATION)
         val body = JSONObject().put("id", record.optString("id")).put("owner_user_id", ownerId)
             .put("record_kind", record.optString("kind")).put("record", record)
             .put("shared_with_caregiver", record.optBoolean("sharedWithCaregiver", false))
@@ -617,11 +618,14 @@ class SupabaseBackend(
     }
 
     fun deleteCareRecord(ownerId: String, id: String) {
-        request("DELETE", "/rest/v1/care_records?id=eq." + encode(id) + "&owner_user_id=eq." + encode(ownerId),
-            null, true, prefer = "return=minimal")
+        val rows = request("DELETE", "/rest/v1/care_records?id=eq." + encode(id) + "&owner_user_id=eq." + encode(ownerId),
+            null, true, prefer = "return=representation").optJSONArray("data")
+        if (rows?.length() != 1 || rows.optJSONObject(0)?.optString("id") != id ||
+            rows.optJSONObject(0)?.optString("owner_user_id") != ownerId) throw BackendFailure(BackendFailure.Category.TEMPORARY)
     }
 
     fun insertAlertFollowup(ownerId: String, followup: JSONObject) {
+        if (ownerId.isBlank() || followup.optString("ownerUserId") != ownerId) throw BackendFailure(BackendFailure.Category.VALIDATION)
         // A follow-up can be recorded offline. The account that performs the action is resolved
         // from the live session at sync time, which also satisfies the actor RLS policy.
         val actor = followup.optString("actorUserId").ifBlank { sessions.read()?.userId.orEmpty() }
@@ -635,15 +639,18 @@ class SupabaseBackend(
             prefer = "resolution=ignore-duplicates,return=minimal")
     }
 
-    fun sharedAlertFollowups(ownerId: String): JSONArray = request(
-        "GET", "/rest/v1/alert_followups?select=id,owner_user_id,fall_event_id,actor_user_id,status,reason,created_at&owner_user_id=eq." +
-            encode(ownerId) + "&order=created_at.desc&limit=200", null, true,
-    ).optJSONArray("data") ?: JSONArray()
+    fun sharedAlertFollowups(ownerId: String): JSONArray = paginatedSnapshot(
+        "/rest/v1/alert_followups?select=id,owner_user_id,fall_event_id,actor_user_id,status,reason,created_at&owner_user_id=eq." + encode(ownerId),
+    )
 
-    fun sharedCareRecords(ownerId: String): JSONArray = request(
-        "GET", "/rest/v1/care_records?select=id,owner_user_id,record_kind,record,updated_at&owner_user_id=eq." +
-            encode(ownerId) + "&shared_with_caregiver=eq.true&order=updated_at.desc&limit=200", null, true,
-    ).optJSONArray("data") ?: JSONArray()
+    fun careRecords(ownerId: String): JSONArray = paginatedSnapshot(
+        "/rest/v1/care_records?select=id,owner_user_id,record_kind,record,updated_at&owner_user_id=eq." + encode(ownerId),
+    )
+
+    fun sharedCareRecords(ownerId: String): JSONArray = paginatedSnapshot(
+        "/rest/v1/care_records?select=id,owner_user_id,record_kind,record,updated_at&owner_user_id=eq." +
+            encode(ownerId) + "&shared_with_caregiver=eq.true",
+    )
 
     fun linkedDevices(ownerId: String, deviceId: String): JSONObject? = request(
         "GET",

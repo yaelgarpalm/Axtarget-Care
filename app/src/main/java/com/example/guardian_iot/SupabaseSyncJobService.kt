@@ -252,50 +252,48 @@ private class SupabaseSyncRunner(context: Context) {
         }
 
         val careFeatures = CareFeatureStore(store.appContext)
-        if (store.role() == AppStore.ROLE_CAREGIVER) {
-            val access = CaregiverAccess(store)
-            val scope = access.snapshot()
-            val ownerId = scope?.owner.orEmpty()
-            if (ownerId.isNotBlank()) {
-                careFeatures.pendingDeletes().forEach { id ->
-                    try { backend.deleteCareRecord(ownerId, id); careFeatures.markDeletedSynced(id) }
-                    catch (e: Exception) { android.util.Log.w("CareSync", "delete care_record falló: ${syncError(e)}"); hasError = true }
-                }
-                careFeatures.rows("alert_followup").filter { it.optString("syncState") != "synced" }.forEach { followup ->
-                    try { backend.insertAlertFollowup(ownerId, followup); careFeatures.markSynced(followup.optString("id"), followup.optLong("updatedAt")) }
-                    catch (e: Exception) { android.util.Log.w("CareSync", "alert_followup falló: ${syncError(e)}"); hasError = true }
-                }
-                careFeatures.rows("zone").filter { it.optString("syncState") != "synced" }.forEach { zone ->
-                    try { backend.upsertCareRecord(zone.optString("ownerUserId", ownerId).ifBlank { ownerId }, zone); careFeatures.markSynced(zone.optString("id"), zone.optLong("updatedAt")) }
-                    catch (e: Exception) { android.util.Log.w("CareSync", "upsert zone falló: ${syncError(e)}"); hasError = true }
-                }
-                listOf("journal", "routine").forEach { kind ->
-                    careFeatures.rows(kind).filter { it.optString("syncState") != "synced" }.forEach { record ->
-                        try { backend.upsertCareRecord(record.optString("ownerUserId", ownerId).ifBlank { ownerId }, record); careFeatures.markSynced(record.optString("id"), record.optLong("updatedAt")) }
-                        catch (e: Exception) { android.util.Log.w("CareSync", "upsert $kind falló: ${syncError(e)}"); hasError = true }
-                    }
-                }
+        careFeatures.claimLocalData(session.userId)
+        val careMode = store.role()
+        val access = CaregiverAccess(store)
+        val careScope = if (careMode == AppStore.ROLE_CAREGIVER) access.snapshot() else null
+        val careOwner = when (careMode) {
+            AppStore.ROLE_CAREGIVER -> careScope?.owner.orEmpty()
+            AppStore.ROLE_CAMERA -> ""
+            else -> session.userId
+        }
+        fun careScopeCurrent(): Boolean = AccountStorage.isCurrent(store.appContext) && store.role() == careMode &&
+            (careMode != AppStore.ROLE_CAREGIVER || careScope != null && access.isCurrent(careScope))
+        if (careOwner.isNotBlank()) {
+            try {
+                val remote = if (careScope != null) backend.sharedCareRecords(careOwner) else backend.careRecords(careOwner)
+                val followups = backend.sharedAlertFollowups(careOwner)
+                val identities = listOf(remote, followups).flatMap { array -> (0 until array.length()).mapNotNull { array.optJSONObject(it) } }
+                if (careScopeCurrent()) careFeatures.reconcileOwners(identities, careOwner)
+            } catch (e: Exception) { android.util.Log.w("CareSync", "No se pudo reconciliar propiedad: ${syncError(e)}"); hasError = true }
+            careFeatures.pendingDeleteRecords().filter { it.optString("ownerUserId") == careOwner }.forEach { deletion ->
+                if (!careScopeCurrent()) return@forEach
                 try {
-                    val shared = backend.sharedCareRecords(ownerId)
-                    val followups = backend.sharedAlertFollowups(ownerId)
-                    if (scope != null) access.write(scope) {
+                    backend.deleteCareRecord(careOwner, deletion.optString("id"))
+                    careFeatures.markDeletedSynced(deletion.optString("id"), careOwner, deletion.optLong("deletedAt"))
+                } catch (e: Exception) { android.util.Log.w("CareSync", "Borrado de cuidado pendiente: ${syncError(e)}"); hasError = true }
+            }
+            careFeatures.rowsAll().filter { it.optString("ownerUserId") == careOwner && it.optString("syncState") != "synced" }.forEach { record ->
+                if (!careScopeCurrent()) return@forEach
+                try {
+                    if (record.optString("kind") == "alert_followup") backend.insertAlertFollowup(careOwner, record)
+                    else backend.upsertCareRecord(careOwner, record)
+                    careFeatures.markSynced(record.optString("id"), record.optLong("updatedAt"))
+                } catch (e: Exception) { android.util.Log.w("CareSync", "Cuidado pendiente: ${syncError(e)}"); hasError = true }
+            }
+            if (careScope != null) {
+                try {
+                    val shared = backend.sharedCareRecords(careOwner)
+                    val followups = backend.sharedAlertFollowups(careOwner)
+                    access.write(careScope) {
                         putString("caregiver_shared_care_records", shared.toString())
                         putString("caregiver_shared_alert_followups", followups.toString())
                     }
-                } catch (e: Exception) { android.util.Log.w("CareSync", "lectura de care_records compartidos falló: ${syncError(e)}"); hasError = true }
-            }
-        } else {
-            careFeatures.rows("alert_followup").filter { it.optString("syncState") != "synced" }.forEach { followup ->
-                try { backend.insertAlertFollowup(session.userId, followup); careFeatures.markSynced(followup.optString("id"), followup.optLong("updatedAt")) }
-                catch (e: Exception) { android.util.Log.w("CareSync", "alert_followup falló: ${syncError(e)}"); hasError = true }
-            }
-            careFeatures.pendingDeletes().forEach { id ->
-                try { backend.deleteCareRecord(session.userId, id); careFeatures.markDeletedSynced(id) }
-                catch (e: Exception) { android.util.Log.w("CareSync", "delete care_record falló: ${syncError(e)}"); hasError = true }
-            }
-            careFeatures.rowsAll().filter { it.optString("kind") != "alert_followup" && it.optString("syncState") != "synced" }.forEach { record ->
-                try { backend.upsertCareRecord(record.optString("ownerUserId", session.userId).ifBlank { session.userId }, record); careFeatures.markSynced(record.optString("id"), record.optLong("updatedAt")) }
-                catch (e: Exception) { android.util.Log.w("CareSync", "upsert ${record.optString("kind")} falló: ${syncError(e)}"); hasError = true }
+                } catch (e: Exception) { android.util.Log.w("CareSync", "Lectura compartida falló: ${syncError(e)}"); hasError = true }
             }
         }
 

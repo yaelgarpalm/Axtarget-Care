@@ -14,9 +14,15 @@ class CareFeaturePersistenceTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Before fun prepare() {
         check(context.packageName.endsWith(".audit")) { "Requires isolated audit build" }
+        context.getSharedPreferences("tzinda_account_storage", 0).edit().clear().commit()
+        context.getSharedPreferences("tzinda_native", 0).edit().clear().putBoolean("migration_done", true)
+            .putString("user_role", AppStore.ROLE_WEARER).putString("local_data_owner_id", "audit-care-owner").commit()
         CareFeatureStore(context).clearAll()
     }
-    @After fun clear() { CareFeatureStore(context).clearAll() }
+    @After fun clear() {
+        CareFeatureStore(context).clearAll()
+        context.getSharedPreferences("tzinda_native", 0).edit().clear().putBoolean("migration_done", true).commit()
+    }
 
     @Test fun lateAcknowledgementDoesNotEraseNewEditFromAnotherStore() {
         val first = CareFeatureStore(context)

@@ -74,6 +74,19 @@ class MedicationHttpContractTest {
 
     private data class CapturedRequest(val line: String, val body: String)
 
+    @Test fun zeroDeletedCareRowsDoesNotAcknowledgeAnUnconfirmedDeletion() {
+        withServer(200, "[]") { backend, _ ->
+            assertThrows(BackendFailure::class.java) { backend.deleteCareRecord("audit-owner", "audit-care") }
+        }
+    }
+
+    @Test fun careDeletionAcknowledgesTheExactReturnedOwnerAndId() {
+        withServer(200, """[{"id":"audit-care","owner_user_id":"audit-owner"}]""") { backend, request ->
+            backend.deleteCareRecord("audit-owner", "audit-care")
+            assertTrue(request.get(5, TimeUnit.SECONDS).line.startsWith("DELETE /rest/v1/care_records?id=eq.audit-care&owner_user_id=eq.audit-owner "))
+        }
+    }
+
     private fun withServer(status: Int, response: String, block: (SupabaseBackend, CompletableFuture<CapturedRequest>) -> Unit) {
         val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).apply { soTimeout = 5_000 }
         val captured = CompletableFuture<CapturedRequest>()
