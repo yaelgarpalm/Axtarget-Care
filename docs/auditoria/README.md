@@ -45,7 +45,7 @@ El checklist aportado es una lista de hipótesis, no evidencia de ejecución. Se
 | H10 | [x] Texto verificado por prueba unitaria | UI usa «Sin pendientes locales» y conserva por separado última confirmación remota |
 | H11 | [x] Corrección local verificada | Estado geográfico en zone_runtime; configuración conserva su versión y cola |
 | H12 | [~] Inspección remota | Tablas de medicamentos sí existen; historial remoto omite migraciones que el esquema refleja parcialmente |
-| H13 | [ ] Confirmado | Repositorio/UI permiten acciones del cuidador; textos y políticas deben reconciliarse |
+| H13 | [~] Permisos locales verificados; RLS pendiente | Propietario edita; cuidador vinculado registra tomas compartidas. Guardas, textos y siete pruebas nuevas; falta validar migración/políticas por actor |
 
 ## Lote 1: integridad de descarga y registro
 
@@ -120,3 +120,16 @@ Archivos principales: `AccountStorage.kt`, AppStore, CareFeatureStore, helpers S
 Resultado: **106 pruebas unitarias y 18 instrumentadas; cero fallos, errores u omitidas**. Compilación audit correcta. Las cuatro pruebas nuevas cubren A → B → A con perfil/contactos/colas/medicamentos/cuidados; instancia antigua conservada; rechazo de sesión nueva desde backend anterior; renovación atrasada; arranque real de MainActivity con sesión B y datos previos de A, sin mostrar A. Evidencia: `evidencia/lote-4-validacion.log`, `lote-4-instrumentadas.log` y resúmenes JSON.
 
 Limitaciones restantes: probar cambio de sesión con monitoreo/alerta ya en curso, batería/reinicio físico y cuenta remota real. Falta separar datos del cuidador por persona vinculada, confirmar los permisos de acciones de medicamentos y ejecutar revocación RLS. Estas pruebas no enviaron alertas ni contactaron Supabase; las sesiones del emulador son ficticias y el paquete audit no lleva configuración remota.
+
+
+## Lote 5: permisos de medicamentos y recordatorios propios
+
+El repositorio comprueba cuenta, modo local, propietario de medicamento/toma y vínculo seleccionado en cada acción. El propietario puede editar sus medicamentos en modo persona protegida. El cuidador con sesión puede registrar tomas de medicamentos activos y compartidos de la persona vinculada; no puede editar recetas ni otorgarse permiso para compartirlas. Cambiar de persona, cerrar sesión o descartar un vínculo invalida las acciones desde una instancia ya abierta. Las filas retenidas tras revocar un vínculo no son consultables desde el módulo, sin eliminar evidencia local pendiente.
+
+Antes de subir acciones del cuidador se consulta el vínculo activo. Un fallo de red conserva la cola; una revocación confirmada descarta las preferencias derivadas. Una respuesta atrasada no se aplica tras cambiar la cuenta o el vínculo. El permiso cacheado permite preparar acciones offline; la autorización definitiva la debe imponer RLS al sincronizar. La revocación remota no puede detectarse mientras el teléfono permanezca desconectado.
+
+Los recordatorios se programan únicamente para el propietario en modo persona protegida. El receptor vuelve a comprobarlo, incluso para alarmas antiguas. El marcado automático de tomas atrasadas usa owner_user_id y no modifica la caché del cuidador. Se corrigieron los textos de consentimiento, vinculación y medicamentos que afirmaban simultáneamente «solo lectura» y «confirmar tomas». La preferencia de accesibilidad del módulo usa el archivo de la cuenta actual.
+
+Archivos: MedicationRepository, MedicationReminderScheduler/Receiver, MedicationDatabase, MedicationModuleUi, MainActivity; nuevo MedicationAuthorizationTest. Resultado final: **106 pruebas unitarias y 25 instrumentadas; cero fallos/errores/omitidas**, compilación audit y APK de pruebas correctas. Evidencia: `evidencia/lote-5-validacion.log` y resúmenes JSON. Las siete pruebas nuevas cubren propietario ajeno, edición por cuidador, acción trazada por actor, medicamento privado, otra persona, revocación, cierre de sesión, cambio de modo y marcado de atrasadas por dueño. No ejecutan alertas reales ni llamadas a Supabase.
+
+Pendientes: políticas remotas y columna actor_user_id no están reproducidas en la migración original; preparar y probar reconciliación local. También falta aislar todas las colecciones de cuidados/seguimientos y callbacks Realtime al cambiar de persona. Este lote no declara H05 ni H13 completados integralmente.

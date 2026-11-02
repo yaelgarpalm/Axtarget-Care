@@ -1091,7 +1091,7 @@ class MainActivity : ComponentActivity() {
             )
             form.addView(button("Leer aviso de privacidad y uso", false) {
                 AlertDialog.Builder(this).setTitle("Privacidad y uso de TzindaApp")
-                    .setMessage("Al iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador no puede editarlo ni confirmar tomas. Puedes retirar el permiso de compartir editando el registro. TzindaApp no recomienda ni modifica dosis. Si escaneas la caja o la receta, la foto se lee en este teléfono y no se guarda ni se envía.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. TzindaApp es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
+                    .setMessage("Al iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador vinculado puede registrar tomas compartidas; no puede editar el medicamento ni sus horarios. Puedes retirar el permiso de compartir editando el registro. TzindaApp no recomienda ni modifica dosis. Si escaneas la caja o la receta, la foto se lee en este teléfono y no se guarda ni se envía.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. TzindaApp es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
                     .setPositiveButton("Entendido", null).show()
             })
         }
@@ -1765,7 +1765,7 @@ class MainActivity : ComponentActivity() {
             how.addView(text("Qué podrás ver", 20, true))
             tz.actionRow(how, "Alertas y actividad", "Solo eventos que la persona comparte", R.drawable.ic_alert)
             tz.actionRow(how, "Signos vitales", "Lecturas válidas de la pulsera, sin valores de ejemplo", R.drawable.ic_heart)
-            tz.actionRow(how, "Medicamentos", "Solo los que la persona marque como compartidos; siempre en solo lectura", R.drawable.ic_medication, showDivider = false)
+            tz.actionRow(how, "Medicamentos", "Solo los que la persona marque como compartidos; puedes registrar tomas, sin editar medicamentos", R.drawable.ic_medication, showDivider = false)
             val privacy = card(body)
             privacy.addView(text("Privacidad por diseño", 18, true))
             privacy.addView(text("No puedes editar medicamentos ni confirmar tomas. La cámara de la persona solo se activa cuando ella la abre. Si no hay datos recientes, la app lo dirá en lugar de inventar una conexión.", 14, color = muted))
@@ -2705,7 +2705,7 @@ class MainActivity : ComponentActivity() {
             person,
             store.prefs.getLong("caregiver_shared_fetched_at", 0L),
         )))
-        status.addView(text(if (remoteLinked) "La persona conserva el control de sus medicamentos, cámara y ubicación. Tú tienes acceso de solo lectura." else "Aún no hay una persona conectada a este teléfono.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
+        status.addView(text(if (remoteLinked) "La persona conserva el control de sus medicamentos, cámara y ubicación. Puedes consultar datos compartidos y registrar sus tomas; no puedes editar medicamentos ni horarios." else "Aún no hay una persona conectada a este teléfono.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
 
         val connect = card(body)
         connect.addView(text("Vincular una persona", 20, true))
@@ -2743,7 +2743,7 @@ class MainActivity : ComponentActivity() {
 
         val privacy = card(body)
         privacy.addView(text("Privacidad y permisos", 20, true))
-        tz.actionRow(privacy, "Datos de solo lectura", "No puedes editar medicamentos ni confirmar tomas", R.drawable.ic_lock)
+        tz.actionRow(privacy, "Permisos de medicamentos", "Puedes registrar tomas compartidas, sin editar medicamentos ni horarios", R.drawable.ic_lock)
         tz.actionRow(privacy, "Cámara bajo demanda", "Solo se activa cuando la persona la abre", R.drawable.ic_camera)
         tz.actionRow(privacy, "Ubicación autorizada", "Solo mientras el monitoreo está activo y ella lo permite", R.drawable.ic_location, showDivider = false)
         if (remoteLinked) {
@@ -3633,7 +3633,7 @@ class MainActivity : ComponentActivity() {
                 store.prefs.getString("caregiver_shared_name", "").orEmpty(),
                 store.prefs.getLong("caregiver_shared_fetched_at", 0L),
             )))
-            linkCard.addView(text("Tienes acceso de solo lectura a los datos que la persona comparta. No puedes editar medicamentos ni confirmar tomas.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
+            linkCard.addView(text("Puedes consultar lo que la persona comparta y registrar sus tomas. Los medicamentos y horarios solo los edita su propietario.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
             linkCard.addView(button(if (linked) "Administrar vínculo" else "Vincular persona", false) { selectTab(2) })
             linkCard.addView(button("Abrir centro de supervisión", false) { openSupervisionCenter() })
         } else if (isCameraRole) {
@@ -3771,7 +3771,7 @@ class MainActivity : ComponentActivity() {
         dataPrivacy.addView(text("Contactos, eventos, lecturas válidas y ubicación autorizada se sincronizan si inicias sesión. El domicilio, la fecha de nacimiento y el video no se sincronizan. Los medicamentos son privados hasta que los compartes. Los datos de salud son informativos y no constituyen diagnóstico.", 14, color = muted))
         dataPrivacy.addView(button("Leer aviso de privacidad y uso", false) {
             AlertDialog.Builder(this).setTitle("Privacidad y uso de TzindaApp")
-                .setMessage("Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nLos medicamentos se guardan en este teléfono y se sincronizan si inicias sesión. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo, sin editarlo ni confirmar tomas. TzindaApp no recomienda ni modifica dosis. Si escaneas la caja o la receta, la foto se lee en este teléfono y no se guarda ni se envía.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. TzindaApp es experimental y no sustituye servicios de emergencia ni atención médica.\n\nPuedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
+                .setMessage("Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nLos medicamentos se guardan en este teléfono y se sincronizan si inicias sesión. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo y registrar sus tomas, sin editar medicamentos ni horarios. TzindaApp no recomienda ni modifica dosis. Si escaneas la caja o la receta, la foto se lee en este teléfono y no se guarda ni se envía.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. TzindaApp es experimental y no sustituye servicios de emergencia ni atención médica.\n\nPuedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
                 .setPositiveButton("Entendido", null).show()
         })
 

@@ -12,11 +12,18 @@ import java.time.LocalTime
 import java.time.temporal.ChronoUnit
 
 object MedicationReminderScheduler {
-    fun synchronizeAll(context: Context) {
+    internal fun canRemind(context: Context, ownerId: String): Boolean =
+        MedicationRepository(context, SupabaseBackend(EncryptedSessionStore(context))).canManageOwner(ownerId)
+
+    fun synchronizeAll(context: Context) = synchronized(AccountStorage.lock) {
+        val context = AccountStorage.capture(context)
+        val repository = MedicationRepository(context, SupabaseBackend(EncryptedSessionStore(context)))
+        val ownerId = runCatching { repository.currentOwnerScope() }.getOrNull() ?: return
+        if (!repository.canManageOwner(ownerId)) return
         val database = MedicationDatabase.getInstance(context)
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
-        database.allActiveMedications().forEach { medication ->
+        database.medications(ownerId).filter { it.isActive && !it.isDeleted }.forEach { medication ->
             val start = runCatching { LocalDate.parse(medication.startDate) }.getOrNull()
             val end = medication.endDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
             val interval = MedicationSchedulePolicy.frequencyIntervalDays(medication.frequency) ?: 1
@@ -32,16 +39,17 @@ object MedicationReminderScheduler {
             }
             scheduleMedication(context, medication)
         }
-        database.markOverdue()
+        database.markOverdue(ownerId)
     }
 
     fun scheduleMedication(context: Context, medication: Medication) {
-        if (!medication.isActive || medication.isDeleted) return
+        if (!canRemind(context, medication.ownerUserId) || !medication.isActive || medication.isDeleted) return
         val now = System.currentTimeMillis()
         medication.scheduleTimes.forEach { time -> scheduleSlotAfter(context, medication, time, now) }
     }
 
     fun scheduleSlotAfter(context: Context, medication: Medication, time: String, afterMillis: Long): Long? {
+        if (!canRemind(context, medication.ownerUserId) || !medication.isActive || medication.isDeleted) return null
         val next = MedicationSchedulePolicy.nextOccurrence(medication, time, afterMillis, ZoneId.systemDefault()) ?: return null
         val intake = MedicationDatabase.getInstance(context).ensureIntake(medication, next)
         setAlarm(context, medication, time, intake.id, next)
@@ -50,6 +58,7 @@ object MedicationReminderScheduler {
     }
 
     fun scheduleOverdueCheck(context: Context, intake: MedicationIntake) {
+        if (!canRemind(context, intake.ownerUserId)) return
         if (intake.status !in setOf("pending", "snoozed")) return
         val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
         val intent = Intent(context, MedicationReminderReceiver::class.java)
@@ -90,6 +99,8 @@ object MedicationReminderScheduler {
     }
 
     fun scheduleSnooze(context: Context, intakeId: String, atMillis: Long) {
+        val intake = MedicationDatabase.getInstance(context).getIntake(intakeId) ?: return
+        if (!canRemind(context, intake.ownerUserId)) return
         val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
         val intent = Intent(context, MedicationReminderReceiver::class.java)
             .putExtra(MedicationReminderReceiver.EXTRA_ACCOUNT_SCOPE, AccountStorage.key(context))

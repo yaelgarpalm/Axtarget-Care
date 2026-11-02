@@ -41,6 +41,27 @@ class MedicationRepository(
 
     fun localScope(): String = "local:${store.localDeviceId()}"
 
+    /** Local authorization is re-evaluated on each action, including stale notification actions. */
+    fun canManageOwner(ownerId: String): Boolean = synchronized(AccountStorage.lock) {
+        AccountStorage.isCurrent(app) && store.role() == AppStore.ROLE_WEARER &&
+            runCatching { ownerId == currentOwnerScope() }.getOrDefault(false)
+    }
+
+    fun canReadSharedOwner(ownerId: String): Boolean = synchronized(AccountStorage.lock) {
+        val actor = EncryptedSessionStore(app).read()?.userId
+        AccountStorage.isCurrent(app) && store.role() == AppStore.ROLE_CAREGIVER &&
+            actor != null && actor == store.ownerUserId() && actor != ownerId &&
+            ownerId.isNotBlank() && store.prefs.getString("caregiver_owner_id", "") == ownerId &&
+            !store.prefs.getString("caregiver_link_id", "").isNullOrBlank()
+    }
+
+    fun canActOnIntake(intakeId: String): Boolean = synchronized(AccountStorage.lock) {
+        val intake = database.getIntake(intakeId) ?: return false
+        val medication = database.getMedication(intake.ownerUserId, intake.medicationId) ?: return false
+        !medication.isDeleted && medication.isActive && (canManageOwner(intake.ownerUserId) ||
+            (canReadSharedOwner(intake.ownerUserId) && medication.shareWithCaregiver))
+    }
+
     fun createMedication(
         ownerId: String,
         name: String,
@@ -54,7 +75,11 @@ class MedicationRepository(
         isActive: Boolean = true,
         shareWithCaregiver: Boolean = false,
         existing: Medication? = null,
-    ): Medication {
+    ): Medication = synchronized(AccountStorage.lock) {
+        check(canManageOwner(ownerId)) { "Solo puedes editar los medicamentos de tu propia cuenta en modo persona protegida." }
+        check(existing == null || existing.ownerUserId == ownerId && database.getMedication(ownerId, existing.id) != null) {
+            "El medicamento no pertenece a esta cuenta."
+        }
         MedicationSchedulePolicy.validate(name, dose, frequency, times, startDate, endDate)?.let { throw IllegalArgumentException(it) }
         if (database.medications(ownerId).any { it.id != existing?.id && !it.isDeleted && it.isActive && it.name.equals(name.trim(), ignoreCase = true) && it.scheduleTimes == times.sorted() })
             throw IllegalArgumentException("Ya hay un medicamento activo con ese nombre y horario. Revisa la lista antes de agregar otro.")
@@ -72,7 +97,10 @@ class MedicationRepository(
         return database.saveMedication(item)
     }
 
-    fun deleteMedication(ownerId: String, medicationId: String): Medication? = database.deleteMedication(ownerId, medicationId)
+    fun deleteMedication(ownerId: String, medicationId: String): Medication? = synchronized(AccountStorage.lock) {
+        check(canManageOwner(ownerId)) { "No puedes eliminar medicamentos de otra persona." }
+        database.deleteMedication(ownerId, medicationId)
+    }
 
     /** Counts only already-due schedules; future reminders never reduce adherence. */
     fun adherence(ownerId: String, fromMillis: Long, nowMillis: Long = System.currentTimeMillis()): MedicationAdherenceSummary {
@@ -87,7 +115,8 @@ class MedicationRepository(
     }
 
     /** Makes the existing medication list visible to the linked caregiver in one explicit action. */
-    fun shareAllWithCaregiver(ownerId: String): Int {
+    fun shareAllWithCaregiver(ownerId: String): Int = synchronized(AccountStorage.lock) {
+        check(canManageOwner(ownerId)) { "Solo el propietario puede compartir sus medicamentos." }
         if (ownerId.isBlank() || ownerId.startsWith("local:")) return 0
         val privateItems = database.medications(ownerId).filterNot { it.shareWithCaregiver || it.isDeleted }
         privateItems.forEach { database.saveMedication(it.copy(shareWithCaregiver = true)) }
@@ -97,7 +126,7 @@ class MedicationRepository(
 
     fun acceptIntakeAction(intakeId: String, status: String): Boolean = synchronized(AccountStorage.lock) {
         if (!AccountStorage.isCurrent(app)) return false
-        val intake = database.getIntake(intakeId) ?: return false
+        if (!canActOnIntake(intakeId)) return false
         // Trazabilidad: quien confirma la toma (dueño o cuidador vinculado) se guarda con la acción.
         val actorId = EncryptedSessionStore(app).read()?.userId
         if (actorId != null && store.ownerUserId()?.let { it != actorId } == true) return false
@@ -112,6 +141,23 @@ class MedicationRepository(
         if (ownerId.isBlank() || ownerId.startsWith("local:")) return
         val session = backend.currentSession() ?: return
         if (!readOnly && session.userId != ownerId) throw BackendFailure(BackendFailure.Category.SESSION)
+        val linkId = store.prefs.getString("caregiver_link_id", "").orEmpty()
+        if (readOnly) {
+            if (!canReadSharedOwner(ownerId)) throw BackendFailure(BackendFailure.Category.SESSION)
+            // Refresh authorization before uploading cached actions. Network failure preserves the queue.
+            val links = backend.linkedPeople()
+            val authorized = (0 until links.length()).any { index ->
+                links.optJSONObject(index)?.let {
+                    it.optString("id") == linkId && it.optString("owner_user_id") == ownerId && it.optString("status") == "active"
+                } == true
+            }
+            if (!authorized) {
+                synchronized(AccountStorage.lock) {
+                    if (store.prefs.getString("caregiver_link_id", "") == linkId) store.clearRemoteDerivedCaches()
+                }
+                throw BackendFailure(BackendFailure.Category.SESSION)
+            }
+        }
         if (!readOnly) {
             // Una fila mala (FK huérfana, CHECK, etc.) no debe bloquear el resto de la cola:
             // se marca su fallo y la corrida continúa con las demás.
@@ -154,7 +200,9 @@ class MedicationRepository(
             // teléfono. Solo empuja las acciones que él mismo registró (actor = su sesión); el RLS
             // de medication_intakes exige actor_user_id = auth.uid() para el cuidador vinculado.
             // Conservamos el fallo hasta terminar la descarga; nunca se informa éxito parcial como total.
-            database.pendingIntakes(ownerId).filter { it.actorUserId == session.userId }.forEach { intake ->
+            database.pendingIntakes(ownerId).filter { it.actorUserId == session.userId &&
+                database.getMedication(ownerId, it.medicationId)?.let { med -> med.shareWithCaregiver && !med.isDeleted } == true
+            }.forEach { intake ->
                 try {
                     backend.upsertMedicationIntake(intake)
                     database.markIntakeSynced(intake.id, intake.updatedAtMillis)
@@ -172,7 +220,11 @@ class MedicationRepository(
             check(medications.all { it.ownerUserId == ownerId } && intakes.all { it.ownerUserId == ownerId }) {
                 "La respuesta no corresponde a la persona solicitada."
             }
-            database.applyRemoteSnapshot(ownerId, medications, intakes, prune = readOnly)
+            synchronized(AccountStorage.lock) {
+                if (!AccountStorage.isCurrent(app) || (readOnly && (!canReadSharedOwner(ownerId) ||
+                        store.prefs.getString("caregiver_link_id", "") != linkId))) throw BackendFailure(BackendFailure.Category.SESSION)
+                database.applyRemoteSnapshot(ownerId, medications, intakes, prune = readOnly)
+            }
         }
         caregiverPushFailure?.let { throw it }
         if (database.syncPendingCount(ownerId) > 0) throw BackendFailure(BackendFailure.Category.TEMPORARY)

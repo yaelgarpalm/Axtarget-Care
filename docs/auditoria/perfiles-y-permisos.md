@@ -24,8 +24,8 @@ No hace falta migrar ni borrar roles remotos para esta separación: las polític
 | Editar nombre y perfil propio | Sí | Solo su propio perfil | Solo su propio perfil | Separación de modo implementada; otros campos locales pendientes |
 | Cambiar modo del teléfono | Sí, local | Sí, local | Sí, local | No concede autorización remota |
 | Leer alertas/mediciones | Propias | Dentro del vínculo autorizado | Eventos propios y vinculación por RPC | RLS y pruebas de actores pendientes |
-| Editar medicamentos | Propietario | No | No en navegación de cámara | Aislamiento de repositorio pendiente |
-| Confirmar tomas compartidas | Propietario | Actor vinculado y medicamento compartido | No | Política remota observada lo permite; reconciliar textos/guardas H13 |
+| Editar medicamentos | Propietario | No | No en navegación de cámara | Guardas del repositorio probadas en lote 5; RLS pendiente |
+| Confirmar tomas compartidas | Propietario | Actor vinculado y medicamento compartido | No | Textos y guardas locales reconciliados; siete pruebas nuevas. Validación RLS pendiente |
 | Editar contactos de emergencia | Propietario | No los del protegido | Sin flujo de emergencia del protegido | Revisar cambio de cuenta y servicios |
 | Zonas/bitácoras/rutinas | Propietario | Operaciones concedidas por RLS y consentimiento | No en navegación de cámara | Hay contradicciones de UI por corregir |
 | Consultar ubicación | Propia | Con consentimiento y vínculo activo | Sin acceso general | Revisar cola y revocación |

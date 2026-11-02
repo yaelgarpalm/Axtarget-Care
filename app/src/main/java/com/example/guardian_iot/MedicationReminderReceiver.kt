@@ -24,6 +24,8 @@ class MedicationReminderReceiver : BroadcastReceiver() {
             try {
                 if (!AccountStorage.isCurrent(scopedContext)) return@Thread
                 val database = MedicationDatabase.getInstance(scopedContext)
+                val intake = database.getIntake(intakeId) ?: return@Thread
+                if (!MedicationReminderScheduler.canRemind(scopedContext, intake.ownerUserId)) return@Thread
                 when (intent.action) {
                     ACTION_FIRE -> showReminder(scopedContext, database, intakeId, intent.getBooleanExtra(EXTRA_IS_SNOOZE, false))
                     ACTION_MARK_OVERDUE -> {
@@ -86,7 +88,7 @@ class MedicationReminderReceiver : BroadcastReceiver() {
         if (intake.snoozeCount == 0) builder.addAction(0, "Posponer 10 min", actionPendingIntent(context, intakeId, ACTION_SNOOZE))
         builder.addAction(0, "No tomada", actionPendingIntent(context, intakeId, ACTION_SKIPPED))
         synchronized(AccountStorage.lock) {
-            if (AccountStorage.isCurrent(context))
+            if (AccountStorage.isCurrent(context) && MedicationReminderScheduler.canRemind(context, intake.ownerUserId))
                 runCatching { NotificationManagerCompat.from(context).notify(NOTIFICATION_TAG, notificationId(intakeId), builder.build()) }
         }
     }

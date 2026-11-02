@@ -222,10 +222,10 @@ class MedicationDatabase(context: Context, databaseName: String = "tzinda_medica
     }
 
     @Synchronized
-    fun markOverdue(now: Long = System.currentTimeMillis()) {
+    fun markOverdue(ownerId: String, now: Long = System.currentTimeMillis()) {
         writableDatabase.execSQL(
-            "UPDATE medication_intakes SET status='overdue', updated_at=?, sync_state='pending' WHERE status IN ('pending','snoozed') AND scheduled_at<=?",
-            arrayOf(now, now - OVERDUE_AFTER_MS),
+            "UPDATE medication_intakes SET status='overdue', updated_at=?, sync_state='pending' WHERE owner_user_id=? AND status IN ('pending','snoozed') AND scheduled_at<=?",
+            arrayOf<Any>(now, ownerId, now - OVERDUE_AFTER_MS),
         )
     }
 

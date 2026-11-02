@@ -54,7 +54,7 @@ class MedicationModuleUi(
     private val onBack: () -> Unit,
 ) {
     private val db = repository.database
-    private val tz = TzindaDesign(activity, dark, activity.getSharedPreferences("tzinda_native", Context.MODE_PRIVATE).getBoolean("simple_accessibility", false))
+    private val tz = TzindaDesign(activity, dark, AccountStorage.capture(activity).getSharedPreferences("tzinda_native", Context.MODE_PRIVATE).getBoolean("simple_accessibility", false))
     private val ink get() = tz.ink
     private val muted get() = tz.muted
     private val accent get() = tz.accent
@@ -72,14 +72,14 @@ class MedicationModuleUi(
         parent = target
         if (!readOnly) {
             MedicationReminderScheduler.synchronizeAll(activity)
-            db.markOverdue()
+            db.markOverdue(ownerId)
         }
         heading(
             target,
             if (readOnly) "CUIDADO COMPARTIDO" else "CUIDADO Y RUTINA",
             if (readOnly) "Medicamentos compartidos" else "Mis medicamentos",
             if (readOnly) {
-                "Consulta los horarios y tomas que la persona protegida decidió compartir. Esta vista es de solo lectura."
+                "Consulta los horarios y tomas que la persona protegida decidió compartir. Puedes registrar las tomas compartidas; los medicamentos y horarios los edita su propietario."
             } else {
                 "Guarda los horarios indicados y lleva un registro de cada toma."
             },
@@ -88,7 +88,7 @@ class MedicationModuleUi(
             tz.banner(
                 target,
                 "Sesión vencida",
-                "Estos son los últimos datos guardados en el teléfono. Inicia sesión desde Ajustes para actualizarlos.",
+                "Inicia sesión desde Ajustes para consultar o actualizar los medicamentos compartidos.",
                 TzindaDesign.Tone.WARNING,
                 iconRes = R.drawable.ic_lock,
             )
@@ -114,7 +114,7 @@ class MedicationModuleUi(
         if (readOnly) {
             tz.banner(
                 target,
-                "Vista de solo lectura",
+                "Tomas compartidas",
                 "Solo aparecen los medicamentos compartidos. Puedes confirmar sus tomas; la persona protegida conserva el control de horarios y medicamentos.",
                 TzindaDesign.Tone.INFO,
                 iconRes = R.drawable.ic_lock,
@@ -353,7 +353,7 @@ class MedicationModuleUi(
         val taken = intake.status == "taken"
         // El cuidador vinculado también puede confirmar tomas desde su teléfono, siempre que su
         // sesión esté activa (necesita auth.uid() para firmar la acción con actor_user_id).
-        val actionable = intake.status in setOf("pending", "snoozed", "overdue") && (!readOnly || sessionActive)
+        val actionable = intake.status in setOf("pending", "snoozed", "overdue") && repository.canActOnIntake(intake.id)
         val tone = when {
             taken -> TzindaDesign.Tone.SUCCESS
             intake.status == "skipped" || intake.status == "overdue" -> TzindaDesign.Tone.DANGER
@@ -808,7 +808,7 @@ class MedicationModuleUi(
             saved.onSuccess { item ->
                 if (existing != null) MedicationReminderScheduler.cancelMedication(activity, existing)
                 if (item.isActive) MedicationReminderScheduler.scheduleMedication(activity, item)
-                db.markOverdue()
+                db.markOverdue(ownerId)
                 SyncScheduler.enqueue(activity)
                 dialog.dismiss()
                 toast(if (ownerId.startsWith("local:")) "Medicamento guardado en este teléfono." else "Medicamento guardado. Se sincronizará con la cuenta.")
@@ -958,7 +958,7 @@ class MedicationModuleUi(
         saved.onSuccess { updated ->
             MedicationReminderScheduler.cancelMedication(activity, medication)
             if (updated.isActive) MedicationReminderScheduler.scheduleMedication(activity, updated)
-            db.markOverdue()
+            db.markOverdue(ownerId)
             SyncScheduler.enqueue(activity)
             toast("Próximos avisos desde las ${MedicationSchedulePolicy.intervalAnchor(updated.scheduleTimes)}.")
             rerender()
@@ -1009,6 +1009,7 @@ class MedicationModuleUi(
      */
     private fun visibleMedications(includeDeleted: Boolean = true): List<Medication> =
         db.medications(ownerId).filter { medication ->
+            (if (readOnly) repository.canReadSharedOwner(ownerId) else repository.canManageOwner(ownerId)) &&
             (includeDeleted || (!medication.isDeleted && medication.isActive)) &&
                 (!readOnly || medication.shareWithCaregiver)
         }
