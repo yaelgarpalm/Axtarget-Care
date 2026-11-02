@@ -122,6 +122,31 @@ class MedicationAuthorizationTest {
         assertFalse(MedicationReminderScheduler.canRemind(context, protectedOwner))
     }
 
+    @Test fun offlineOwnerActionRetainsItsAccountAttribution() {
+        repository.currentOwnerScope()
+        val med = database.saveMedication(medication(actor))
+        val intake = database.ensureIntake(med, System.currentTimeMillis())
+        EncryptedSessionStore(context).clear()
+        assertTrue(repository.acceptIntakeAction(intake.id, "taken"))
+        assertEquals(actor, database.getIntake(intake.id)?.actorUserId)
+    }
+
+    @Test fun anonymousActionIsAdoptedWithItsStableIdWhenOwnerSignsIn() {
+        EncryptedSessionStore(context).clear()
+        store.prefs.edit().remove("local_data_owner_id").commit()
+        val localOwner = repository.localScope()
+        val med = database.saveMedication(medication(localOwner))
+        val intake = database.ensureIntake(med, System.currentTimeMillis())
+        assertTrue(repository.acceptIntakeAction(intake.id, "taken"))
+        assertNull(database.getIntake(intake.id)?.actorUserId)
+        database.claimLocalData(localOwner, actor)
+        val adopted = database.getIntake(intake.id)!!
+        assertEquals(actor, adopted.ownerUserId)
+        assertEquals(actor, adopted.actorUserId)
+        assertEquals(intake.scheduledAtMillis, adopted.scheduledAtMillis)
+        assertEquals(intake.scheduleInstanceId, adopted.scheduleInstanceId)
+    }
+
     private fun link() {
         store.saveRole(AppStore.ROLE_CAREGIVER)
         store.prefs.edit().putString("caregiver_owner_id", protectedOwner).putString("caregiver_link_id", "audit-link").commit()

@@ -64,6 +64,13 @@ set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000001';
 select is((select count(*) from medications),2::bigint,'owner sees private and shared prescriptions');
 select throws_ok($$update medication_intakes set status='taken',action_at=now(),actor_user_id='10000000-0000-0000-0000-000000000003'
  where id='30000000-0000-0000-0000-000000000002'$$,'42501',null,'owner cannot attribute a new action to caregiver');
+select lives_ok($$insert into medication_intakes(id,medication_id,owner_user_id,schedule_instance_id,scheduled_at,status,action_at,actor_user_id)
+values('30000000-0000-0000-0000-000000000002','20000000-0000-0000-0000-000000000002',auth.uid(),
+'40000000-0000-0000-0000-000000000002',now(),'taken',now(),auth.uid())
+on conflict(id) do update set status=excluded.status,action_at=excluded.action_at,actor_user_id=excluded.actor_user_id$$,
+'owner can upload an offline action over an existing pending intake');
+select is((select actor_user_id from medication_intakes where id='30000000-0000-0000-0000-000000000002'),auth.uid(),
+'offline owner action has truthful attribution after upsert');
 select lives_ok($$update medication_intakes set updated_at=now() where id='30000000-0000-0000-0000-000000000001'$$,'owner may preserve unchanged caregiver attribution');
 select lives_ok($$update medication_intakes set status='overdue',actor_user_id=null where id='30000000-0000-0000-0000-000000000004'$$,'owner automatic overdue transition has no human actor');
 select lives_ok($$update medications set name='Owner edit' where id='20000000-0000-0000-0000-000000000001'$$,'owner can edit own medication');

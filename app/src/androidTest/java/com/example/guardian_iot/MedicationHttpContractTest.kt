@@ -57,9 +57,17 @@ class MedicationHttpContractTest {
     }
 
     @Test fun missingActorColumnReturnsOriginalFailureWithoutRetryingAnAnonymousAction() {
+        val own = intake.copy(ownerUserId = actor)
         withServer(400, """{"code":"PGRST204","message":"actor_user_id is missing"}""") { backend, request ->
-            val failure = assertThrows(BackendFailure::class.java) { backend.upsertMedicationIntake(intake) }
+            val failure = assertThrows(BackendFailure::class.java) { backend.upsertMedicationIntake(own) }
             assertEquals(400, failure.status)
+            assertEquals(actor, JSONObject(request.get(5, TimeUnit.SECONDS).body).getString("actor_user_id"))
+        }
+    }
+
+    @Test fun legacyOfflineActionUsesTheAuthenticatedOwnerWhenActorWasMissing() {
+        withServer(201, "[]") { backend, request ->
+            backend.upsertMedicationIntake(intake.copy(ownerUserId = actor, actorUserId = null))
             assertEquals(actor, JSONObject(request.get(5, TimeUnit.SECONDS).body).getString("actor_user_id"))
         }
     }

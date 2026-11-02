@@ -243,7 +243,9 @@ class MedicationDatabase(context: Context, databaseName: String = "tzinda_medica
         db.beginTransaction()
         try {
             db.execSQL("UPDATE medications SET owner_user_id=?, sync_state='pending', retry_count=0 WHERE owner_user_id=?", arrayOf(ownerUserId, localScope))
-            db.execSQL("UPDATE medication_intakes SET owner_user_id=?, sync_state='pending', retry_count=0 WHERE owner_user_id=?", arrayOf(ownerUserId, localScope))
+            db.execSQL("UPDATE medication_intakes SET owner_user_id=?, " +
+                "actor_user_id=CASE WHEN actor_user_id IS NULL AND status IN ('taken','skipped','snoozed') THEN ? ELSE actor_user_id END, " +
+                "sync_state='pending', retry_count=0 WHERE owner_user_id=?", arrayOf(ownerUserId, ownerUserId, localScope))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }

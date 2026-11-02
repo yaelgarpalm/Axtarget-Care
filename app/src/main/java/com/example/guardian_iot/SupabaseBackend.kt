@@ -304,6 +304,10 @@ class SupabaseBackend(
     )
 
     fun upsertMedicationIntake(record: MedicationIntake) {
+        val owner = requireSession().userId
+        if (owner != record.ownerUserId) throw BackendFailure(BackendFailure.Category.SESSION)
+        // Older offline actions may lack attribution; only their authenticated owner can adopt them.
+        val actor = if (record.status in setOf("taken", "skipped", "snoozed")) record.actorUserId ?: owner else null
         val body = JSONObject()
             .put("id", record.id)
             .put("medication_id", record.medicationId)
@@ -314,7 +318,7 @@ class SupabaseBackend(
             .put("status", record.status)
             .put("snoozed_until", record.snoozedUntilMillis?.let(::isoTime) ?: JSONObject.NULL)
             .put("snooze_count", record.snoozeCount)
-            .put("actor_user_id", record.actorUserId?.takeIf { record.status in setOf("taken", "skipped", "snoozed") } ?: JSONObject.NULL)
+            .put("actor_user_id", actor ?: JSONObject.NULL)
             .put("created_at", isoTime(record.createdAtMillis))
             .put("updated_at", isoTime(record.updatedAtMillis))
         val path = "/rest/v1/medication_intakes?on_conflict=id"

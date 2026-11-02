@@ -177,3 +177,10 @@ Archivos: LocationSharing, LocalTelemetryDatabase, AppStore, runner, servicio de
 Validación final: **106 pruebas unitarias y 39 instrumentadas, cero fallos/errores/omitidas**; compilación audit y APK de pruebas correctas. Evidencia en `lote-8-validacion-final.log` y resúmenes JSON. Diez pruebas instrumentadas nuevas comprueban uso solo local, período de consentimiento, revocación/reapertura/reintento, reautorización, retirada durante envío de historial/en vivo, limpieza fallida, cambio de modo/cuenta y cola heredada. Las funciones de envío de esas pruebas son dobles locales; no ejecutan GPS real ni envían posiciones a Supabase.
 
 Límites: una petición que ya salió puede alcanzar el servidor antes de que este conozca la revocación. La retirada de la última posición requiere conexión y sesión; su pendiente se conserva hasta confirmarse. El historial ya almacenado remotamente no se elimina por este cambio y sus políticas requieren revisión adicional. Siguen pendientes GPS, batería y permisos reales en teléfonos. No se modificó el remoto.
+
+
+## Lote 9: atribución de tomas sin sesión
+
+La revisión posterior al endurecimiento RLS detectó un caso no cubierto por el lote 6: una acción propia sin sesión podía conservar actor nulo y fallar al actualizar una toma remota pendiente. El repositorio usa ahora la identidad del archivo de cuenta para acciones propias offline. Al adoptar datos anónimos, claimLocalData asigna dueño y actor a las acciones humanas sin actor, preservando ID, fecha e instancia programada. El backend exige que el upsert sea del propietario autenticado y completa únicamente su atribución ausente en registros heredados; el cuidador sigue usando PATCH.
+
+Verificación: **106 unitarias, 42 instrumentadas y 49 SQL locales, sin fallos**; compilación audit correcta. Tres pruebas Android nuevas verifican acción propia offline, adopción anónima conservando identidad y payload heredado; dos casos SQL comprueban el upsert sobre una toma pendiente y su actor resultante. Evidencia: `lote-9-validacion.log`, `lote-9-rls.log` y resúmenes JSON. No se modificaron las políticas remotas ni se enviaron alertas.

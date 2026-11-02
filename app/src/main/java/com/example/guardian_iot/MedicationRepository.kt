@@ -128,7 +128,7 @@ class MedicationRepository(
         if (!AccountStorage.isCurrent(app)) return false
         if (!canActOnIntake(intakeId)) return false
         // Trazabilidad: quien confirma la toma (dueño o cuidador vinculado) se guarda con la acción.
-        val actorId = EncryptedSessionStore(app).read()?.userId
+        val actorId = EncryptedSessionStore(app).read()?.userId ?: store.ownerUserId()
         if (actorId != null && store.ownerUserId()?.let { it != actorId } == true) return false
         val snoozeUntil = if (status == "snoozed") System.currentTimeMillis() + SNOOZE_MS else null
         val accepted = database.recordAction(intakeId, status, System.currentTimeMillis(), snoozeUntil, actorId)
