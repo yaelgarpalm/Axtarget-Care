@@ -1,0 +1,227 @@
+Starting database...
+17.11.0.006: Pulling from supabase/postgres
+6d6a5e742013: Pulling fs layer
+d5eb197bd5a2: Pulling fs layer
+ccb484805a69: Pulling fs layer
+32d5597f3429: Pulling fs layer
+8cd5a74590e0: Pulling fs layer
+893f255e72fd: Pulling fs layer
+01a208a0daa9: Pulling fs layer
+f59330250527: Pulling fs layer
+1bffb3326151: Pulling fs layer
+d6eb3079a6b8: Pulling fs layer
+34f00a9e4358: Pulling fs layer
+22608d92fd8c: Pulling fs layer
+e7576a5f038c: Pulling fs layer
+f882f159ba2c: Pulling fs layer
+2c8930190164: Pulling fs layer
+ab15e57881e2: Pulling fs layer
+80dbe1e330b7: Pulling fs layer
+ac451ca09be2: Pulling fs layer
+301296535c3d: Pulling fs layer
+b5546a5e966a: Pulling fs layer
+9c9430dcdac8: Pulling fs layer
+7a9de8db1ae4: Pulling fs layer
+319b3ac0bd0c: Pulling fs layer
+3bae7096b644: Pulling fs layer
+a1ad30d8a0de: Pulling fs layer
+d0c1d894c237: Pulling fs layer
+66ffac8f063e: Pulling fs layer
+04c82ebe1a76: Pulling fs layer
+1bfcfe3208d1: Pulling fs layer
+34f00a9e4358: Download complete
+01a208a0daa9: Download complete
+ccb484805a69: Download complete
+32d5597f3429: Download complete
+e7576a5f038c: Download complete
+f59330250527: Download complete
+22608d92fd8c: Download complete
+1bffb3326151: Download complete
+d5eb197bd5a2: Download complete
+893f255e72fd: Download complete
+8cd5a74590e0: Download complete
+6d6a5e742013: Download complete
+2c8930190164: Download complete
+ab15e57881e2: Download complete
+d6eb3079a6b8: Download complete
+ac451ca09be2: Download complete
+301296535c3d: Download complete
+80dbe1e330b7: Download complete
+9c9430dcdac8: Download complete
+3bae7096b644: Download complete
+b5546a5e966a: Download complete
+7a9de8db1ae4: Download complete
+319b3ac0bd0c: Download complete
+a1ad30d8a0de: Download complete
+1bfcfe3208d1: Download complete
+66ffac8f063e: Download complete
+04c82ebe1a76: Download complete
+44136fa355b3: Already exists
+fae50da4c687: Download complete
+d0c1d894c237: Download complete
+d0c1d894c237: Pull complete
+d6eb3079a6b8: Pull complete
+6d6a5e742013: Pull complete
+f882f159ba2c: Download complete
+80dbe1e330b7: Pull complete
+f882f159ba2c: Pull complete
+32d5597f3429: Pull complete
+d5eb197bd5a2: Pull complete
+1bfcfe3208d1: Pull complete
+04c82ebe1a76: Pull complete
+22608d92fd8c: Pull complete
+893f255e72fd: Pull complete
+8cd5a74590e0: Pull complete
+1bffb3326151: Pull complete
+2c8930190164: Pull complete
+ab15e57881e2: Pull complete
+34f00a9e4358: Pull complete
+ccb484805a69: Pull complete
+e7576a5f038c: Pull complete
+7a9de8db1ae4: Pull complete
+3bae7096b644: Pull complete
+319b3ac0bd0c: Pull complete
+01a208a0daa9: Pull complete
+66ffac8f063e: Pull complete
+ac451ca09be2: Pull complete
+301296535c3d: Pull complete
+9c9430dcdac8: Pull complete
+b5546a5e966a: Pull complete
+a1ad30d8a0de: Pull complete
+f59330250527: Pull complete
+Digest: sha256:c141fd17ac6a76c4323e90b3aee8ff1a23d2e89e547c2b963cfadc309c079cc2
+Status: Downloaded newer image for public.ecr.aws/supabase/postgres:17.11.0.006
+public.ecr.aws/supabase/postgres:17.11.0.006
+Initialising schema...
+v2.147.1: Pulling from supabase/realtime
+4f4fb700ef54: Pulling fs layer
+062e450697fa: Pulling fs layer
+e7e8db2397d8: Pulling fs layer
+aadc1df55248: Pulling fs layer
+b470f3a22f61: Pulling fs layer
+2f8dc9fd16f0: Pulling fs layer
+115059bab117: Pulling fs layer
+2f95f9f41a30: Pulling fs layer
+32b7ef0c5fea: Pulling fs layer
+489e9bd155fb: Pulling fs layer
+87005268df2e: Pulling fs layer
+7b69c108b62c: Pulling fs layer
+4f4fb700ef54: Already exists
+f96f709b2bef: Download complete
+e7e8db2397d8: Download complete
+062e450697fa: Download complete
+115059bab117: Download complete
+2f8dc9fd16f0: Download complete
+b470f3a22f61: Download complete
+32b7ef0c5fea: Download complete
+87005268df2e: Download complete
+7b69c108b62c: Download complete
+2f95f9f41a30: Download complete
+062e450697fa: Pull complete
+489e9bd155fb: Download complete
+aadc1df55248: Download complete
+aadc1df55248: Pull complete
+b470f3a22f61: Pull complete
+e7e8db2397d8: Pull complete
+2f8dc9fd16f0: Pull complete
+7b69c108b62c: Pull complete
+115059bab117: Pull complete
+32b7ef0c5fea: Pull complete
+2f95f9f41a30: Pull complete
+489e9bd155fb: Pull complete
+4f4fb700ef54: Pull complete
+87005268df2e: Pull complete
+Digest: sha256:b7b0ef84b69d80b9b9c2280c9e9ae0a901175d3035b6b0c3ae22fa6c48bfb272
+Status: Downloaded newer image for public.ecr.aws/supabase/realtime:v2.147.1
+public.ecr.aws/supabase/realtime:v2.147.1
+v1.84.19: Pulling from supabase/storage-api
+44136fa355b3: Already exists
+f78b0d5104f0: Pulling fs layer
+716842ac9449: Pulling fs layer
+bf455cdbbabe: Pulling fs layer
+c667ff9502fa: Pulling fs layer
+3006729b3e50: Pulling fs layer
+041cdd88dd6c: Pulling fs layer
+3ff3ea6b2983: Pulling fs layer
+402bbcbdc983: Pulling fs layer
+cf21426a3250: Pulling fs layer
+5e9b4a97f639: Pulling fs layer
+62e4715136ab: Pulling fs layer
+40cafbe11ed2: Pulling fs layer
+720ffe7ad440: Pulling fs layer
+258ab0d9d5b1: Pulling fs layer
+258ab0d9d5b1: Download complete
+bf455cdbbabe: Download complete
+1d7631639670: Download complete
+f78b0d5104f0: Download complete
+cf21426a3250: Download complete
+5e9b4a97f639: Download complete
+041cdd88dd6c: Download complete
+5e9b4a97f639: Pull complete
+3006729b3e50: Download complete
+62e4715136ab: Download complete
+402bbcbdc983: Download complete
+c667ff9502fa: Download complete
+3ff3ea6b2983: Download complete
+720ffe7ad440: Download complete
+716842ac9449: Download complete
+716842ac9449: Pull complete
+3006729b3e50: Pull complete
+402bbcbdc983: Pull complete
+40cafbe11ed2: Download complete
+40cafbe11ed2: Pull complete
+62e4715136ab: Pull complete
+cf21426a3250: Pull complete
+258ab0d9d5b1: Pull complete
+720ffe7ad440: Pull complete
+bf455cdbbabe: Pull complete
+c667ff9502fa: Pull complete
+3ff3ea6b2983: Pull complete
+041cdd88dd6c: Pull complete
+f78b0d5104f0: Pull complete
+Digest: sha256:a0420573837ee08c0afdc9cd01f90b4b8027579da99e0b9a159fe912ef756c99
+Status: Downloaded newer image for public.ecr.aws/supabase/storage-api:v1.84.19
+public.ecr.aws/supabase/storage-api:v1.84.19
+v2.197.0: Pulling from supabase/gotrue
+c0cb7126d877: Pulling fs layer
+55afa1ecc21d: Pulling fs layer
+f30f4fcb85f4: Pulling fs layer
+74c409e3506a: Pulling fs layer
+71eb50013731: Pulling fs layer
+e5d190db8191: Pulling fs layer
+44136fa355b3: Already exists
+41e9f49dd3b3: Download complete
+c0cb7126d877: Download complete
+f30f4fcb85f4: Download complete
+74c409e3506a: Download complete
+71eb50013731: Download complete
+e5d190db8191: Download complete
+55afa1ecc21d: Download complete
+55afa1ecc21d: Pull complete
+71eb50013731: Pull complete
+74c409e3506a: Pull complete
+e5d190db8191: Pull complete
+c0cb7126d877: Pull complete
+f30f4fcb85f4: Pull complete
+Digest: sha256:1736a63078f5922b198c4cbe50f80ab9a2d3b54fe8b7b6cfb2e9dc5dbbc12c6b
+Status: Downloaded newer image for public.ecr.aws/supabase/gotrue:v2.197.0
+public.ecr.aws/supabase/gotrue:v2.197.0
+Seeding globals from roles.sql...
+Applying migration 20261021090000_initial_tzinda_backend.sql...
+Applying migration 20261021150000_tighten_invites_and_fk_indexes.sql...
+Applying migration 20261021153000_long_invite_codes.sql...
+Applying migration 20261021154500_restrict_caregiver_link_reads.sql...
+Applying migration 20261021170000_realtime_location_and_short_invites.sql...
+Applying migration 20261021210000_independent_devices_and_account_links.sql...
+Applying migration 20261022001000_caregiver_location_fk_indexes.sql...
+Applying migration 20261022221735_camera_pairing_rpc_schema_cache.sql...
+Applying migration 20261022230000_arduino_caregiver_realtime.sql...
+Applying migration 20261023154908_fix_caregiver_invite_ambiguous_columns.sql...
+Applying migration 20261023155057_fix_caregiver_invite_on_conflict_resolution.sql...
+Applying migration 20261023161538_caregiver_phone_motion_status.sql...
+Applying migration 20261023161725_caregiver_phone_motion_index.sql...
+Applying migration 20261024103000_medications_module.sql...
+Applying migration 20261024200000_realtime_replication_guards.sql...
+Applying migration 20261025170000_camera_pairing_relink_and_owner_management.sql...
+Stopping containers...
+{"_tag":"Error","error":{"code":"MigrationApplyError","message":"ERROR: cannot change return type of existing function (SQLSTATE 42P13)\nRow type defined by OUT parameters is different.\nAt statement: 0\n-- Fix camera pairing re-link conflicts, return owner name, and allow wearer to manage/unlink cameras.\r\n\r\ncreate or replace function public.accept_camera_device_invite(p_code text)\r\nreturns table (owner_user_id uuid, device_id uuid, device_name text, owner_name text, linked_at timestamptz)\r\nlanguage plpgsql\r\nsecurity definer\r\nset search_path = ''\r\nas $$\r\n#variable_conflict use_column\r\ndeclare\r\n    v_camera uuid := auth.uid();\r\n    v_code text := upper(regexp_replace(coalesce(p_code, ''), '[^A-Za-z0-9]', '', 'g'));\r\n    v_invite public.camera_device_invites%rowtype;\r\n    v_device uuid := extensions.gen_random_uuid();\r\n    v_owner_name text := '';\r\n    v_now timestamptz := clock_timestamp();\r\nbegin\r\n    if v_camera is null then\r\n        raise exception 'authentication_required' using errcode = '28000';\r\n    end if;\r\n\r\n    if v_code !~ '^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$' then\r\n        raise exception 'camera_invite_invalid_or_expired' using errcode = '22023';\r\n    end if;\r\n\r\n    select * into v_invite from public.camera_device_invites as i\r\n    where i.code_hash = encode(extensions.digest(v_code, 'sha256'), 'hex')\r\n      and i.claimed_at is null and i.expires_at > v_now\r\n    for update;\r\n\r\n    if not found then\r\n        raise exception 'camera_invite_invalid_or_expired' using errcode = '22023';\r\n    end if;\r\n\r\n    select coalesce(p.full_name, 'Persona protegida') into v_owner_name\r\n    from public.profiles as p\r\n    where p.user_id = v_invite.owner_user_id;\r\n\r\n    if v_owner_name is null or trim(v_owner_name) = '' then\r\n        v_owner_name := 'Persona protegida';\r\n    end if;\r\n\r\n    insert into public.devices (id, user_id, logical_id, name, device_type, link_status, last_connected_at, updated_at)\r\n    values (v_device, v_invite.owner_user_id, 'camera-user:' || v_camera::text, v_invite.device_name, 'camera', 'linked', v_now, v_now)\r\n    on conflict (user_id, logical_id) do update\r\n        set name = excluded.name,\r\n            device_type = excluded.device_type,\r\n            link_status = 'linked',\r\n            last_connected_at = v_now,\r\n            updated_at = v_now\r\n    returning id into v_device;\r\n\r\n    -- Clean up any prior camera link for this camera account or for this owner/device\r\n    delete from public.camera_device_links\r\n    where camera_user_id = v_camera\r\n       or (owner_user_id = v_invite.owner_user_id and device_id = v_device);\r\n\r\n    insert into public.camera_device_links (camera_user_id, owner_user_id, device_id, linked_at)\r\n    values (v_camera, v_invite.owner_user_id, v_device, v_now);\r\n\r\n    update public.camera_device_invites as cdi\r\n    set claimed_at = v_now, claimed_by = v_camera\r\n    where cdi.id = v_invite.id;\r\n\r\n    return query select v_invite.owner_user_id, v_device, v_invite.device_name, v_owner_name, v_now;\r\nend;\r\n$$"}}

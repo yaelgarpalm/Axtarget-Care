@@ -45,7 +45,7 @@ El checklist aportado es una lista de hipótesis, no evidencia de ejecución. Se
 | H10 | [x] Texto verificado por prueba unitaria | UI usa «Sin pendientes locales» y conserva por separado última confirmación remota |
 | H11 | [x] Corrección local verificada | Estado geográfico en zone_runtime; configuración conserva su versión y cola |
 | H12 | [~] Inspección remota | Tablas de medicamentos sí existen; historial remoto omite migraciones que el esquema refleja parcialmente |
-| H13 | [~] Permisos locales verificados; RLS pendiente | Propietario edita; cuidador vinculado registra tomas compartidas. Guardas, textos y siete pruebas nuevas; falta validar migración/políticas por actor |
+| H13 | [~] Android y RLS local verificados; despliegue remoto pendiente | Guardas/textos, siete pruebas de autorización, cuatro HTTP y 31 SQL. Migración preparada; remoto sigue con las políticas anteriores |
 
 ## Lote 1: integridad de descarga y registro
 
@@ -65,7 +65,7 @@ Proyecto identificado mediante la URL configurada: `vhppdgbmmtfrbzocitob`. Evide
 
 El asesor reporta funciones SECURITY DEFINER ejecutables por autenticados, dos tablas de cámara sin políticas directas y protección de contraseñas filtradas desactivada. Las funciones y tablas pueden depender deliberadamente de RPC; hay que revisar sus controles antes de cambiar permisos. [Asesor de funciones](https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable), [protección de contraseñas](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection).
 
-No se ha aplicado ninguna migración remota. Docker está instalado pero su motor no responde; hay un emulador Android disponible, sin dispositivo físico conectado al inicio.
+No se ha aplicado ninguna migración remota. Al inicio Docker no respondía. En el lote 6 se inició el motor y se creó una base Supabase local; ver pruebas de reproducción y RLS. Hay emulador Android, sin dispositivo físico conectado al inicio.
 
 ## Pendientes de aceptación física
 
@@ -133,3 +133,21 @@ Los recordatorios se programan únicamente para el propietario en modo persona p
 Archivos: MedicationRepository, MedicationReminderScheduler/Receiver, MedicationDatabase, MedicationModuleUi, MainActivity; nuevo MedicationAuthorizationTest. Resultado final: **106 pruebas unitarias y 25 instrumentadas; cero fallos/errores/omitidas**, compilación audit y APK de pruebas correctas. Evidencia: `evidencia/lote-5-validacion.log` y resúmenes JSON. Las siete pruebas nuevas cubren propietario ajeno, edición por cuidador, acción trazada por actor, medicamento privado, otra persona, revocación, cierre de sesión, cambio de modo y marcado de atrasadas por dueño. No ejecutan alertas reales ni llamadas a Supabase.
 
 Pendientes: políticas remotas y columna actor_user_id no están reproducidas en la migración original; preparar y probar reconciliación local. También falta aislar todas las colecciones de cuidados/seguimientos y callbacks Realtime al cambiar de persona. Este lote no declara H05 ni H13 completados integralmente.
+
+
+## Lote 6: contrato HTTP y políticas de tomas
+
+Inspección remota de solo lectura: existen actor_user_id y su FK; conviven políticas antiguas del propietario con variantes que permiten al cuidador insertar y actualizar filas completas. La nueva migración `20261102133804_medication_actor_authorization.sql` agrega la columna si falta, elimina las políticas redundantes, impide crear horarios al cuidador y permite actualizar únicamente acciones de tomas compartidas, activas y con vínculo. Un trigger SECURITY INVOKER protege la identidad de la toma, su fecha programada y el actor; rechaza reemplazar una acción completada y permite repetir exactamente la misma petición tras una respuesta perdida. Se retiran los permisos anónimos y privilegios no usados de estas dos tablas. No se borra ni reescribe el historial existente.
+
+Android usa PATCH para acciones del cuidador y exige una fila devuelta con ID, propietario, actor y estado correctos. Cero filas no equivale a éxito. Se eliminó el reintento de escritura que quitaba actor_user_id después de un 400; ese reintento todavía existía en el envío, aunque la lectura del lote 1 ya exigía la columna. Una transición automática del propietario publica actor nulo. El acceso HTTP sin TLS al servidor loopback de las pruebas se permite exclusivamente en debug con paquete terminado en .audit; la configuración habitual sigue exigiendo HTTPS.
+
+La reproducción desde cero detectó SQLSTATE 42P13 en `20261025170000_camera_pairing_relink_and_owner_management.sql`: CREATE OR REPLACE intentaba cambiar el tipo de retorno del RPC. Ese archivo ahora recrea solamente la función dentro de una transacción y vuelve a establecer sus permisos. No elimina tablas ni datos. Es una corrección del historial para instalaciones nuevas; **no se deben volver a aplicar todas las migraciones al proyecto hospedado**.
+
+Validación final:
+
+- Compilación audit, **106 unitarias y 29 instrumentadas, cero fallos/errores/omitidas**. Cuatro pruebas HTTP reales contra 127.0.0.1 dentro del emulador verifican PATCH mínimo, respuesta vacía, actor incorrecto y error 400 sin eliminar atribución. La primera ejecución falló porque el cliente rechazaba loopback; se conservó ese log y se corrigió el soporte exclusivo del paquete de pruebas.
+- **31 pruebas pgTAP aprobadas** en PostgreSQL/Supabase local: anonimato, datos privados, otra cuenta, permisos de receta/toma, suplantación, cambios de horario, doble acción, posposición, reintento, revocación de compartir y de vínculo.
+- Historial completo reproducido desde cero con los archivos finales (`lote-6-replay-completo.log`), seguido del mismo conjunto SQL (`lote-6-rls-final.log`). Se comprobó previamente que esa base local recién creada no tenía usuarios, medicamentos ni tomas. No se reseteó ninguna base remota ni otra base Docker.
+- Asesor local de seguridad: dos avisos INFO por tablas de cámara con RLS sin políticas directas; usan RPC y su revisión integral continúa. No acredita por sí solo la seguridad del backend.
+
+Evidencia: `lote-6-validacion-final.log`, resúmenes JSON, `lote-6-rls-final.log`, políticas remotas leídas, lista de migraciones y asesores locales. El proyecto remoto no recibió cambios. Falta coordinar el despliegue de la migración con el cliente nuevo, verificar el recorrido contra un proyecto de pruebas y completar las demás áreas de la auditoría. Los clientes anteriores que crean tomas como cuidador necesitarán actualizarse; el cliente nuevo únicamente actualiza tomas existentes.

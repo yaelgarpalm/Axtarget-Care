@@ -1,4 +1,9 @@
 -- Fix camera pairing re-link conflicts, return owner name, and allow wearer to manage/unlink cameras.
+begin;
+
+-- The earlier RPC returns four columns. PostgreSQL cannot replace its OUT row type
+-- with five columns in place. Recreate only this function, preserving all table data.
+drop function if exists public.accept_camera_device_invite(text);
 
 create or replace function public.accept_camera_device_invite(p_code text)
 returns table (owner_user_id uuid, device_id uuid, device_name text, owner_name text, linked_at timestamptz)
@@ -92,3 +97,4 @@ revoke all on function public.unlink_camera_device_by_owner(uuid) from public, a
 grant execute on function public.unlink_camera_device_by_owner(uuid) to authenticated;
 
 notify pgrst, 'reload schema';
+commit;

@@ -1,0 +1,110 @@
+package com.example.guardian_iot
+
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.Assert.*
+import org.junit.runner.RunWith
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+
+/** Real HTTP on emulator loopback; no project URL, key, email or alert is used. */
+@RunWith(AndroidJUnit4::class)
+class MedicationHttpContractTest {
+    private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
+    private val sessions get() = EncryptedSessionStore(context)
+    private val actor = "audit-caregiver"
+    private val intake = MedicationIntake("audit-intake", "audit-med", "audit-owner", "audit-slot",
+        1_800_000_000_000, 1_800_000_001_000, "taken", null, 0, 1_800_000_000_000, 1_800_000_001_000,
+        actorUserId = actor)
+
+    @Before fun prepare() {
+        check(context.packageName.endsWith(".audit"))
+        sessions.write(AuthSession("fake-access", "fake-refresh", System.currentTimeMillis() / 1000 + 7200,
+            actor, "audit@example.invalid"))
+    }
+    @After fun clean() { sessions.clear() }
+
+    @Test fun sharedActionUsesPatchAndDoesNotSendScheduleOrPrescriptionFields() {
+        val saved = JSONArray().put(JSONObject().put("id", intake.id).put("owner_user_id", intake.ownerUserId)
+            .put("actor_user_id", actor).put("status", "taken"))
+        withServer(200, saved.toString()) { backend, request ->
+            backend.updateSharedMedicationIntake(intake)
+            val received = request.get(5, TimeUnit.SECONDS)
+            assertTrue(received.line.startsWith("PATCH /rest/v1/medication_intakes?id=eq.audit-intake&owner_user_id=eq.audit-owner "))
+            val body = JSONObject(received.body)
+            assertEquals(setOf("status", "action_at", "actor_user_id", "snoozed_until", "snooze_count", "updated_at"), body.keys().asSequence().toSet())
+            assertEquals(actor, body.getString("actor_user_id"))
+        }
+    }
+
+    @Test fun zeroRowsFromRevokedLinkDoesNotCountAsAcknowledgement() {
+        withServer(200, "[]") { backend, _ ->
+            assertThrows(BackendFailure::class.java) { backend.updateSharedMedicationIntake(intake) }
+        }
+    }
+
+    @Test fun mismatchedActorInResponseDoesNotCountAsAcknowledgement() {
+        withServer(200, """[{"id":"audit-intake","owner_user_id":"audit-owner","actor_user_id":"different-actor","status":"taken"}]""") { backend, _ ->
+            assertThrows(BackendFailure::class.java) { backend.updateSharedMedicationIntake(intake) }
+        }
+    }
+
+    @Test fun missingActorColumnReturnsOriginalFailureWithoutRetryingAnAnonymousAction() {
+        withServer(400, """{"code":"PGRST204","message":"actor_user_id is missing"}""") { backend, request ->
+            val failure = assertThrows(BackendFailure::class.java) { backend.upsertMedicationIntake(intake) }
+            assertEquals(400, failure.status)
+            assertEquals(actor, JSONObject(request.get(5, TimeUnit.SECONDS).body).getString("actor_user_id"))
+        }
+    }
+
+    private data class CapturedRequest(val line: String, val body: String)
+
+    private fun withServer(status: Int, response: String, block: (SupabaseBackend, CompletableFuture<CapturedRequest>) -> Unit) {
+        val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).apply { soTimeout = 5_000 }
+        val captured = CompletableFuture<CapturedRequest>()
+        val worker = Thread {
+            try {
+                server.accept().use { socket ->
+                    socket.soTimeout = 5_000
+                    val reader = socket.getInputStream().bufferedReader(Charsets.UTF_8)
+                    val line = reader.readLine()
+                    var length = 0
+                    while (true) {
+                        val header = reader.readLine() ?: break
+                        if (header.isEmpty()) break
+                        if (header.startsWith("Content-Length:", ignoreCase = true)) length = header.substringAfter(':').trim().toInt()
+                    }
+                    val chars = CharArray(length)
+                    var offset = 0
+                    while (offset < length) {
+                        val count = reader.read(chars, offset, length - offset)
+                        check(count > 0)
+                        offset += count
+                    }
+                    captured.complete(CapturedRequest(line, String(chars)))
+                    val bytes = response.toByteArray(Charsets.UTF_8)
+                    socket.getOutputStream().apply {
+                        write("HTTP/1.1 $status Test\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray(Charsets.UTF_8))
+                        write(bytes)
+                        flush()
+                    }
+                }
+            } catch (failure: Throwable) { captured.completeExceptionally(failure) }
+            finally { server.close() }
+        }.apply { start() }
+        try {
+            block(SupabaseBackend(sessions, "http://127.0.0.1:${server.localPort}", "sb_publishable_audit_fake", ""), captured)
+            captured.get(5, TimeUnit.SECONDS)
+        } finally {
+            server.close()
+            worker.join(5_000)
+        }
+    }
+}

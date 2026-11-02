@@ -63,7 +63,9 @@ class SupabaseBackend(
     internal fun realtimeUrl(): String = baseUrl
     internal fun realtimeKey(): String = publishableKey
     val isConfigured: Boolean
-        get() = baseUrl.startsWith("https://") && publishableKey.startsWith("sb_publishable_")
+        get() = (baseUrl.startsWith("https://") ||
+            (BuildConfig.DEBUG && BuildConfig.APPLICATION_ID.endsWith(".audit") && baseUrl.startsWith("http://127.0.0.1:"))) &&
+            publishableKey.startsWith("sb_publishable_")
 
     fun signUp(email: String, password: String, fullName: String): AuthSession? {
         val body = JSONObject().put("email", email.trim()).put("password", password)
@@ -312,19 +314,30 @@ class SupabaseBackend(
             .put("status", record.status)
             .put("snoozed_until", record.snoozedUntilMillis?.let(::isoTime) ?: JSONObject.NULL)
             .put("snooze_count", record.snoozeCount)
-            .put("actor_user_id", record.actorUserId ?: JSONObject.NULL)
+            .put("actor_user_id", record.actorUserId?.takeIf { record.status in setOf("taken", "skipped", "snoozed") } ?: JSONObject.NULL)
             .put("created_at", isoTime(record.createdAtMillis))
             .put("updated_at", isoTime(record.updatedAtMillis))
         val path = "/rest/v1/medication_intakes?on_conflict=id"
         val prefer = "resolution=merge-duplicates,return=minimal"
-        try {
-            request("POST", path, body, true, prefer = prefer)
-        } catch (failure: BackendFailure) {
-            // Si el remoto aún no tiene actor_user_id, reintentar sin la columna para no perder la toma.
-            if (failure.status != 400) throw failure
-            body.remove("actor_user_id")
-            request("POST", path, body, true, prefer = prefer)
-        }
+        request("POST", path, body, true, prefer = prefer)
+    }
+
+    /** A caregiver updates an existing schedule; it never creates or replaces the prescription. */
+    fun updateSharedMedicationIntake(record: MedicationIntake) {
+        val actor = requireSession().userId
+        if (actor == record.ownerUserId || actor != record.actorUserId ||
+            record.status !in setOf("taken", "skipped", "snoozed") || record.actionAtMillis == null)
+            throw BackendFailure(BackendFailure.Category.VALIDATION)
+        val body = JSONObject().put("status", record.status).put("actor_user_id", actor)
+            .put("action_at", isoTime(record.actionAtMillis))
+            .put("snoozed_until", record.snoozedUntilMillis?.let(::isoTime) ?: JSONObject.NULL)
+            .put("snooze_count", record.snoozeCount).put("updated_at", isoTime(record.updatedAtMillis))
+        val rows = request("PATCH", "/rest/v1/medication_intakes?id=eq." + encode(record.id) +
+            "&owner_user_id=eq." + encode(record.ownerUserId), body, true, prefer = "return=representation").optJSONArray("data")
+        val saved = rows?.optJSONObject(0)
+        if (rows?.length() != 1 || saved?.optString("id") != record.id ||
+            saved.optString("owner_user_id") != record.ownerUserId || saved.optString("actor_user_id") != actor ||
+            saved.optString("status") != record.status) throw BackendFailure(BackendFailure.Category.TEMPORARY)
     }
 
     fun insertFallEvent(event: PendingFallEvent) {

@@ -204,7 +204,7 @@ class MedicationRepository(
                 database.getMedication(ownerId, it.medicationId)?.let { med -> med.shareWithCaregiver && !med.isDeleted } == true
             }.forEach { intake ->
                 try {
-                    backend.upsertMedicationIntake(intake)
+                    backend.updateSharedMedicationIntake(intake)
                     database.markIntakeSynced(intake.id, intake.updatedAtMillis)
                 } catch (failure: BackendFailure) {
                     database.failIntake(intake.id)
