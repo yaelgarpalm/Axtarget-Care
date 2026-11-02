@@ -8,8 +8,8 @@ import org.json.JSONArray
 import java.time.Instant
 
 /** Private, durable store for prescriptions, scheduled instances, and their sync outbox. */
-class MedicationDatabase(context: Context) : SQLiteOpenHelper(
-    context.applicationContext, "tzinda_medications.db", null, 2,
+class MedicationDatabase(context: Context, databaseName: String = "tzinda_medications.db") : SQLiteOpenHelper(
+    AccountStorage.capture(context), databaseName, null, 2,
 ) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE medications (
@@ -347,11 +347,11 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
     companion object {
         const val OVERDUE_AFTER_MS = 60 * 60 * 1000L
 
-        @Volatile private var instance: MedicationDatabase? = null
-        fun getInstance(context: Context): MedicationDatabase =
-            instance ?: synchronized(this) {
-                instance ?: MedicationDatabase(context.applicationContext).also { instance = it }
-            }
+        private val instances = mutableMapOf<String, MedicationDatabase>()
+        fun getInstance(context: Context): MedicationDatabase = synchronized(this) {
+            val captured = AccountStorage.capture(context)
+            instances.getOrPut(AccountStorage.key(captured)) { MedicationDatabase(captured) }
+        }
     }
 }
 

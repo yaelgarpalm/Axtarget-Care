@@ -8,7 +8,7 @@ import kotlin.math.*
 
 /** Offline-first records for shared care notes, safe zones and user-authored routines. */
 class CareFeatureStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("tzinda_care_features", Context.MODE_PRIVATE)
+    private val prefs = AccountStorage.capture(context).getSharedPreferences("tzinda_care_features", Context.MODE_PRIVATE)
     companion object { private val lock = Any() }
     fun rows(kind: String): List<JSONObject> = synchronized(lock) {
         val all = runCatching { JSONArray(prefs.getString("records", "[]")) }.getOrDefault(JSONArray())

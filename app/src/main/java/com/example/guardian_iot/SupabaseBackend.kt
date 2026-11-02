@@ -57,7 +57,9 @@ class SupabaseBackend(
     private val baseUrl: String = BuildConfig.SUPABASE_URL.trimEnd('/'),
     private val publishableKey: String = BuildConfig.SUPABASE_PUBLISHABLE_KEY,
     private val redirectUrl: String = BuildConfig.SUPABASE_REDIRECT_URL,
+    expectedUserId: String? = sessions.read()?.userId,
 ) {
+    private var boundUserId: String? = expectedUserId
     internal fun realtimeUrl(): String = baseUrl
     internal fun realtimeKey(): String = publishableKey
     val isConfigured: Boolean
@@ -96,9 +98,12 @@ class SupabaseBackend(
         if (access.isBlank() || refresh.isBlank()) throw BackendFailure(BackendFailure.Category.SESSION)
         val expiresAt = epochSeconds(values["expires_at"], values["expires_in"])
         val interim = AuthSession(access, refresh, expiresAt, "", "")
-        sessions.write(interim)
-        val user = request("GET", "/auth/v1/user", null, needsSession = true)
-        return interim.copy(userId = user.optString("id"), email = user.optString("email")).also(sessions::write)
+        val user = request("GET", "/auth/v1/user", null, needsSession = false, sessionOverride = interim)
+        val validated = interim.copy(userId = user.optString("id"), email = user.optString("email"))
+        if (validated.userId.isBlank()) throw BackendFailure(BackendFailure.Category.SESSION)
+        sessions.write(validated)
+        boundUserId = validated.userId
+        return validated
     }
 
     fun updatePassword(newPassword: String) {
@@ -106,17 +111,20 @@ class SupabaseBackend(
     }
 
     fun signOut() {
+        val owner = boundUserId ?: sessions.read()?.userId ?: return
         try { request("POST", "/auth/v1/logout", null, needsSession = true) }
-        finally { sessions.clear() }
+        finally { sessions.clearIfUser(owner) }
     }
 
     fun deleteAccount() {
         request("POST", "/functions/v1/delete-account", JSONObject(), needsSession = true)
-        sessions.clear()
+        boundUserId?.let(sessions::clearIfUser)
     }
 
     fun currentSession(forceRefresh: Boolean = false): AuthSession? {
         val current = sessions.read() ?: return null
+        if (boundUserId != null && current.userId != boundUserId) throw BackendFailure(BackendFailure.Category.SESSION)
+        if (boundUserId == null) boundUserId = current.userId
         if (!forceRefresh && current.expiresAtSeconds > System.currentTimeMillis() / 1000 + TOKEN_REFRESH_MARGIN_SECONDS) return current
         return try {
             refresh(current)
@@ -643,7 +651,7 @@ class SupabaseBackend(
         true,
     ).optJSONArray("data")?.optJSONObject(0)
 
-    private fun parseAndSaveSession(response: JSONObject): AuthSession? {
+    private fun parseAndSaveSession(response: JSONObject, expectedSession: AuthSession? = null): AuthSession? {
         if (!response.has("access_token")) return null
         val user = response.optJSONObject("user") ?: JSONObject()
         val session = AuthSession(
@@ -653,8 +661,13 @@ class SupabaseBackend(
             userId = user.optString("id"),
             email = user.optString("email"),
         )
-        if (session.accessToken.isNotBlank() && session.refreshToken.isNotBlank()) sessions.write(session)
-        return session.takeIf { it.accessToken.isNotBlank() && it.refreshToken.isNotBlank() }
+        if (session.accessToken.isBlank() || session.refreshToken.isBlank() || session.userId.isBlank()) return null
+        if (expectedSession != null) {
+            if (session.userId != expectedSession.userId || !sessions.writeIfCurrent(expectedSession, session))
+                throw BackendFailure(BackendFailure.Category.SESSION)
+        } else sessions.write(session)
+        boundUserId = session.userId
+        return session
     }
 
     private fun requireSession(): AuthSession =
@@ -672,12 +685,12 @@ class SupabaseBackend(
             if (failure.category == BackendFailure.Category.INVALID_CREDENTIALS ||
                 failure.category == BackendFailure.Category.VALIDATION ||
                 failure.category == BackendFailure.Category.SESSION) {
-                sessions.clear()
+                sessions.clearIfUser(session.userId)
                 throw BackendFailure(BackendFailure.Category.SESSION, failure.status, failure)
             }
             throw failure
         }
-        return parseAndSaveSession(response) ?: throw BackendFailure(BackendFailure.Category.SESSION)
+        return parseAndSaveSession(response, session) ?: throw BackendFailure(BackendFailure.Category.SESSION)
     }
 
     private fun request(
@@ -687,9 +700,10 @@ class SupabaseBackend(
         needsSession: Boolean,
         prefer: String? = null,
         isRetry: Boolean = false,
+        sessionOverride: AuthSession? = null,
     ): JSONObject {
         if (!isConfigured) throw BackendFailure(BackendFailure.Category.CONFIGURATION)
-        val session = if (needsSession) requireSession() else null
+        val session = sessionOverride ?: if (needsSession) requireSession() else null
         val connection = try {
             URL(baseUrl + path).openConnection() as HttpURLConnection
         } catch (error: Exception) {

@@ -240,31 +240,37 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         store = AppStore(this)
         sessions = EncryptedSessionStore(this)
+        sessions.read()?.userId?.takeIf(String::isNotBlank)?.let { owner ->
+            if (store.bindLocalDataToUser(owner)) store = AppStore(this)
+        }
+        val restoredState = savedInstanceState?.takeIf {
+            it.getString("account_scope", "") == AccountStorage.key(store.appContext)
+        }
         backend = SupabaseBackend(sessions)
         medicationRepository = MedicationRepository(this, backend, store)
         careFeatures = CareFeatureStore(this)
-        authMode = savedInstanceState?.getString("auth_mode")?.let { runCatching { AuthMode.valueOf(it) }.getOrNull() }
+        authMode = restoredState?.getString("auth_mode")?.let { runCatching { AuthMode.valueOf(it) }.getOrNull() }
             ?: if (backend.isConfigured && sessions.read() == null && !store.prefs.getBoolean("local_only_mode", false)) AuthMode.LOGIN else null
         if (dark) setTheme(R.style.AppTheme_Dark)
-        super.onCreate(savedInstanceState)
-        tab = savedInstanceState?.getInt("tab") ?: if (store.role().isBlank()) ROLE_TAB else 0
-        pendingAction = savedInstanceState?.getString("action")
-        profileReturnTab = savedInstanceState?.getInt("profile_return_tab", 0) ?: 0
-        cameraReturnTab = savedInstanceState?.getInt("camera_return_tab", 0) ?: 0
-        deviceReturnTab = savedInstanceState?.getInt("device_return_tab", 0) ?: 0
-        medicationReturnTab = savedInstanceState?.getInt("medication_return_tab", 0) ?: 0
-        careReturnTab = savedInstanceState?.getInt("care_return_tab", 0) ?: 0
-        supervisionReturnTab = savedInstanceState?.getInt("supervision_return_tab", 0) ?: 0
-        activityFilter = savedInstanceState?.getInt("activity_filter", 0) ?: 0
-        activitySection = savedInstanceState?.getInt("activity_section", 0) ?: 0
-        editingContacts = savedInstanceState?.getBoolean("editing_contacts", false) ?: false
-        smsRequestInFlight = savedInstanceState?.getBoolean("sms_request_pending") ?: false
-        resumeAlertSetup = savedInstanceState?.getBoolean("resume_alert_setup") ?: false
-        importSlot = savedInstanceState?.getInt("import_slot", -2) ?: -2
-        savedInstanceState?.getString("contact_draft")?.let { json ->
+        super.onCreate(restoredState)
+        tab = restoredState?.getInt("tab") ?: if (store.role().isBlank()) ROLE_TAB else 0
+        pendingAction = restoredState?.getString("action")
+        profileReturnTab = restoredState?.getInt("profile_return_tab", 0) ?: 0
+        cameraReturnTab = restoredState?.getInt("camera_return_tab", 0) ?: 0
+        deviceReturnTab = restoredState?.getInt("device_return_tab", 0) ?: 0
+        medicationReturnTab = restoredState?.getInt("medication_return_tab", 0) ?: 0
+        careReturnTab = restoredState?.getInt("care_return_tab", 0) ?: 0
+        supervisionReturnTab = restoredState?.getInt("supervision_return_tab", 0) ?: 0
+        activityFilter = restoredState?.getInt("activity_filter", 0) ?: 0
+        activitySection = restoredState?.getInt("activity_section", 0) ?: 0
+        editingContacts = restoredState?.getBoolean("editing_contacts", false) ?: false
+        smsRequestInFlight = restoredState?.getBoolean("sms_request_pending") ?: false
+        resumeAlertSetup = restoredState?.getBoolean("resume_alert_setup") ?: false
+        importSlot = restoredState?.getInt("import_slot", -2) ?: -2
+        restoredState?.getString("contact_draft")?.let { json ->
             runCatching { val a = JSONArray(json); contactDraft = (0 until a.length()).map { TrustedContact(a.getJSONObject(it).optString("name"), a.getJSONObject(it).optString("phone")) } }
         }
-        savedInstanceState?.getString("profile_draft")?.let { runCatching { profileDraft = JSONObject(it) } }
+        restoredState?.getString("profile_draft")?.let { runCatching { profileDraft = JSONObject(it) } }
         setContentView(R.layout.activity_main)
         root = findViewById(R.id.root)
         frame = findViewById(R.id.content)
@@ -334,6 +340,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onSaveInstanceState(out: Bundle) {
         saveDrafts()
+        out.putString("account_scope", AccountStorage.key(store.appContext))
         out.putInt("tab", tab); out.putInt("profile_return_tab", profileReturnTab); out.putInt("camera_return_tab", cameraReturnTab); out.putInt("device_return_tab", deviceReturnTab); out.putInt("medication_return_tab", medicationReturnTab); out.putInt("care_return_tab", careReturnTab); out.putInt("supervision_return_tab", supervisionReturnTab)
         out.putInt("activity_filter", activityFilter); out.putInt("activity_section", activitySection); out.putBoolean("editing_contacts", editingContacts)
         out.putString("action", pendingAction); out.putInt("import_slot", importSlot)
@@ -345,7 +352,9 @@ class MainActivity : ComponentActivity() {
         super.onSaveInstanceState(out)
     }
     override fun onResume() {
-        super.onResume(); handler.post(live); refreshPermissionUi(); updateServiceIfActive()
+        super.onResume()
+        if (!AccountStorage.isCurrent(store.appContext)) { recreate(); return }
+        handler.post(live); refreshPermissionUi(); updateServiceIfActive()
         MedicationReminderScheduler.synchronizeAll(this)
         if (tab == CAMERA_TAB && cameraRequested && has(Manifest.permission.CAMERA)) launchCameraDetection()
     }
@@ -1128,16 +1137,26 @@ class MainActivity : ComponentActivity() {
             }
             runOnUiThread {
                 result.onSuccess { message ->
-                    if (mode == AuthMode.REGISTER && authPrivacy?.isChecked == true) {
-                        store.prefs.edit().putString("privacy_notice_version", "2026-10-21-v1")
-                            .putLong("privacy_consent_at", System.currentTimeMillis()).apply()
-                    }
                     authStatus?.text = message
                     if (mode in setOf(AuthMode.LOGIN, AuthMode.REGISTER, AuthMode.RESET) && sessions.read() != null) {
                         sessions.read()?.let { session ->
-                            store.prefs.edit().putBoolean("local_only_mode", false).apply()
                             if (store.bindLocalDataToUser(session.userId)) {
-                                toast("Cuenta distinta a la anterior: se borraron los datos locales viejos de este teléfono.")
+                                disposeCameraController()
+                                stopService(Intent(this, GuardianMonitorService::class.java))
+                                caregiverLocationRealtime?.stop(); caregiverLocationRealtime = null; caregiverLocationRealtimeDevice = ""
+                                caregiverHealthRealtime?.stop(); caregiverHealthRealtime = null; caregiverHealthRealtimeKey = ""
+                                MedicationReminderReceiver.dismissAccountNotifications(this)
+                                store = AppStore(this)
+                                medicationRepository = MedicationRepository(this, backend, store)
+                                careFeatures = CareFeatureStore(this)
+                                contactDraft = null; profileDraft = null; contactEdits.clear(); profileEdits.clear()
+                                tab = if (store.role().isBlank()) ROLE_TAB else 0
+                                toast("Cuenta cambiada. Los datos anteriores siguen guardados por separado.")
+                            }
+                            store.prefs.edit().putBoolean("local_only_mode", false).apply()
+                            if (mode == AuthMode.REGISTER && authPrivacy?.isChecked == true) {
+                                store.prefs.edit().putString("privacy_notice_version", "2026-10-21-v1")
+                                    .putLong("privacy_consent_at", System.currentTimeMillis()).apply()
                             }
                             store.prepareContactsForUser(session.userId)
                             authMode = null

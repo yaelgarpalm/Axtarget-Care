@@ -21,12 +21,13 @@ class MedicationRepository(
     private val backend: SupabaseBackend,
     private val store: AppStore = AppStore(context),
 ) {
-    private val app = context.applicationContext
+    private val app = store.appContext
     val database = MedicationDatabase.getInstance(app)
 
     fun currentOwnerScope(): String {
         val userId = runCatching { EncryptedSessionStore(app).read()?.userId }.getOrNull()
         if (!userId.isNullOrBlank()) {
+            if (store.ownerUserId()?.let { it != userId } == true) throw BackendFailure(BackendFailure.Category.SESSION)
             val localScope = localScope()
             val claimedBy = store.prefs.getString(LOCAL_DATA_CLAIM_PREF, "").orEmpty()
             if (claimedBy.isBlank()) {
@@ -94,10 +95,12 @@ class MedicationRepository(
         return privateItems.size
     }
 
-    fun acceptIntakeAction(intakeId: String, status: String): Boolean {
+    fun acceptIntakeAction(intakeId: String, status: String): Boolean = synchronized(AccountStorage.lock) {
+        if (!AccountStorage.isCurrent(app)) return false
         val intake = database.getIntake(intakeId) ?: return false
         // Trazabilidad: quien confirma la toma (dueño o cuidador vinculado) se guarda con la acción.
-        val actorId = runCatching { backend.currentSession()?.userId }.getOrNull()
+        val actorId = EncryptedSessionStore(app).read()?.userId
+        if (actorId != null && store.ownerUserId()?.let { it != actorId } == true) return false
         val snoozeUntil = if (status == "snoozed") System.currentTimeMillis() + SNOOZE_MS else null
         val accepted = database.recordAction(intakeId, status, System.currentTimeMillis(), snoozeUntil, actorId)
         if (accepted) SyncScheduler.enqueue(app)

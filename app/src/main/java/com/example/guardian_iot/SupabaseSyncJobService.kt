@@ -19,7 +19,7 @@ object SyncScheduler {
     @Volatile private var immediateSyncInFlight = false
 
     fun enqueue(context: Context, immediate: Boolean = true) {
-        val app = context.applicationContext
+        val app = AccountStorage.root(context)
         val sessions = EncryptedSessionStore(app)
         val backend = SupabaseBackend(sessions)
         if (!backend.isConfigured || sessions.read() == null) {
@@ -84,7 +84,7 @@ class SupabaseSyncJobService : JobService() {
         if (!backend.isConfigured || EncryptedSessionStore(applicationContext).read() == null) return false
         active = executor.submit {
             val retry = runCatching { SupabaseSyncRunner(applicationContext).run() }.getOrElse {
-                getSharedPreferences("tzinda_native", MODE_PRIVATE).edit().putString(
+                AppStore(applicationContext).prefs.edit().putString(
                     "sync_status",
                     "No se pudo sincronizar; los datos locales siguen guardados.",
                 ).apply()
@@ -109,9 +109,9 @@ class SupabaseSyncJobService : JobService() {
 }
 
 private class SupabaseSyncRunner(context: Context) {
-    private val app = context.applicationContext
-    private val store = AppStore(app)
-    private val database = store.telemetry
+    private val app = AccountStorage.root(context)
+    private var store = AppStore(app)
+    private val database get() = store.telemetry
     private val sessions = EncryptedSessionStore(app)
     private val backend = SupabaseBackend(sessions)
 
@@ -123,8 +123,12 @@ private class SupabaseSyncRunner(context: Context) {
             ).apply()
             return false
         }
-        if (store.bindLocalDataToUser(session.userId)) {
-            android.util.Log.i("SyncRunner", "La sesión es de otra cuenta; se borraron los datos locales anteriores.")
+        synchronized(AccountStorage.lock) {
+            if (sessions.read()?.userId != session.userId) return false
+            if (store.bindLocalDataToUser(session.userId)) {
+                store = AppStore(app)
+                android.util.Log.i("SyncRunner", "Se activó el almacenamiento separado de la cuenta.")
+            }
         }
         runCatching { store.prepareContactsForUser(session.userId) }
         validateCaregiverLink()
@@ -247,7 +251,7 @@ private class SupabaseSyncRunner(context: Context) {
             syncPhoneMotion(session.userId) { hasError = true }
         }
 
-        val careFeatures = CareFeatureStore(app)
+        val careFeatures = CareFeatureStore(store.appContext)
         if (store.role() == AppStore.ROLE_CAREGIVER) {
             val ownerId = store.prefs.getString("caregiver_owner_id", "").orEmpty()
             if (ownerId.isNotBlank()) {

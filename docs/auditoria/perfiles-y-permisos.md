@@ -42,4 +42,4 @@ La matriz distingue intención y controles observados; no acredita que todas las
 
 ## Siguiente prioridad: conservación de cuentas
 
-`bindLocalDataToUser` todavía borra datos al cambiar de cuenta (H05); no se considera corregido por la separación de modos. La corrección debe conservar colas por cuenta, impedir que tareas en curso escriban bajo otra sesión y reactivar únicamente recordatorios del ámbito actual. No se acepta resolverlo limpiando SQLite o preferencias.
+El lote 4 sustituye el borrado de `bindLocalDataToUser` por archivos por cuenta y verifica A → B → A. Las instancias antiguas conservan su ámbito y las sesiones tienen comprobaciones de identidad. H05 sigue parcialmente abierto para revocación/cambio de persona vinculada y validación de monitoreo en curso. La prueba de arranque de MainActivity no sustituye todos los flujos de hardware y sesión.

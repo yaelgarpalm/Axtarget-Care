@@ -16,13 +16,13 @@ class MedicationDatabaseTest {
     private lateinit var database: MedicationDatabase
 
     @Before fun createFreshDatabase() {
-        context.deleteDatabase("tzinda_medications.db")
-        database = MedicationDatabase(context)
+        context.deleteDatabase("tzinda_medications-test.db")
+        database = MedicationDatabase(context, "tzinda_medications-test.db")
     }
 
     @After fun closeDatabase() {
         database.close()
-        context.deleteDatabase("tzinda_medications.db")
+        context.deleteDatabase("tzinda_medications-test.db")
     }
 
     @Test fun offlineSaveAndScheduleInstanceAreStableAndIdempotent() {
@@ -81,7 +81,7 @@ class MedicationDatabaseTest {
     @Test fun acknowledgedOldVersionCannotDiscardNewerEdit() {
         val old = database.saveMedication(medication())
         database.writableDatabase.execSQL("UPDATE medications SET updated_at=?, name=? WHERE id=?",
-            arrayOf(old.updatedAtMillis + 1, "New edit", old.id))
+            arrayOf<Any>(old.updatedAtMillis + 1, "New edit", old.id))
         database.markMedicationSynced(old.id, old.updatedAtMillis)
         assertEquals("pending", database.getMedication(OWNER, old.id)?.syncState)
         assertEquals("New edit", database.getMedication(OWNER, old.id)?.name)
@@ -104,7 +104,7 @@ class MedicationDatabaseTest {
     @Test fun unsentDataSurvivesDatabaseReopen() {
         database.saveMedication(medication())
         database.close()
-        database = MedicationDatabase(context)
+        database = MedicationDatabase(context, "tzinda_medications-test.db")
         assertEquals(1, database.pendingMedications(OWNER).size)
     }
 

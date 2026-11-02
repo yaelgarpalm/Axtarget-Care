@@ -366,7 +366,7 @@ class GuardianMonitorService : Service(), SensorEventListener {
         }
         val sessions = EncryptedSessionStore(this)
         val session = sessions.read() ?: run { stopCameraFallMonitoring(); return }
-        val backend = SupabaseBackend(sessions)
+        val backend = SupabaseBackend(sessions, expectedUserId = store.ownerUserId())
         if (!backend.isConfigured) { stopCameraFallMonitoring(); return }
         if (cameraFallUserId != session.userId) {
             cameraFallRealtime?.stop()
@@ -391,7 +391,7 @@ class GuardianMonitorService : Service(), SensorEventListener {
                 telemetryExecutor.execute {
                     try {
                         val sessions = EncryptedSessionStore(applicationContext)
-                        val backend = SupabaseBackend(sessions)
+                        val backend = SupabaseBackend(sessions, expectedUserId = store.ownerUserId())
                         val session = backend.currentSession() ?: return@execute
                         if (!backend.isConfigured || session.userId != cameraFallUserId) return@execute
                         val cursor = store.prefs.getLong(KEY_CAMERA_FALL_CURSOR, System.currentTimeMillis())
@@ -773,7 +773,7 @@ class GuardianMonitorService : Service(), SensorEventListener {
         runCatching {
             telemetryExecutor.execute {
                 try {
-                    val backend = SupabaseBackend(EncryptedSessionStore(this))
+                    val backend = SupabaseBackend(EncryptedSessionStore(this), expectedUserId = store.ownerUserId())
                     if (!backend.isConfigured || backend.currentSession() == null) return@execute
                     val deviceId = store.localDeviceId()
                     if (!remoteDeviceRegistered) {
@@ -798,7 +798,7 @@ class GuardianMonitorService : Service(), SensorEventListener {
         runCatching {
             telemetryExecutor.execute {
                 runCatching {
-                    val backend = SupabaseBackend(EncryptedSessionStore(this))
+                    val backend = SupabaseBackend(EncryptedSessionStore(this), expectedUserId = store.ownerUserId())
                     if (backend.isConfigured && backend.currentSession() != null) backend.deleteCaregiverLocation(deviceId)
                 }
                 remoteDeviceRegistered = false

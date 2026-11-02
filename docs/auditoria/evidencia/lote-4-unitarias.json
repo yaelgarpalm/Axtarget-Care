@@ -1,0 +1,107 @@
+{
+  "source": "app\\build\\test-results\\testDebugUnitTest",
+  "suites": [
+    {
+      "name": "com.example.guardian_iot.AlertLogicTest",
+      "tests": "22",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.159Z"
+    },
+    {
+      "name": "com.example.guardian_iot.AuthInputPolicyTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.380Z"
+    },
+    {
+      "name": "com.example.guardian_iot.CameraPairingPolicyTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.393Z"
+    },
+    {
+      "name": "com.example.guardian_iot.CareFeaturesPolicyTest",
+      "tests": "4",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.419Z"
+    },
+    {
+      "name": "com.example.guardian_iot.MedicationLabelCloudTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.431Z"
+    },
+    {
+      "name": "com.example.guardian_iot.MedicationLabelParserTest",
+      "tests": "19",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.600Z"
+    },
+    {
+      "name": "com.example.guardian_iot.MedicationSchedulePolicyTest",
+      "tests": "8",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.749Z"
+    },
+    {
+      "name": "com.example.guardian_iot.ProfileSyncPolicyTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.859Z"
+    },
+    {
+      "name": "com.example.guardian_iot.RealtimeLifecycleTest",
+      "tests": "11",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.870Z"
+    },
+    {
+      "name": "com.example.guardian_iot.SmsPermissionPolicyTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.905Z"
+    },
+    {
+      "name": "com.example.guardian_iot.SyncSafetyTest",
+      "tests": "7",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.915Z"
+    },
+    {
+      "name": "com.example.guardian_iot.TzindaNavigationPolicyTest",
+      "tests": "13",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-11-02T13:22:41.941Z"
+    }
+  ],
+  "totals": {
+    "tests": 106,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}

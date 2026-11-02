@@ -53,8 +53,9 @@ object MedicationReminderScheduler {
         if (intake.status !in setOf("pending", "snoozed")) return
         val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
         val intent = Intent(context, MedicationReminderReceiver::class.java)
+            .putExtra(MedicationReminderReceiver.EXTRA_ACCOUNT_SCOPE, AccountStorage.key(context))
             .setAction(MedicationReminderReceiver.ACTION_MARK_OVERDUE)
-            .setData(Uri.parse("tzinda://medication-overdue/${intake.id}"))
+            .setData(Uri.parse("tzinda://medication-overdue/${AccountStorage.key(context)}/${intake.id}"))
             .putExtra(MedicationReminderReceiver.EXTRA_INTAKE_ID, intake.id)
         val pending = PendingIntent.getBroadcast(
             context, ("overdue|${intake.id}").hashCode(), intent,
@@ -68,8 +69,9 @@ object MedicationReminderScheduler {
     fun cancelOverdueCheck(context: Context, intakeId: String) {
         val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
         val intent = Intent(context, MedicationReminderReceiver::class.java)
+            .putExtra(MedicationReminderReceiver.EXTRA_ACCOUNT_SCOPE, AccountStorage.key(context))
             .setAction(MedicationReminderReceiver.ACTION_MARK_OVERDUE)
-            .setData(Uri.parse("tzinda://medication-overdue/$intakeId"))
+            .setData(Uri.parse("tzinda://medication-overdue/${AccountStorage.key(context)}/$intakeId"))
         val pending = PendingIntent.getBroadcast(
             context, ("overdue|$intakeId").hashCode(), intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
@@ -90,8 +92,9 @@ object MedicationReminderScheduler {
     fun scheduleSnooze(context: Context, intakeId: String, atMillis: Long) {
         val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
         val intent = Intent(context, MedicationReminderReceiver::class.java)
+            .putExtra(MedicationReminderReceiver.EXTRA_ACCOUNT_SCOPE, AccountStorage.key(context))
             .setAction(MedicationReminderReceiver.ACTION_FIRE)
-            .setData(Uri.parse("tzinda://medication-snooze/$intakeId"))
+            .setData(Uri.parse("tzinda://medication-snooze/${AccountStorage.key(context)}/$intakeId"))
             .putExtra(MedicationReminderReceiver.EXTRA_INTAKE_ID, intakeId)
             .putExtra(MedicationReminderReceiver.EXTRA_IS_SNOOZE, true)
         val pending = PendingIntent.getBroadcast(
@@ -130,8 +133,9 @@ object MedicationReminderScheduler {
         create: Boolean,
         intakeId: String? = null,
     ): PendingIntent? {
-        val key = "$medicationId|$time"
+        val key = "${AccountStorage.key(context)}|$medicationId|$time"
         val intent = Intent(context, MedicationReminderReceiver::class.java)
+            .putExtra(MedicationReminderReceiver.EXTRA_ACCOUNT_SCOPE, AccountStorage.key(context))
             .setAction(MedicationReminderReceiver.ACTION_FIRE)
             .setData(Uri.parse("tzinda://medication-slot/${Uri.encode(key)}"))
         if (intakeId != null) intent.putExtra(MedicationReminderReceiver.EXTRA_INTAKE_ID, intakeId)

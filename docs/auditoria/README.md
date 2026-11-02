@@ -37,7 +37,7 @@ El checklist aportado es una lista de hipótesis, no evidencia de ejecución. Se
 | H02 | [x] Corrección local verificada | 404 ya no se convierte en []; descarga paginada, parseo completo, transacción; conservar acciones pendientes |
 | H03 | [~] Agregación verificada; cobertura integral pendiente | Estado agregado de telemetría, medicamentos, cuidados/borrados, perfil y registro; falta comprobar escenarios completos de cuenta |
 | H04 | [x] Corrección local verificada | Estado pending/error/confirmed; únicamente confirmación permite envío dependiente de dispositivos |
-| H05 | [ ] Confirmado | bindLocalDataToUser borra datos al cambiar de cuenta; requiere preservación y aislamiento |
+| H05 | [~] Separación entre cuentas verificada; ámbito del vínculo pendiente | Archivos por cuenta sin borrado; A → B → A y arranque real en emulador aprobados; falta auditar revocación/cambio de persona vinculada |
 | H06 | [ ] Confirmado | MainActivity concentra más de 4.600 líneas; extracción gradual |
 | H07 | [ ] En revisión | Rutas y títulos por perfil, navegación secundaria |
 | H08 | [ ] Confirmado | JSON visible limitado a 100 entradas |
@@ -104,3 +104,19 @@ Solución: `user_role` es modo local y `account_role` conserva el metadato remot
 Resultado: **106 pruebas unitarias y 14 instrumentadas, cero fallos/errores/omitidas**. Compilación debug y APK de pruebas correctas, con `-PtzindaAudit=true`. Evidencia en `evidencia/lote-3-*`. Las 14 instrumentadas incluyen los tres grupos de persistencia, cuidados y perfil; no son pruebas reales de red ni dos teléfonos.
 
 Riesgos y pendientes: no se ejecutó migración ni actualización de roles remotos; clientes anteriores aún pueden escribir su metadato. H05 sigue abierto: conservar y aislar datos al cambiar de cuenta, incluyendo tareas en curso y recordatorios. El contrato de acceso del cuidador y la recuperación de sesión aún requieren correcciones y validación específica.
+
+## Lote 4: conservación e aislamiento entre cuentas
+
+Problema: `bindLocalDataToUser` borraba SQLite y preferencias de la cuenta anterior, incluyendo cambios sin subir. Las instancias antiguas y los recordatorios tampoco tenían un ámbito persistente explícito.
+
+Solución: `AccountStorage` mantiene intactos los archivos heredados para su propietario inicial y asigna archivos privados independientes a las cuentas siguientes mediante un identificador derivado del userId. El puntero de cuenta activa se publica después de preparar su propiedad. Cada store y helper SQLite captura su ámbito; una tarea antigua conserva A y no cambia silenciosamente a B. Al volver a A se reabren sus archivos, sin descargar para recuperar datos pendientes. No se sustituyó SQLite por otra tecnología ni se ejecutó una migración remota.
+
+La actividad vuelve a abrir los repositorios al cambiar de cuenta, limpia borradores de pantalla, detiene recursos de la cuenta anterior y verifica la cuenta antes de mostrar datos al arrancar. El estado guardado de navegación incluye el ámbito. Las sesiones cifradas usan exclusión entre instancias, renovación condicionada a la sesión esperada y cierre limitado al mismo usuario. Las peticiones de una instancia de backend antigua rechazan una sesión de otro usuario. Los recordatorios nuevos incluyen ámbito en URI y extras; el receptor descarta otro ámbito. La exclusión de bases en backup cubre también sus nuevos nombres.
+
+La recuperación de contraseña ya consulta el usuario con el token provisional sin escribir una sesión incompleta. **Sigue pendiente** vincular el callback a una solicitud de recuperación iniciada por el usuario; no se declara resuelto el candidato de sustitución de sesión.
+
+Archivos principales: `AccountStorage.kt`, AppStore, CareFeatureStore, helpers SQLite, EncryptedSessionStore, SupabaseBackend, runner, MainActivity, servicio de monitoreo y recordatorios; reglas de backup. Pruebas nuevas: `AccountStorageTest`. `MedicationDatabaseTest` usa ahora un nombre de base exclusivo de prueba para no borrar un archivo abierto por otro grupo.
+
+Resultado: **106 pruebas unitarias y 18 instrumentadas; cero fallos, errores u omitidas**. Compilación audit correcta. Las cuatro pruebas nuevas cubren A → B → A con perfil/contactos/colas/medicamentos/cuidados; instancia antigua conservada; rechazo de sesión nueva desde backend anterior; renovación atrasada; arranque real de MainActivity con sesión B y datos previos de A, sin mostrar A. Evidencia: `evidencia/lote-4-validacion.log`, `lote-4-instrumentadas.log` y resúmenes JSON.
+
+Limitaciones restantes: probar cambio de sesión con monitoreo/alerta ya en curso, batería/reinicio físico y cuenta remota real. Falta separar datos del cuidador por persona vinculada, confirmar los permisos de acciones de medicamentos y ejecutar revocación RLS. Estas pruebas no enviaron alertas ni contactaron Supabase; las sesiones del emulador son ficticias y el paquete audit no lleva configuración remota.

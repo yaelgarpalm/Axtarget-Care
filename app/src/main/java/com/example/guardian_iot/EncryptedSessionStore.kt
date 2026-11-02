@@ -23,8 +23,7 @@ data class AuthSession(
 class EncryptedSessionStore(context: Context) {
     private val file = File(context.noBackupFilesDir, "supabase-session.v1")
 
-    @Synchronized
-    fun read(): AuthSession? = runCatching {
+    fun read(): AuthSession? = synchronized(lock) { runCatching {
         if (!file.isFile) return null
         val parts = file.readText(Charsets.UTF_8).split(':', limit = 2)
         require(parts.size == 2)
@@ -40,10 +39,9 @@ class EncryptedSessionStore(context: Context) {
             json.optString("user_id"),
             json.optString("email"),
         ).takeIf { it.accessToken.isNotBlank() && it.refreshToken.isNotBlank() }
-    }.getOrNull()
+    }.getOrNull() }
 
-    @Synchronized
-    fun write(session: AuthSession) {
+    fun write(session: AuthSession) = synchronized(AccountStorage.lock) { synchronized(lock) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.doFinal(
@@ -63,16 +61,25 @@ class EncryptedSessionStore(context: Context) {
         check(temporary.renameTo(file) || (file.delete() && temporary.renameTo(file))) {
             "No se pudo guardar la sesión cifrada."
         }
-    }
+    } }
 
-    @Synchronized
-    fun clear() {
+    fun clear() = synchronized(AccountStorage.lock) { synchronized(lock) {
         file.delete()
         runCatching {
             val store = KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }
             store.deleteEntry(KEY_ALIAS)
         }
-    }
+    } }
+
+    fun writeIfCurrent(expected: AuthSession, replacement: AuthSession): Boolean = synchronized(AccountStorage.lock) { synchronized(lock) {
+        if (read() != expected) return false
+        write(replacement)
+        true
+    } }
+
+    fun clearIfUser(userId: String) = synchronized(AccountStorage.lock) { synchronized(lock) {
+        if (read()?.userId == userId) clear()
+    } }
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }
@@ -92,6 +99,7 @@ class EncryptedSessionStore(context: Context) {
     }
 
     companion object {
+        private val lock = Any()
         private const val ANDROID_KEY_STORE = "AndroidKeyStore"
         private const val KEY_ALIAS = "tzinda.supabase.session.v1"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"

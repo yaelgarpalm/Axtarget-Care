@@ -17,7 +17,7 @@ data class LocalVitalHistory(
 
 /** On-device telemetry and durable outbox for background Supabase synchronization. */
 class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
-    context.applicationContext,
+    AccountStorage.capture(context),
     DATABASE_NAME,
     null,
     DATABASE_VERSION,
@@ -599,11 +599,11 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     companion object {
-        @Volatile private var instance: LocalTelemetryDatabase? = null
-        fun getInstance(context: Context): LocalTelemetryDatabase =
-            instance ?: synchronized(this) {
-                instance ?: LocalTelemetryDatabase(context.applicationContext).also { instance = it }
-            }
+        private val instances = mutableMapOf<String, LocalTelemetryDatabase>()
+        fun getInstance(context: Context): LocalTelemetryDatabase = synchronized(this) {
+            val captured = AccountStorage.capture(context)
+            instances.getOrPut(AccountStorage.key(captured)) { LocalTelemetryDatabase(captured) }
+        }
 
         private const val DATABASE_NAME = "tzinda_local_telemetry.db"
         private const val DATABASE_VERSION = 3

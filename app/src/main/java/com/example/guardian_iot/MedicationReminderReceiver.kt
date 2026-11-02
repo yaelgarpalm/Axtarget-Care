@@ -17,29 +17,32 @@ import java.util.Locale
 class MedicationReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val intakeId = intent.getStringExtra(EXTRA_INTAKE_ID) ?: return
+        val scopedContext = AccountStorage.capture(context)
+        if (intent.getStringExtra(EXTRA_ACCOUNT_SCOPE).orEmpty() != AccountStorage.key(scopedContext)) return
         val pendingResult = goAsync()
         Thread {
             try {
-                val database = MedicationDatabase.getInstance(context)
+                if (!AccountStorage.isCurrent(scopedContext)) return@Thread
+                val database = MedicationDatabase.getInstance(scopedContext)
                 when (intent.action) {
-                    ACTION_FIRE -> showReminder(context, database, intakeId, intent.getBooleanExtra(EXTRA_IS_SNOOZE, false))
+                    ACTION_FIRE -> showReminder(scopedContext, database, intakeId, intent.getBooleanExtra(EXTRA_IS_SNOOZE, false))
                     ACTION_MARK_OVERDUE -> {
-                        if (database.markIntakeOverdue(intakeId)) SyncScheduler.enqueue(context)
+                        if (database.markIntakeOverdue(intakeId)) SyncScheduler.enqueue(scopedContext)
                     }
                     ACTION_TAKEN, ACTION_SKIPPED -> {
                         val status = if (intent.action == ACTION_TAKEN) "taken" else "skipped"
-                        if (MedicationRepository(context, SupabaseBackend(EncryptedSessionStore(context))).applyNotificationAction(intakeId, status)) {
-                            MedicationReminderScheduler.cancelOverdueCheck(context, intakeId)
-                            dismissNotification(context, intakeId)
+                        if (MedicationRepository(scopedContext, SupabaseBackend(EncryptedSessionStore(scopedContext))).applyNotificationAction(intakeId, status)) {
+                            MedicationReminderScheduler.cancelOverdueCheck(scopedContext, intakeId)
+                            dismissNotification(scopedContext, intakeId)
                         }
                     }
                     ACTION_SNOOZE -> {
                         database.getIntake(intakeId) ?: return@Thread
-                        if (MedicationRepository(context, SupabaseBackend(EncryptedSessionStore(context))).applyNotificationAction(intakeId, "snoozed")) {
+                        if (MedicationRepository(scopedContext, SupabaseBackend(EncryptedSessionStore(scopedContext))).applyNotificationAction(intakeId, "snoozed")) {
                             val snoozedUntil = database.getIntake(intakeId)?.snoozedUntilMillis ?: System.currentTimeMillis() + MedicationRepository.SNOOZE_MS
-                            MedicationReminderScheduler.scheduleSnooze(context, intakeId, snoozedUntil)
-                            database.getIntake(intakeId)?.let { MedicationReminderScheduler.scheduleOverdueCheck(context, it) }
-                            dismissNotification(context, intakeId)
+                            MedicationReminderScheduler.scheduleSnooze(scopedContext, intakeId, snoozedUntil)
+                            database.getIntake(intakeId)?.let { MedicationReminderScheduler.scheduleOverdueCheck(scopedContext, it) }
+                            dismissNotification(scopedContext, intakeId)
                         }
                     }
                 }
@@ -82,15 +85,19 @@ class MedicationReminderReceiver : BroadcastReceiver() {
         builder.addAction(0, "Marcar tomada", actionPendingIntent(context, intakeId, ACTION_TAKEN))
         if (intake.snoozeCount == 0) builder.addAction(0, "Posponer 10 min", actionPendingIntent(context, intakeId, ACTION_SNOOZE))
         builder.addAction(0, "No tomada", actionPendingIntent(context, intakeId, ACTION_SKIPPED))
-        runCatching { NotificationManagerCompat.from(context).notify(notificationId(intakeId), builder.build()) }
+        synchronized(AccountStorage.lock) {
+            if (AccountStorage.isCurrent(context))
+                runCatching { NotificationManagerCompat.from(context).notify(NOTIFICATION_TAG, notificationId(intakeId), builder.build()) }
+        }
     }
 
     private fun actionPendingIntent(context: Context, intakeId: String, action: String) =
         android.app.PendingIntent.getBroadcast(
             context, ("$action|$intakeId").hashCode(),
             Intent(context, MedicationReminderReceiver::class.java).setAction(action)
-                .setData(android.net.Uri.parse("tzinda://medication-action/$action/$intakeId"))
-                .putExtra(EXTRA_INTAKE_ID, intakeId),
+                .setData(android.net.Uri.parse("tzinda://medication-action/${AccountStorage.key(context)}/$action/$intakeId"))
+                .putExtra(EXTRA_INTAKE_ID, intakeId)
+                .putExtra(EXTRA_ACCOUNT_SCOPE, AccountStorage.key(context)),
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
         )
 
@@ -100,10 +107,20 @@ class MedicationReminderReceiver : BroadcastReceiver() {
         const val ACTION_SKIPPED = "com.guardian.tzindaapp.v2.MEDICATION_SKIPPED"
         const val ACTION_SNOOZE = "com.guardian.tzindaapp.v2.MEDICATION_SNOOZE"
         const val ACTION_MARK_OVERDUE = "com.guardian.tzindaapp.v2.MEDICATION_MARK_OVERDUE"
+        const val EXTRA_ACCOUNT_SCOPE = "medication_account_scope"
         const val EXTRA_INTAKE_ID = "medication_intake_id"
         const val EXTRA_IS_SNOOZE = "medication_is_snooze"
+        private const val NOTIFICATION_TAG = "tzinda-medication"
         private const val CHANNEL_ID = "medication_reminders_v1"
+        fun dismissAccountNotifications(context: Context) {
+            val manager = context.getSystemService(android.app.NotificationManager::class.java) ?: return
+            manager.activeNotifications.filter { it.tag == NOTIFICATION_TAG || (Build.VERSION.SDK_INT >= 26 && it.notification.channelId == CHANNEL_ID) }
+                .forEach { manager.cancel(it.tag, it.id) }
+        }
         fun notificationId(intakeId: String) = 45_000 + (intakeId.hashCode() and 0x0fffffff)
-        fun dismissNotification(context: Context, intakeId: String) = NotificationManagerCompat.from(context).cancel(notificationId(intakeId))
+        fun dismissNotification(context: Context, intakeId: String) {
+            NotificationManagerCompat.from(context).cancel(NOTIFICATION_TAG, notificationId(intakeId))
+            NotificationManagerCompat.from(context).cancel(notificationId(intakeId)) // legacy notification
+        }
     }
 }

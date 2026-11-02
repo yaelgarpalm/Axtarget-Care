@@ -6,7 +6,7 @@ import org.json.JSONObject
 import java.net.URI
 
 class AppStore(context: Context) {
-    private val appContext = context.applicationContext
+    internal val appContext = AccountStorage.capture(context)
     val prefs = appContext.getSharedPreferences("tzinda_native", Context.MODE_PRIVATE)
     val telemetry = LocalTelemetryDatabase.getInstance(appContext)
     init {
@@ -277,40 +277,17 @@ class AppStore(context: Context) {
         telemetry.clearAllData()
     }
 
-    /**
-     * Los datos locales pertenecen a una sola cuenta de Supabase. Al iniciar sesión con una
-     * cuenta distinta (p. ej. tras borrar y recrear la base remota) se borra todo rastro local
-     * de la cuenta anterior para no mezclar perfiles, roles ni datos ajenos.
-     * Devuelve true cuando hubo borrado.
+    /** Switches the active namespace without deleting either account's files or pending data.
+     * Callers must reopen their stores after switching; existing instances remain pinned.
      */
     fun bindLocalDataToUser(userId: String): Boolean {
         if (userId.isBlank()) return false
-        val owner = prefs.getString(LOCAL_DATA_OWNER_KEY, "").orEmpty()
-        if (owner == userId) return false
-        if (owner.isNotBlank()) clearStaleLocalData()
-        prefs.edit().putString(LOCAL_DATA_OWNER_KEY, userId).commit()
-        return owner.isNotBlank()
+        val changed = AccountStorage.activate(appContext, userId)
+        return changed || !AccountStorage.isCurrent(appContext)
     }
 
-    private fun clearStaleLocalData() {
-        clearAccountData()
-        runCatching { MedicationDatabase.getInstance(appContext).clearAll() }
-        runCatching { CareFeatureStore(appContext).clearAll() }
-        val staleKeys = prefs.all.keys.filter { key ->
-            key.startsWith("caregiver_") || key.startsWith("phone_motion_last_uploaded_at_") ||
-                key.startsWith("pending_pairing_") || key.startsWith("camera_") ||
-                key.startsWith("paired_camera") ||
-                key in setOf(
-                    "medication_local_data_claimed_by", "local_device_id", "fall_sensor_device_id",
-                    "wearable_device_id", "arduino_device_id", "local_camera_device_id",
-                    "registered_cameras", "device_sync_configured", "sync_global_failures",
-                    "last_sync_success_at", "sync_status", "sync_location_last_upsert_at",
-                    "privacy_notice_version", "privacy_consent_at",
-                )
-        }
-        prefs.edit().apply { staleKeys.forEach { remove(it) } }.commit()
-        telemetry.clearAllData()
-    }
+    fun ownerUserId(): String? = prefs.getString("local_data_owner_id", "").orEmpty().takeIf(String::isNotBlank)
+
 
     private fun classifyFallEvent(message: String, id: String, incidentId: String?, now: Long): LocalFallEvent? {
         return when {
