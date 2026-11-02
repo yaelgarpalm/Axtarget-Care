@@ -253,7 +253,9 @@ private class SupabaseSyncRunner(context: Context) {
 
         val careFeatures = CareFeatureStore(store.appContext)
         if (store.role() == AppStore.ROLE_CAREGIVER) {
-            val ownerId = store.prefs.getString("caregiver_owner_id", "").orEmpty()
+            val access = CaregiverAccess(store)
+            val scope = access.snapshot()
+            val ownerId = scope?.owner.orEmpty()
             if (ownerId.isNotBlank()) {
                 careFeatures.pendingDeletes().forEach { id ->
                     try { backend.deleteCareRecord(ownerId, id); careFeatures.markDeletedSynced(id) }
@@ -275,8 +277,11 @@ private class SupabaseSyncRunner(context: Context) {
                 }
                 try {
                     val shared = backend.sharedCareRecords(ownerId)
-                    store.prefs.edit().putString("caregiver_shared_care_records", shared.toString()).apply()
-                    store.prefs.edit().putString("caregiver_shared_alert_followups", backend.sharedAlertFollowups(ownerId).toString()).apply()
+                    val followups = backend.sharedAlertFollowups(ownerId)
+                    if (scope != null) access.write(scope) {
+                        putString("caregiver_shared_care_records", shared.toString())
+                        putString("caregiver_shared_alert_followups", followups.toString())
+                    }
                 } catch (e: Exception) { android.util.Log.w("CareSync", "lectura de care_records compartidos falló: ${syncError(e)}"); hasError = true }
             }
         } else {
@@ -322,16 +327,11 @@ private class SupabaseSyncRunner(context: Context) {
      * de otra persona.
      */
     private fun validateCaregiverLink() {
-        val ownerId = store.prefs.getString("caregiver_owner_id", "").orEmpty()
-        if (ownerId.isBlank()) return
+        val access = CaregiverAccess(store)
+        val scope = access.snapshot() ?: return
         val links = runCatching { backend.linkedPeople() }.getOrNull() ?: return
-        val stillLinked = (0 until links.length()).any {
-            links.optJSONObject(it)?.optString("owner_user_id") == ownerId
-        }
-        if (!stillLinked) {
-            android.util.Log.i("SyncRunner", "El vínculo de cuidador con $ownerId ya no existe en Supabase; caché local descartada.")
-            store.clearRemoteDerivedCaches()
-        }
+        val stillLinked = (0 until links.length()).any { links.optJSONObject(it)?.let(scope::matches) == true }
+        if (!stillLinked) access.clear(scope)
     }
 
     private fun syncProfile() {

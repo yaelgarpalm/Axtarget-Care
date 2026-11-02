@@ -11,6 +11,7 @@ class AppStore(context: Context) {
     val telemetry = LocalTelemetryDatabase.getInstance(appContext)
     init {
         migrate(appContext)
+        CaregiverAccess(this).initialize()
         telemetry.ensureContacts(contacts().map { LocalContactRecord(it.id, it.name, it.phone) })
         if (prefs.getLong("profile_updated_at", 0L) == 0L && profile().text("fullName").isNotBlank()) {
             prefs.edit().putLong("profile_updated_at", System.currentTimeMillis()).apply()
@@ -81,7 +82,9 @@ class AppStore(context: Context) {
     }
     fun saveRole(role: String) {
         require(role in setOf(ROLE_WEARER, ROLE_CAREGIVER, ROLE_CAMERA)) { "Selecciona un rol válido." }
+        val changed = role() != role
         check(prefs.edit().putString("user_role", role).putLong("role_updated_at", System.currentTimeMillis()).commit()) { "No se pudo guardar el modo de este teléfono." }
+        if (changed) CaregiverAccess(this).invalidateCache()
         LocationSharing(this).reconcile()
         SyncScheduler.enqueue(appContext)
     }
@@ -253,8 +256,7 @@ class AppStore(context: Context) {
      * que el vínculo ya no existe, para no mostrar información de perfiles anteriores.
      */
     fun clearRemoteDerivedCaches() {
-        val stale = prefs.all.keys.filter { it.startsWith("caregiver_") || it.startsWith("pending_pairing_") }
-        prefs.edit().apply { stale.forEach { remove(it) } }.commit()
+        check(CaregiverAccess(this).clear()) { "La cuenta cambió antes de descartar la caché compartida." }
     }
 
     fun prepareContactsForUser(userId: String) {

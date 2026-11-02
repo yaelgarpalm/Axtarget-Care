@@ -65,6 +65,8 @@ class MainActivity : ComponentActivity() {
     private var authPrivacy: Switch? = null
     private var caregiverRefreshInFlight = false
     private var caregiverRefreshAt = 0L
+    private var caregiverRefreshScope: CaregiverScope? = null
+    private var caregiverRefreshRequest = 0L
     private var wearerLinkRefreshInFlight = false
     private var wearerLinkRefreshAt = 0L
     private var caregiverLocationRealtime: CaregiverLocationRealtime? = null
@@ -474,6 +476,9 @@ class MainActivity : ComponentActivity() {
     }
     private fun acceptCaregiverPairing(code: String, status: TextView? = null) {
         if (!backend.isConfigured || sessions.read() == null) { status?.text = "Inicia sesión antes de vincular."; return }
+        val requestStore = store
+        val actor = sessions.read()?.userId ?: return
+        val access = CaregiverAccess(requestStore)
         status?.text = "Vinculando cuenta…"
         io.execute {
             val result = runCatching {
@@ -484,18 +489,20 @@ class MainActivity : ComponentActivity() {
                 }
             }
             runOnUiThread {
+                if (store !== requestStore) return@runOnUiThread
                 result.onSuccess { link ->
+                    if (!access.select(link, actor)) {
+                        val message = "La cuenta o el vínculo cambió. Intenta vincular de nuevo."
+                        status?.text = message
+                        if (status == null) toast(message, true)
+                        return@onSuccess
+                    }
                     caregiverLocationRealtime?.stop()
                     caregiverLocationRealtime = null
                     caregiverLocationRealtimeDevice = ""
                     caregiverHealthRealtime?.stop()
                     caregiverHealthRealtime = null
                     caregiverHealthRealtimeKey = ""
-                    val deviceId = link.optString("device_id").takeUnless { it.isBlank() || it == "null" }.orEmpty()
-                    store.prefs.edit().remove("caregiver_shared_location").putString("caregiver_link_id", link.optString("id"))
-                        .putString("caregiver_owner_id", link.optString("owner_user_id"))
-                        .putString("caregiver_link_device_id", deviceId).remove("caregiver_location_device_id")
-                        .remove("pending_pairing_type").remove("pending_pairing_code").apply()
                     toast("Cuenta vinculada.")
                     tab = 0; render()
                 }.onFailure { status?.text = it.message ?: "No se pudo vincular la cuenta."; if (status == null) toast(it.message ?: "Código inválido o vencido.", true) }
@@ -2412,42 +2419,39 @@ class MainActivity : ComponentActivity() {
      * Only explicit “Actualizar” actions ask for a visual re-render when the fetch finishes.
      */
     private fun refreshCaregiverSharedData(force: Boolean = false, renderWhenDone: Boolean = false) {
-        val linkId = store.prefs.getString("caregiver_link_id", "").orEmpty()
-        val ownerId = store.prefs.getString("caregiver_owner_id", "").orEmpty()
-        val selectedDeviceId = store.prefs.getString("caregiver_link_device_id", null)
-            ?.takeUnless { it.isBlank() || it == "null" }
-        val now = System.currentTimeMillis()
-        if (linkId.isBlank() || ownerId.isBlank()) return
-        if (sessions.read() == null) {
-            // This used to return silently, so an expired session looked like "the person shared nothing".
-            val message = "Sesión vencida: inicia sesión desde Ajustes para actualizar ubicación y medicamentos."
-            if (store.prefs.getString("caregiver_shared_status", "") != message) {
-                store.prefs.edit().putString("caregiver_shared_status", message).apply()
-            }
-            caregiverSharedStatusView?.text = message
+        val requestStore = store
+        val access = CaregiverAccess(requestStore)
+        val scope = access.snapshot() ?: run {
+            if (sessions.read() == null) caregiverSharedStatusView?.text = "Sesión no disponible: inicia sesión para actualizar los datos compartidos."
             return
         }
-        if (caregiverRefreshInFlight || !force && now - caregiverRefreshAt < 10_000L) return
+        val requestBackend = SupabaseBackend(sessions, expectedUserId = scope.actor)
+        val now = System.currentTimeMillis()
+        if (caregiverRefreshScope == scope && (caregiverRefreshInFlight || !force && now - caregiverRefreshAt < 10_000L)) return
+        caregiverRefreshScope = scope
+        val requestId = ++caregiverRefreshRequest
         caregiverRefreshInFlight = true
         caregiverRefreshAt = now
         // The first successful fetch may fill an empty screen, so it is safe to draw the result.
         // Later fetches stay silent to avoid rebuilding a screen the caregiver is using.
         val hadSharedData = store.prefs.getLong("caregiver_shared_fetched_at", 0L) > 0L
         io.execute {
+            var revoked = false
             val result = runCatching {
-                val links = backend.linkedPeople()
+                val links = requestBackend.linkedPeople()
                 val stillLinked = (0 until links.length()).mapNotNull { links.optJSONObject(it) }
-                    .firstOrNull { it.optString("id") == linkId }
-                    ?: throw BackendFailure(BackendFailure.Category.SESSION)
-                val linkedOwnerId = stillLinked.optString("owner_user_id")
-                val rawLinkedDeviceId = stillLinked.optString("device_id")
-                val linkedDeviceId = rawLinkedDeviceId.takeUnless { it.isBlank() || it == "null" }
-                if (selectedDeviceId != null && selectedDeviceId != linkedDeviceId) throw BackendFailure(BackendFailure.Category.SESSION)
-                val profile = runCatching { backend.sharedProfile(linkedOwnerId) }.getOrNull()
-                val devices = runCatching { backend.linkedDevices(linkedOwnerId) }.getOrDefault(JSONArray())
-                val events = backend.sharedEvents(linkedOwnerId, linkedDeviceId)
-                val measurements = backend.sharedMeasurements(linkedOwnerId, linkedDeviceId)
-                val phoneMotion = runCatching { backend.sharedPhoneMotion(linkedOwnerId, linkedDeviceId) }.getOrNull()
+                    .firstOrNull { scope.matches(it) }
+                if (stillLinked == null) {
+                    revoked = true
+                    error("El vínculo ya no está activo. Vuelve a vincular a la persona si desea compartir sus datos.")
+                }
+                val linkedOwnerId = scope.owner
+                val linkedDeviceId = scope.device
+                val profile = runCatching { requestBackend.sharedProfile(linkedOwnerId) }.getOrNull()
+                val devices = runCatching { requestBackend.linkedDevices(linkedOwnerId) }.getOrDefault(JSONArray())
+                val events = requestBackend.sharedEvents(linkedOwnerId, linkedDeviceId)
+                val measurements = requestBackend.sharedMeasurements(linkedOwnerId, linkedDeviceId)
+                val phoneMotion = runCatching { requestBackend.sharedPhoneMotion(linkedOwnerId, linkedDeviceId) }.getOrNull()
                 val phoneDevices = (0 until devices.length()).mapNotNull { devices.optJSONObject(it) }
                     .filter { it.optString("device_type") == "phone" }
                     .sortedByDescending { dev ->
@@ -2456,33 +2460,35 @@ class MainActivity : ComponentActivity() {
                         syncStr?.let(::isoMillis) ?: 0L
                     }
                 val locationDevice = linkedDeviceId ?: phoneDevices.firstOrNull()?.optString("id").orEmpty()
-                val location = locationDevice.takeIf { it.isNotBlank() }
-                    ?.let { runCatching { backend.sharedLocation(linkedOwnerId, it) }.getOrNull() }
+                val locationResult = locationDevice.takeIf { it.isNotBlank() }
+                    ?.let { runCatching { requestBackend.sharedLocation(linkedOwnerId, it) } }
+                val location = locationResult?.getOrNull()
                 JSONObject().put("name", profile?.optString("full_name").orEmpty())
                     .put("devices", devices).put("events", events).put("measurements", measurements)
                     .put("phone_motion", phoneMotion ?: JSONObject.NULL)
-                    .put("location", location ?: JSONObject.NULL).put("owner_id", linkedOwnerId)
+                    .put("location", location ?: JSONObject.NULL).put("location_fetched", locationResult?.isSuccess == true).put("owner_id", linkedOwnerId)
                     .put("link_device_id", linkedDeviceId ?: "").put("device_id", locationDevice)
             }
             runOnUiThread {
+                if (requestId != caregiverRefreshRequest) return@runOnUiThread
                 caregiverRefreshInFlight = false
+                if (store !== requestStore || !access.isCurrent(scope)) return@runOnUiThread
                 result.onSuccess { data ->
-                    store.prefs.edit()
-                        .putString("caregiver_shared_name", data.optString("name"))
-                        .putString("caregiver_shared_devices", data.optJSONArray("devices")?.toString() ?: "[]")
-                        .putString("caregiver_shared_events", data.optJSONArray("events")?.toString() ?: "[]")
-                        .putString("caregiver_shared_measurements", data.optJSONArray("measurements")?.toString() ?: "[]")
-                        .putString("caregiver_location_device_id", data.optString("device_id"))
-                        .putString("caregiver_shared_status", "Actualizado · ${data.optJSONArray("measurements")?.length() ?: 0} lecturas y ${data.optJSONArray("events")?.length() ?: 0} eventos")
-                        .putLong("caregiver_shared_fetched_at", System.currentTimeMillis())
-                        .apply()
-                    val phoneMotion = data.optJSONObject("phone_motion")
-                    if (phoneMotion != null) store.prefs.edit().putString("caregiver_shared_phone_motion", phoneMotion.toString()).apply()
-                    else store.prefs.edit().remove("caregiver_shared_phone_motion").apply()
-                    val location = data.optJSONObject("location")
-                    // A single empty answer (for example while the devices list is being refreshed)
-                    // used to erase the last known position. Keep it and let the card show its age.
-                    if (location != null) store.prefs.edit().putString("caregiver_shared_location", location.toString()).apply()
+                    if (!access.write(scope) {
+                        putString("caregiver_shared_name", data.optString("name"))
+                        putString("caregiver_shared_devices", data.optJSONArray("devices")?.toString() ?: "[]")
+                        putString("caregiver_shared_events", data.optJSONArray("events")?.toString() ?: "[]")
+                        putString("caregiver_shared_measurements", data.optJSONArray("measurements")?.toString() ?: "[]")
+                        putString("caregiver_location_device_id", data.optString("device_id"))
+                        putString("caregiver_shared_status", "Actualizado · ${data.optJSONArray("measurements")?.length() ?: 0} lecturas y ${data.optJSONArray("events")?.length() ?: 0} eventos")
+                        putLong("caregiver_shared_fetched_at", System.currentTimeMillis())
+                        data.optJSONObject("phone_motion")?.let { putString("caregiver_shared_phone_motion", it.toString()) }
+                            ?: remove("caregiver_shared_phone_motion")
+                        if (data.optBoolean("location_fetched")) {
+                            data.optJSONObject("location")?.let { putString("caregiver_shared_location", it.toString()) }
+                                ?: remove("caregiver_shared_location")
+                        }
+                    }) return@onSuccess
                     ensureCaregiverLocationRealtime(data.optString("device_id"))
                     ensureCaregiverHealthRealtime(data.optString("owner_id"), data.optString("link_device_id").takeIf { it.isNotBlank() })
                     if (renderWhenDone || !hadSharedData) render()
@@ -2491,9 +2497,17 @@ class MainActivity : ComponentActivity() {
                         caregiverSharedStatusView?.text = store.prefs.getString("caregiver_shared_status", "").orEmpty()
                     }
                 }.onFailure {
-                    store.prefs.edit().putString("caregiver_shared_status", it.message?.takeIf(String::isNotBlank)
+                    if (revoked) {
+                        access.clear(scope)
+                        caregiverLocationRealtime?.stop(); caregiverLocationRealtime = null; caregiverLocationRealtimeDevice = ""
+                        caregiverHealthRealtime?.stop(); caregiverHealthRealtime = null; caregiverHealthRealtimeKey = ""
+                        toast("La persona dejó de compartir mediante este vínculo.")
+                        render()
+                        return@onFailure
+                    }
+                    access.write(scope) { putString("caregiver_shared_status", it.message?.takeIf(String::isNotBlank)
                         ?.let { message -> "No se pudo actualizar: $message" }
-                        ?: "No se pudieron actualizar los datos compartidos.").apply()
+                        ?: "No se pudieron actualizar los datos compartidos.") }
                     if (renderWhenDone) render()
                     else caregiverSharedStatusView?.text = store.prefs.getString("caregiver_shared_status", "").orEmpty()
                 }
@@ -2501,26 +2515,31 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun ensureCaregiverLocationRealtime(deviceId: String) {
+        val access = CaregiverAccess(store)
+        val scope = access.snapshot() ?: return
         if (deviceId.isBlank() || caregiverLocationRealtimeDevice == deviceId) return
         caregiverLocationRealtime?.stop()
         caregiverLocationRealtimeDevice = deviceId
         caregiverLocationRealtime = CaregiverLocationRealtime(backend, sessions, onLocation = { location ->
             runOnUiThread {
                 if (store.prefs.getString("caregiver_location_device_id", "").orEmpty() != deviceId) return@runOnUiThread
-                val editor = store.prefs.edit()
-                if (location == null) editor.remove("caregiver_shared_location")
-                else editor.putString("caregiver_shared_location", location.toString())
-                editor.apply()
+                if (!access.write(scope) {
+                    if (location == null) remove("caregiver_shared_location")
+                    else putString("caregiver_shared_location", location.toString())
+                }) return@runOnUiThread
                 caregiverLocationUpdater?.invoke()
             }
         }, onRealtimeError = { err ->
             runOnUiThread {
-                store.prefs.edit().putString("caregiver_shared_status", "Aviso Realtime (ubicación): $err").apply()
+                if (!access.write(scope) { putString("caregiver_shared_status", "Aviso Realtime (ubicación): $err") }) return@runOnUiThread
                 caregiverSharedStatusView?.text = store.prefs.getString("caregiver_shared_status", "").orEmpty()
             }
         }).also { it.start(deviceId) }
     }
     private fun ensureCaregiverHealthRealtime(ownerId: String, deviceId: String?) {
+        val access = CaregiverAccess(store)
+        val scope = access.snapshot() ?: return
+        if (scope.owner != ownerId) return
         val key = "$ownerId:${deviceId.orEmpty()}"
         if (ownerId.isBlank() || caregiverHealthRealtimeKey == key) return
         caregiverHealthRealtime?.stop()
@@ -2528,43 +2547,44 @@ class MainActivity : ComponentActivity() {
         caregiverHealthRealtime = CaregiverHealthRealtime(
             backend,
             sessions,
-            onMeasurement = ::mergeCaregiverMeasurement,
-            onFallEvent = { refreshCaregiverSharedData(force = true, renderWhenDone = true) },
-            onPhoneMotion = ::mergeCaregiverPhoneMotion,
-            onRealtimeError = { err -> runOnUiThread { store.prefs.edit().putString("caregiver_shared_status", "Aviso Realtime: $err").apply() } },
-            onCareDataChange = {
-                val now = System.currentTimeMillis()
-                if (now - lastCareDataRefreshAt > 5_000L) {
-                    lastCareDataRefreshAt = now
-                    refreshCaregiverSharedData(force = true, renderWhenDone = true)
+            onMeasurement = { mergeCaregiverMeasurement(it, scope) },
+            onFallEvent = { runOnUiThread { if (access.isCurrent(scope)) refreshCaregiverSharedData(force = true, renderWhenDone = true) } },
+            onPhoneMotion = { mergeCaregiverPhoneMotion(it, scope) },
+            onRealtimeError = { err -> runOnUiThread { access.write(scope) { putString("caregiver_shared_status", "Aviso Realtime: $err") } } },
+            onCareDataChange = { runOnUiThread {
+                if (access.isCurrent(scope)) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastCareDataRefreshAt > 5_000L) {
+                        lastCareDataRefreshAt = now
+                        refreshCaregiverSharedData(force = true, renderWhenDone = true)
+                    }
                 }
-            },
+            } },
         ).also { it.start(ownerId, deviceId) }
     }
 
-    private fun mergeCaregiverMeasurement(measurement: JSONObject) {
+    private fun mergeCaregiverMeasurement(measurement: JSONObject, scope: CaregiverScope) {
         runOnUiThread {
-            val current = runCatching {
-                JSONArray(store.prefs.getString("caregiver_shared_measurements", "[]"))
-            }.getOrDefault(JSONArray())
+            val access = CaregiverAccess(store)
+            if (!access.isCurrent(scope)) return@runOnUiThread
+            val current = runCatching { JSONArray(store.prefs.getString("caregiver_shared_measurements", "[]")) }.getOrDefault(JSONArray())
             val rows = (0 until current.length()).mapNotNull { current.optJSONObject(it) }
-                .filterNot { it.optString("id") == measurement.optString("id") }
-                .toMutableList()
+                .filterNot { it.optString("id") == measurement.optString("id") }.toMutableList()
             rows.add(measurement)
-            // Android rejects Supabase's "+00:00" offset in Instant.parse, so every row used to
-            // sort as 0 and the newest reading could be the one dropped by take(100).
             val sorted = rows.sortedByDescending { row -> isoMillis(row.optString("captured_at")) }.take(100)
             val merged = JSONArray().apply { sorted.forEach(::put) }
-            store.prefs.edit().putString("caregiver_shared_measurements", merged.toString())
-                .putLong("caregiver_shared_fetched_at", System.currentTimeMillis()).apply()
-            caregiverVitalsUpdater?.invoke()
+            if (access.write(scope) {
+                putString("caregiver_shared_measurements", merged.toString())
+                putLong("caregiver_shared_fetched_at", System.currentTimeMillis())
+            }) caregiverVitalsUpdater?.invoke()
         }
     }
-    private fun mergeCaregiverPhoneMotion(motion: JSONObject) {
+    private fun mergeCaregiverPhoneMotion(motion: JSONObject, scope: CaregiverScope) {
         runOnUiThread {
-            store.prefs.edit().putString("caregiver_shared_phone_motion", motion.toString())
-                .putLong("caregiver_shared_fetched_at", System.currentTimeMillis()).apply()
-            // The card is read when the screen is built; forcing a render here moved the list.
+            CaregiverAccess(store).write(scope) {
+                putString("caregiver_shared_phone_motion", motion.toString())
+                putLong("caregiver_shared_fetched_at", System.currentTimeMillis())
+            }
         }
     }
     private fun addSharedLocationCard(parent: LinearLayout) {
@@ -2725,15 +2745,16 @@ class MainActivity : ComponentActivity() {
                 .setMessage("Se dejarán de mostrar sus eventos y mediciones compartidas. Ella conserva sus datos y su monitoreo local.")
                 .setNegativeButton("Cancelar", null).setPositiveButton("Desvincular") { _, _ ->
                     val linkId = store.prefs.getString("caregiver_link_id", "").orEmpty()
+                    val access = CaregiverAccess(store)
+                    val scope = access.snapshot() ?: return@setPositiveButton
                     io.execute {
                         val result = runCatching { backend.unlinkCaregiver(linkId) }
                         runOnUiThread {
+                            if (!access.isCurrent(scope)) return@runOnUiThread
                             result.onSuccess {
+                                access.clear(scope)
                                 caregiverLocationRealtime?.stop(); caregiverLocationRealtime = null; caregiverLocationRealtimeDevice = ""
                                 caregiverHealthRealtime?.stop(); caregiverHealthRealtime = null; caregiverHealthRealtimeKey = ""
-                                store.prefs.edit().remove("caregiver_shared_location").remove("caregiver_link_id").remove("caregiver_owner_id")
-                                    .remove("caregiver_location_device_id").remove("caregiver_shared_phone_motion")
-                                    .remove("caregiver_device_id").remove("caregiver_link_device_id").apply()
                                 toast("Vínculo desconectado."); render()
                             }.onFailure { toast(it.message ?: "No se pudo desvincular.", true) }
                         }
