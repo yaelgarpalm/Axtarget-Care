@@ -33,7 +33,7 @@ El checklist aportado es una lista de hipótesis, no evidencia de ejecución. Se
 
 | ID | Estado | Evidencia / siguiente trabajo |
 |---|---|---|
-| H01 | [ ] Confirmado | syncProfile publica user_role y applyRemoteProfile modifica el modo local |
+| H01 | [~] Corrección local verificada; dos teléfonos pendiente | Modo local no publica profiles.role ni se reemplaza al descargar perfil; 5 pruebas unitarias y 4 instrumentadas nuevas |
 | H02 | [x] Corrección local verificada | 404 ya no se convierte en []; descarga paginada, parseo completo, transacción; conservar acciones pendientes |
 | H03 | [~] Agregación verificada; cobertura integral pendiente | Estado agregado de telemetría, medicamentos, cuidados/borrados, perfil y registro; falta comprobar escenarios completos de cuenta |
 | H04 | [x] Corrección local verificada | Estado pending/error/confirmed; únicamente confirmación permite envío dependiente de dispositivos |
@@ -92,3 +92,15 @@ Implementado y verificado en las pruebas indicadas; no equivale a aceptación in
 ## Continuidad de revisión de seguridad
 
 Scan existente: `cd27264a-1f0e-404a-9563-2e495747963d`; cobertura parcial, sin informe final. Se guardó un checkpoint con modelo preliminar y candidatos que aún requieren validación del coordinador: callback de recuperación, clave cloud en APK, autenticidad de sensores, propiedad del dispositivo en phone_motion_status y consentimiento de ubicación. No se atribuye cobertura completa a los mensajes parciales de los revisores.
+
+## Lote 3: modo local y perfil de cuenta
+
+Problema: cambiar el modo de un teléfono publicaba `profiles.role`; una descarga podía cambiar el modo en otra instalación. El acuse del perfil también podía reconocer una edición realizada después de iniciar la petición.
+
+Archivos: `ProfileSyncPolicy.kt`, `AppStore.kt`, `SupabaseSyncJobService.kt`, `SupabaseBackend.kt`, `MainActivity.kt`, `TzindaUx.kt`; pruebas `ProfileSyncPolicyTest` y `ProfileIsolationTest`.
+
+Solución: `user_role` es modo local y `account_role` conserva el metadato remoto. Payloads de perfil omiten `role`; la descarga nunca altera el modo local. Snapshot coherente de versión, nombre y consentimiento; versiones locales crecientes; acuse solo de la versión enviada; una respuesta atrasada no sobreescribe una edición posterior. Las escrituras exigen una fila confirmada por el servidor y preservan preferencias remotas no modificadas. UI explica cuenta, modo y permisos por vínculo. Matriz y limitaciones: [perfiles-y-permisos.md](perfiles-y-permisos.md).
+
+Resultado: **106 pruebas unitarias y 14 instrumentadas, cero fallos/errores/omitidas**. Compilación debug y APK de pruebas correctas, con `-PtzindaAudit=true`. Evidencia en `evidencia/lote-3-*`. Las 14 instrumentadas incluyen los tres grupos de persistencia, cuidados y perfil; no son pruebas reales de red ni dos teléfonos.
+
+Riesgos y pendientes: no se ejecutó migración ni actualización de roles remotos; clientes anteriores aún pueden escribir su metadato. H05 sigue abierto: conservar y aislar datos al cambiar de cuenta, incluyendo tareas en curso y recordatorios. El contrato de acceso del cuidador y la recuperación de sesión aún requieren correcciones y validación específica.

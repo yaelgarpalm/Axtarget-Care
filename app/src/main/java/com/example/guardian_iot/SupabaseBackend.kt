@@ -146,31 +146,33 @@ class SupabaseBackend(
         ).optJSONArray("data") ?: JSONArray()
     }
 
-    fun updateProfile(fullName: String, role: String?, preferences: JSONObject) {
+    fun updateProfile(fullName: String, preferences: JSONObject) {
         val session = requireSession()
-        val body = JSONObject().put("full_name", fullName.take(120)).put("preferences", preferences)
-        body.put("role", role?.takeIf { it in setOf(AppStore.ROLE_WEARER, AppStore.ROLE_CAREGIVER, AppStore.ROLE_CAMERA) } ?: JSONObject.NULL)
-        request(
+        val body = ProfileSyncPolicy.payload(fullName, preferences)
+        val saved = request(
             "PATCH",
             "/rest/v1/profiles?user_id=eq." + encode(session.userId),
             body,
             needsSession = true,
-            prefer = "return=minimal",
-        )
+            prefer = "return=representation",
+        ).optJSONArray("data")
+        if (saved?.length() != 1 || saved.optJSONObject(0)?.optString("user_id") != session.userId)
+            throw BackendFailure(BackendFailure.Category.TEMPORARY)
     }
 
     /** Recrea la fila de perfil cuando no existe en remoto (p. ej. tras una limpieza de datos). */
-    fun upsertProfile(fullName: String, role: String?, preferences: JSONObject) {
+    fun upsertProfile(fullName: String, preferences: JSONObject) {
         val session = requireSession()
-        val body = JSONObject().put("user_id", session.userId).put("full_name", fullName.take(120)).put("preferences", preferences)
-        body.put("role", role?.takeIf { it in setOf(AppStore.ROLE_WEARER, AppStore.ROLE_CAREGIVER, AppStore.ROLE_CAMERA) } ?: JSONObject.NULL)
-        request(
+        val body = ProfileSyncPolicy.payload(fullName, preferences, session.userId)
+        val saved = request(
             "POST",
             "/rest/v1/profiles?on_conflict=user_id",
             body,
             needsSession = true,
-            prefer = "resolution=merge-duplicates,return=minimal",
-        )
+            prefer = "resolution=merge-duplicates,return=representation",
+        ).optJSONArray("data")
+        if (saved?.length() != 1 || saved.optJSONObject(0)?.optString("user_id") != session.userId)
+            throw BackendFailure(BackendFailure.Category.TEMPORARY)
     }
 
     fun userDevices(userId: String): JSONArray = request(

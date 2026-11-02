@@ -62,7 +62,9 @@ class AppStore(context: Context) {
         return list
     }
     fun profile(): JSONObject = runCatching { JSONObject(prefs.getString("profile", "{}").orEmpty()) }.getOrDefault(JSONObject())
+    /** Installation mode, retained independently from profiles.role on other phones. */
     fun role(): String = prefs.getString("user_role", "").orEmpty()
+    fun accountRole(): String = prefs.getString("account_role", "").orEmpty()
     fun arduinoBaseUrl(): String = prefs.getString("arduino_base_url", DEFAULT_ARDUINO_BASE_URL).orEmpty()
     fun braceletConnectionMode(): String = prefs.getString("bracelet_connection_mode", BRACELET_MODE_BLE).orEmpty()
     fun saveBraceletConnectionMode(value: String) {
@@ -79,13 +81,13 @@ class AppStore(context: Context) {
     }
     fun saveRole(role: String) {
         require(role in setOf(ROLE_WEARER, ROLE_CAREGIVER, ROLE_CAMERA)) { "Selecciona un rol válido." }
-        check(prefs.edit().putString("user_role", role).putLong("role_updated_at", System.currentTimeMillis()).commit()) { "No se pudo guardar el tipo de cuenta." }
+        check(prefs.edit().putString("user_role", role).putLong("role_updated_at", System.currentTimeMillis()).commit()) { "No se pudo guardar el modo de este teléfono." }
         SyncScheduler.enqueue(appContext)
     }
-    fun saveProfile(profile: JSONObject) {
+    fun saveProfile(profile: JSONObject) = synchronized(lock) {
         require(profile.optString("fullName").isNotBlank()) { "Escribe el nombre completo." }
         require(profile.optBoolean("dataConsent")) { "Autoriza el almacenamiento de los datos del perfil." }
-        check(prefs.edit().putString("profile", profile.toString()).putLong("profile_updated_at", System.currentTimeMillis())
+        check(prefs.edit().putString("profile", profile.toString()).putLong("profile_updated_at", maxOf(System.currentTimeMillis(), profileUpdatedAt() + 1))
             .putBoolean("include_location", profile.optBoolean("locationConsent")).commit()) { "No se pudo guardar el perfil." }
         SyncScheduler.enqueue(appContext)
     }
@@ -199,7 +201,7 @@ class AppStore(context: Context) {
         val userId = EncryptedSessionStore(appContext).read()?.userId
         val medicationOwner = if (role() == ROLE_CAREGIVER) prefs.getString("caregiver_owner_id", "").orEmpty()
             else userId ?: prefs.getString("medication_local_data_claimed_by", "").orEmpty().ifBlank { "local:${localDeviceId()}" }
-        val profilePending = profileUpdatedAt() > lastProfileSyncAt() || roleUpdatedAt() > lastRoleSyncAt()
+        val profilePending = profileUpdatedAt() > lastProfileSyncAt()
         val deviceState = prefs.getString("device_sync_state", "pending")
         return linkedMapOf(
             "Telemetría y contactos" to telemetry.syncStateSummary(),
@@ -219,26 +221,27 @@ class AppStore(context: Context) {
         SyncScheduler.enqueue(appContext)
     }
 
-    fun profileUpdatedAt(): Long = prefs.getLong("profile_updated_at", 0L)
-    fun roleUpdatedAt(): Long = prefs.getLong("role_updated_at", 0L)
-    fun lastProfileSyncAt(): Long = prefs.getLong("profile_sync_at", 0L)
-    fun lastRoleSyncAt(): Long = prefs.getLong("role_sync_at", 0L)
-    fun markProfileSynced(atMillis: Long = System.currentTimeMillis()) {
-        prefs.edit().putLong("profile_sync_at", atMillis).putLong("role_sync_at", atMillis).apply()
+    internal fun profileSyncSnapshot(): ProfileSyncSnapshot = synchronized(lock) {
+        ProfileSyncSnapshot(profile().text("fullName").trim(), profileUpdatedAt(), lastProfileSyncAt(),
+            prefs.getString("privacy_notice_version", "").orEmpty(), prefs.getLong("privacy_consent_at", 0L))
     }
 
-    fun applyRemoteProfile(fullName: String, role: String?, updatedAtMillis: Long) {
-        val profile = profile().put("fullName", fullName)
-        val editor = prefs.edit().putString("profile", profile.toString())
-        when (role) {
-            ROLE_WEARER, ROLE_CAREGIVER, ROLE_CAMERA -> editor.putString("user_role", role)
-            // Remoto autoritativo: si el perfil remoto no tiene rol, el local heredado se descarta
-            // para que la pantalla de selección de rol vuelva a aparecer.
-            null, "" -> editor.remove("user_role").remove("role_updated_at")
+    fun profileUpdatedAt(): Long = prefs.getLong("profile_updated_at", 0L)
+    fun lastProfileSyncAt(): Long = prefs.getLong("profile_sync_at", 0L)
+    fun markProfileSynced(uploadedVersion: Long) = synchronized(lock) {
+        // A late response acknowledges only the version actually sent.
+        prefs.edit().putLong("profile_sync_at", maxOf(lastProfileSyncAt(), uploadedVersion)).apply()
+    }
+
+    fun applyRemoteProfile(fullName: String, accountRole: String?, updatedAtMillis: Long, expectedLocalVersion: Long = profileUpdatedAt()) = synchronized(lock) {
+        val editor = prefs.edit().putString("account_role", accountRole.orEmpty())
+        // Do not replace the local mode, even on first login or when remote role is null.
+        if (profileUpdatedAt() == expectedLocalVersion) {
+            val profile = profile().put("fullName", fullName)
+            editor.putString("profile", profile.toString()).putLong("profile_updated_at", updatedAtMillis)
+                .putLong("profile_sync_at", updatedAtMillis)
         }
-        val syncedAt = System.currentTimeMillis()
-        editor.putLong("profile_updated_at", updatedAtMillis).putLong("profile_sync_at", syncedAt)
-            .putLong("role_sync_at", syncedAt).apply()
+        check(editor.commit()) { "No se pudo guardar el perfil remoto." }
     }
 
     /**
@@ -270,7 +273,7 @@ class AppStore(context: Context) {
 
     fun clearAccountData() {
         prefs.edit().remove("profile").remove("contacts").remove("events").remove("user_role")
-            .remove("profile_updated_at").remove("profile_sync_at").remove("role_updated_at").commit()
+            .remove("profile_updated_at").remove("profile_sync_at").remove("role_updated_at").remove("account_role").commit()
         telemetry.clearAllData()
     }
 

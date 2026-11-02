@@ -117,7 +117,7 @@ object TzindaNavigationPolicy {
         TzindaTabs.MEDICATIONS -> "Salud"
         TzindaTabs.CARE -> "Cuidados y rutinas"
         TzindaTabs.SUPERVISION -> "Supervisión"
-        TzindaTabs.ROLE -> "Tipo de cuenta"
+        TzindaTabs.ROLE -> "Modo de este teléfono"
         else -> "Inicio"
     }
 

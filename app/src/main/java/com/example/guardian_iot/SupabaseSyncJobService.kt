@@ -331,45 +331,28 @@ private class SupabaseSyncRunner(context: Context) {
     }
 
     private fun syncProfile() {
-        val local = store.profile()
-        val localName = local.text("fullName").trim()
-        val localRole = store.role()
+        val local = store.profileSyncSnapshot()
+        val localVersion = local.version
+        val localName = local.name
+        val acknowledgedVersion = local.acknowledgedVersion
         val remote = backend.fetchProfile()
         val remoteTime = remote?.optString("updated_at")?.toEpochMillis() ?: 0L
-        val localTime = store.profileUpdatedAt()
-        val hasUnsyncedLocalEdit = localTime > store.lastProfileSyncAt()
-        val hasUnsyncedLocalRole = store.roleUpdatedAt() > store.lastRoleSyncAt()
-
-        if (localName.isBlank()) {
-            if (remote != null) {
-                val roleToApply = if (hasUnsyncedLocalRole && localRole.isNotBlank()) localRole else remote.optString("role")
-                store.applyRemoteProfile(remote.optString("full_name"), roleToApply, remoteTime)
-                if (hasUnsyncedLocalRole && localRole.isNotBlank()) {
-                    backend.updateProfile(remote.optString("full_name"), localRole, JSONObject())
-                    store.markProfileSynced()
-                }
+        store.prefs.edit().putString("account_role", remote?.optString("role").orEmpty()).apply()
+        when (ProfileSyncPolicy.action(localName, localVersion, acknowledgedVersion, remote != null, remoteTime)) {
+            ProfileSyncPolicy.Action.PULL -> store.applyRemoteProfile(
+                remote!!.optString("full_name"), remote.optString("role"), remoteTime, localVersion,
+            )
+            ProfileSyncPolicy.Action.PUSH -> {
+                val preferences = remote?.optJSONObject("preferences") ?: JSONObject()
+                preferences.put("privacy_notice_version", local.privacyNotice)
+                    .put("privacy_consent_at", local.consentAt)
+                // Device mode never writes profiles.role, including legacy camera accounts.
+                if (remote == null) backend.upsertProfile(localName, preferences)
+                else backend.updateProfile(localName, preferences)
+                store.markProfileSynced(localVersion)
             }
-            return
+            ProfileSyncPolicy.Action.NONE -> Unit
         }
-
-        if (remote != null && remoteTime > localTime && !hasUnsyncedLocalEdit) {
-            val mergedRole = if (hasUnsyncedLocalRole) localRole else remote.optString("role")
-            store.applyRemoteProfile(remote.optString("full_name"), mergedRole, remoteTime)
-            if (hasUnsyncedLocalRole) {
-                backend.updateProfile(remote.optString("full_name"), mergedRole, JSONObject())
-                store.markProfileSynced()
-            }
-            return
-        }
-
-        val preferences = JSONObject()
-            .put("privacy_notice_version", store.prefs.getString("privacy_notice_version", ""))
-            .put("privacy_consent_at", store.prefs.getLong("privacy_consent_at", 0L))
-        val role = store.role().takeIf { it.isNotBlank() }
-        // Sin fila remota el PATCH actualiza 0 filas en silencio; el upsert la recrea.
-        if (remote == null) backend.upsertProfile(localName, role, preferences)
-        else backend.updateProfile(localName, role, preferences)
-        store.markProfileSynced()
     }
 
     private fun syncContacts() {

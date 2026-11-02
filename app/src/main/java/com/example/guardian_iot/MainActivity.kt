@@ -815,7 +815,7 @@ class MainActivity : ComponentActivity() {
             render()
         }
         if (store.role().isNotBlank() && (GuardianMonitorService.monitoring || store.prefs.getBoolean("monitor_enabled", false))) {
-            AlertDialog.Builder(this).setTitle("Cambiar tipo de cuenta")
+            AlertDialog.Builder(this).setTitle("Cambiar modo de este teléfono")
                 .setMessage("Al cambiar de rol se detendrá el monitoreo de caídas en este teléfono.")
                 .setNegativeButton("Cancelar", null)
                 .setPositiveButton("Cambiar") { _, _ -> applyRole() }.show()
@@ -1166,7 +1166,8 @@ class MainActivity : ComponentActivity() {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }, LinearLayout.LayoutParams(dp(52), dp(52)))
         tz.addGap(body, 18)
-        heading(body, "TZINDAAPP · CUIDADO CONECTADO", "¿Cómo usarás TzindaApp?", "Elige el rol de este teléfono. Podrás cambiarlo después en Ajustes.")
+        heading(body, "TZINDAAPP · CUIDADO CONECTADO", "¿Cómo usarás TzindaApp?", "Elige el modo de este teléfono. Podrás cambiarlo después en Ajustes.")
+        body.addView(text("Tu cuenta identifica quién eres. Este modo organiza las funciones de este teléfono; no cambia el modo de otros teléfonos ni concede acceso a datos ajenos. Los vínculos y permisos de compartir se autorizan por separado.", 14, color = muted))
         val options = listOf(
             Triple(AppStore.ROLE_WEARER, "Llevo el teléfono", "Persona protegida. Detecta posibles caídas, comparte lo que autorices y avisa a tu red."),
             Triple(AppStore.ROLE_CAREGIVER, "Acompaño a otra persona", "Cuidador o familiar. Consulta solo los datos que la persona protegida comparta."),
@@ -1188,10 +1189,10 @@ class MainActivity : ComponentActivity() {
             copy.addView(text(description, 14, color = muted))
             top.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
             item.addView(top)
-            if (selected) item.addView(statusPill(TzindaCopy("Rol actual", "La navegación ya está adaptada a este rol.", TzindaTone.POSITIVE)))
+            if (selected) item.addView(statusPill(TzindaCopy("Modo actual", "La navegación está adaptada a este teléfono.", TzindaTone.POSITIVE)))
             item.addView(button(
                 if (selected) "Continuar como ${TzindaNavigationPolicy.roleLabel(TzindaNavigationPolicy.role(role)).lowercase(Locale.getDefault())}"
-                else "Elegir este rol",
+                else "Elegir este modo",
                 !selected,
             ) { chooseRole(role) })
         }
@@ -1289,7 +1290,7 @@ class MainActivity : ComponentActivity() {
         val privacy = card(body)
         privacy.addView(text("Privacidad de la cámara", 18, true))
         privacy.addView(text("El video se procesa localmente y no se guarda. Solo se comparte el evento técnico autorizado. La cámara no funciona en segundo plano.", 13, color = muted))
-        body.addView(button("Cambiar tipo de cuenta", false) { tab = ROLE_TAB; render() })
+        body.addView(button("Cambiar modo de este teléfono", false) { tab = ROLE_TAB; render() })
     }
     private fun formatPairingCode(code: EditText, maxChars: Int = 8) {
         var formatting = false
@@ -2732,7 +2733,7 @@ class MainActivity : ComponentActivity() {
         }
         addSharedPhoneMotionCard(body)
         addCaregiverSyncControls(body)
-        body.addView(button("Cambiar tipo de cuenta", false) { tab = ROLE_TAB; render() })
+        body.addView(button("Cambiar modo de este teléfono", false) { tab = ROLE_TAB; render() })
     }
     private fun vitalsUnavailableCard(parent: LinearLayout, caregiver: Boolean) {
         val shared = if (caregiver) runCatching { JSONArray(store.prefs.getString("caregiver_shared_measurements", "[]")) }.getOrDefault(JSONArray()) else JSONArray()
@@ -3597,7 +3598,7 @@ class MainActivity : ComponentActivity() {
             "La navegación y las funciones visibles dependen de este rol.",
             TzindaTone.POSITIVE,
         )))
-        roleCard.addView(button("Cambiar tipo de cuenta", false) {
+        roleCard.addView(button("Cambiar modo de este teléfono", false) {
             AlertDialog.Builder(this).setTitle("Cambiar rol")
                 .setMessage("¿Deseas cambiar el rol de este dispositivo? La navegación y las funciones de la pantalla principal se ajustarán al nuevo rol.")
                 .setNegativeButton("Cancelar", null)
@@ -3639,6 +3640,8 @@ class MainActivity : ComponentActivity() {
         account.addView(text(syncCopy.detail, 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
         if (session != null) {
             account.addView(text("Sesión: ${session.email}", 14, color = muted))
+            account.addView(text("Modo de este teléfono: ${TzindaNavigationPolicy.roleLabel(TzindaNavigationPolicy.role(store.role()))}", 14, color = muted))
+            account.addView(text("El acceso a otra persona depende de un vínculo activo y de lo que comparta, no del modo elegido.", 13, color = muted))
             val synced = store.prefs.getLong("last_sync_success_at", 0L).takeIf { it > 0L }
                 ?.let { SimpleDateFormat("d MMM, HH:mm", Locale("es", "MX")).format(Date(it)) } ?: "Aún no sincronizado"
             account.addView(text("Última sincronización correcta: $synced", 13, color = muted))
