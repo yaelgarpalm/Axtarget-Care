@@ -96,7 +96,7 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     @Synchronized
-    fun recordLocation(latitude: Double, longitude: Double, capturedAt: Long, accuracyM: Float? = null) {
+    fun recordLocation(latitude: Double, longitude: Double, capturedAt: Long, accuracyM: Float? = null, shareForSync: Boolean = false) {
         insert(
             ContentValues().apply {
                 put("captured_at", capturedAt)
@@ -105,14 +105,14 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
                 put("longitude", longitude)
             },
         )
-        queueLocationForSync(latitude, longitude, capturedAt, accuracyM)
+        if (shareForSync) queueLocationForSync(latitude, longitude, capturedAt, accuracyM)
     }
 
     /** Keeps the remote history at a bounded resolution regardless of the listener rate. */
     private fun queueLocationForSync(latitude: Double, longitude: Double, capturedAt: Long, accuracyM: Float?) {
         val db = writableDatabase
         val lastQueued = db.rawQuery(
-            "SELECT MAX(captured_at) FROM sync_locations", null,
+            "SELECT MAX(captured_at) FROM sync_locations WHERE sync_state != 'withheld'", null,
         ).use { if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else 0L }
         if (capturedAt - lastQueued < LOCATION_QUEUE_INTERVAL_MS) return
         db.insertWithOnConflict(
@@ -151,7 +151,7 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
     /** Most recent known fix, uploaded or not, used to refresh the live remote position. */
     @Synchronized
     fun latestLocation(): LocalLocationRecord? = readableDatabase.rawQuery(
-        "SELECT id, latitude, longitude, accuracy_m, captured_at FROM sync_locations ORDER BY captured_at DESC LIMIT 1", null,
+        "SELECT id, latitude, longitude, accuracy_m, captured_at FROM sync_locations WHERE sync_state != 'withheld' ORDER BY captured_at DESC LIMIT 1", null,
     ).use { cursor ->
         if (cursor.moveToFirst()) LocalLocationRecord(
             id = cursor.getString(0), latitude = cursor.getDouble(1), longitude = cursor.getDouble(2),
@@ -160,10 +160,21 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     @Synchronized
-    fun markLocationSynced(id: String) = markSyncState("sync_locations", id, "synced")
+    fun markLocationSynced(id: String) {
+        writableDatabase.execSQL("UPDATE sync_locations SET sync_state='synced' WHERE id=? AND sync_state='pending'", arrayOf(id))
+    }
 
     @Synchronized
-    fun markLocationFailure(id: String) = incrementSyncFailure("sync_locations", id)
+    fun withholdLocations() {
+        writableDatabase.execSQL("UPDATE sync_locations SET sync_state='withheld' WHERE sync_state!='withheld'")
+    }
+
+    @Synchronized
+    fun markLocationFailure(id: String) {
+        writableDatabase.execSQL("UPDATE sync_locations SET retry_count=retry_count+1, " +
+            "sync_state=CASE WHEN retry_count+1>=? THEN 'failed' ELSE 'pending' END WHERE id=? AND sync_state='pending'",
+            arrayOf(MAX_SYNC_ATTEMPTS.toString(), id))
+    }
 
     @Synchronized
     fun recordEvent(message: String, incident: String, capturedAt: Long = System.currentTimeMillis()) {

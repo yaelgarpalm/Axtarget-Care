@@ -82,6 +82,7 @@ class AppStore(context: Context) {
     fun saveRole(role: String) {
         require(role in setOf(ROLE_WEARER, ROLE_CAREGIVER, ROLE_CAMERA)) { "Selecciona un rol válido." }
         check(prefs.edit().putString("user_role", role).putLong("role_updated_at", System.currentTimeMillis()).commit()) { "No se pudo guardar el modo de este teléfono." }
+        LocationSharing(this).reconcile()
         SyncScheduler.enqueue(appContext)
     }
     fun saveProfile(profile: JSONObject) = synchronized(lock) {
@@ -89,6 +90,7 @@ class AppStore(context: Context) {
         require(profile.optBoolean("dataConsent")) { "Autoriza el almacenamiento de los datos del perfil." }
         check(prefs.edit().putString("profile", profile.toString()).putLong("profile_updated_at", maxOf(System.currentTimeMillis(), profileUpdatedAt() + 1))
             .putBoolean("include_location", profile.optBoolean("locationConsent")).commit()) { "No se pudo guardar el perfil." }
+        LocationSharing(this).reconcile()
         SyncScheduler.enqueue(appContext)
     }
     fun recipients(): List<TrustedContact> {
@@ -205,6 +207,7 @@ class AppStore(context: Context) {
         val deviceState = prefs.getString("device_sync_state", "pending")
         return linkedMapOf(
             "Telemetría y contactos" to telemetry.syncStateSummary(),
+            "Privacidad de ubicación" to SyncStateSummary(LocationSharing.pendingClearCount(this), 0),
             "Medicamentos y tomas" to MedicationDatabase.getInstance(appContext).syncState(medicationOwner),
             "Cuidados y borrados" to CareFeatureStore(appContext).syncState(),
             "Perfil" to SyncStateSummary(if (profilePending) 1 else 0, 0),

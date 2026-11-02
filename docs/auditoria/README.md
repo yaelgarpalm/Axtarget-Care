@@ -162,3 +162,18 @@ La migración `20261102182134_phone_motion_device_ownership.sql` añade una FK c
 Pruebas: **16 casos pgTAP nuevos aprobados; 47 SQL en conjunto con medicamentos**. Verifican inserción y actualización propias, rechazo al usar/reasignar dispositivos ajenos, cuidador autorizado solo para lectura, revocación, aislamiento de anónimo y FK incluso sin RLS. El informe global de Codex Security continúa abierto: esta evidencia valida este defecto específico, no todo el backend. El despliegue remoto sigue pendiente.
 
 Compilación Android audit y tarea de pruebas unitarias correctas (`lote-7-compilacion.log`); este lote solo cambia SQL y no repitió instrumentación Android. Las 106 unitarias quedaron UP-TO-DATE porque no cambió Kotlin. Asesor de seguridad local: dos avisos INFO de cámara, sin advertencias nuevas de esta migración.
+
+
+## Lote 8: consentimiento de ubicación y cola local
+
+Problema verificado: recordLocation añadía GPS a sync_locations incluso cuando solo se usaban zonas locales, y syncLocationHistory subía esa cola antes de revisar include_location. Los publicadores directo y de JobScheduler actuaban por separado.
+
+LocationSharing centraliza la autorización por cuenta, modo persona protegida y período de consentimiento. El GPS para uso local se conserva en readings, pero solo los puntos posteriores al consentimiento vigente entran en la cola publicable. Al retirar permiso o cambiar de modo, los puntos en cola quedan withheld: no se borran las lecturas, no cuentan como pendientes de envío y un reintento o acuse atrasado no los reactiva. Reautorizar permite puntos nuevos, sin publicar el recorrido previo. La cola heredada no conserva evidencia de consentimiento por fila y se retiene localmente sin subirla.
+
+Todos los publicadores de ubicación comparten una serialización y vuelven a comprobar el consentimiento entre peticiones. La retirada de la última posición en vivo se guarda como trabajo pendiente por dispositivo, se reintenta y aparece en el resumen agregado bajo «Privacidad de ubicación». Si el permiso cambia durante un envío, se solicita retirar esa posición al terminar. El modo cámara/cuidador no publica GPS del modo protegido, y una instancia de cuenta anterior no publica ni retira datos después del cambio de cuenta. La ubicación en vivo requiere además monitoreo activo; el historial recogido con permiso puede sincronizarse después de detenerlo.
+
+Archivos: LocationSharing, LocalTelemetryDatabase, AppStore, runner, servicio de monitoreo y MainActivity. Las zonas locales siguen recibiendo posiciones, usando ahora el store de la cuenta capturada. La confirmación de permiso explica SMS y publicación al cuidador.
+
+Validación final: **106 pruebas unitarias y 39 instrumentadas, cero fallos/errores/omitidas**; compilación audit y APK de pruebas correctas. Evidencia en `lote-8-validacion-final.log` y resúmenes JSON. Diez pruebas instrumentadas nuevas comprueban uso solo local, período de consentimiento, revocación/reapertura/reintento, reautorización, retirada durante envío de historial/en vivo, limpieza fallida, cambio de modo/cuenta y cola heredada. Las funciones de envío de esas pruebas son dobles locales; no ejecutan GPS real ni envían posiciones a Supabase.
+
+Límites: una petición que ya salió puede alcanzar el servidor antes de que este conozca la revocación. La retirada de la última posición requiere conexión y sesión; su pendiente se conserva hasta confirmarse. El historial ya almacenado remotamente no se elimina por este cambio y sus políticas requieren revisión adicional. Siguen pendientes GPS, batería y permisos reales en teléfonos. No se modificó el remoto.

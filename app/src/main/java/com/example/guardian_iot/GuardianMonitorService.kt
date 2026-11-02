@@ -755,14 +755,15 @@ class GuardianMonitorService : Service(), SensorEventListener {
         } catch (_: Exception) { store.event("Ubicación no disponible; las alertas por SMS siguen activas.") }
     }
     private fun saveLocation(location: Location) {
+        if (!AccountStorage.isCurrent(store.appContext)) return
         store.prefs.edit().putString("latitude", location.latitude.toString()).putString("longitude", location.longitude.toString())
             .putLong("location_time", location.time).apply()
         runCatching {
-            store.telemetry.recordLocation(location.latitude, location.longitude, location.time,
+            LocationSharing(store).record(location.latitude, location.longitude, location.time,
                 if (location.hasAccuracy()) location.accuracy else null)
         }
         if (store.prefs.getBoolean("safe_zones_enabled", false)) {
-            val transitions = runCatching { CareFeatureStore(this).onLocation(location.latitude, location.longitude,
+            val transitions = runCatching { CareFeatureStore(store.appContext).onLocation(location.latitude, location.longitude,
                 if (location.hasAccuracy()) location.accuracy else Float.MAX_VALUE, location.time) }.getOrDefault(emptyList())
             if (transitions.isNotEmpty()) SyncScheduler.enqueue(applicationContext)
         }
@@ -780,8 +781,13 @@ class GuardianMonitorService : Service(), SensorEventListener {
                         backend.upsertDevice(deviceId, deviceId, "Teléfono TzindaApp", "phone", "not_applicable")
                         remoteDeviceRegistered = true
                     }
-                    backend.upsertCaregiverLocation(deviceId, location.latitude, location.longitude,
-                        if (location.hasAccuracy()) location.accuracy else null, location.time)
+                    val success = LocationSharing(store).flush(
+                        uploadHistory = { backend.insertLocationHistory(it, deviceId) },
+                        uploadLive = { backend.upsertCaregiverLocation(deviceId, it.latitude, it.longitude, it.accuracyM?.toFloat(), it.capturedAtMillis) },
+                        clearRemote = { backend.deleteCaregiverLocation(it) },
+                        canPublishLive = { monitoring && locationForeground && hasLocation() },
+                    )
+                    if (!success) SyncScheduler.enqueue(applicationContext)
                 } catch (e: Exception) {
                     // The fix stays queued in sync_locations; the sync runner retries it and
                     // refreshes the live remote position once connectivity/session recover.
@@ -794,12 +800,15 @@ class GuardianMonitorService : Service(), SensorEventListener {
         }.onFailure { locationUploadInFlight.set(false) }
     }
     private fun clearRemoteLocation() {
-        val deviceId = store.localDeviceId()
+        val sharing = LocationSharing(store)
+        sharing.requestLiveClear()
+        SyncScheduler.enqueue(store.appContext, immediate = true)
         runCatching {
             telemetryExecutor.execute {
                 runCatching {
                     val backend = SupabaseBackend(EncryptedSessionStore(this), expectedUserId = store.ownerUserId())
-                    if (backend.isConfigured && backend.currentSession() != null) backend.deleteCaregiverLocation(deviceId)
+                    if (backend.isConfigured && backend.currentSession() != null &&
+                        !sharing.clearPending { backend.deleteCaregiverLocation(it) }) SyncScheduler.enqueue(applicationContext)
                 }
                 remoteDeviceRegistered = false
             }

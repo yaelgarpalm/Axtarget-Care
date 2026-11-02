@@ -457,34 +457,16 @@ private class SupabaseSyncRunner(context: Context) {
         }
     }
 
-    /** Uploads the queued GPS trail and refreshes the live position the caregiver watches. */
-    private inline fun syncLocationHistory(onError: () -> Unit) {
+    /** Publishes only fixes collected in the current consent period; retries remote cleanup. */
+    private fun syncLocationHistory(onError: () -> Unit) {
         val phoneId = store.localDeviceId()
-        database.pendingLocations().forEach { record ->
-            try {
-                backend.insertLocationHistory(record, phoneId)
-                database.markLocationSynced(record.id)
-            } catch (failure: BackendFailure) {
-                if (failure.status == 404) {
-                    android.util.Log.w("SyncRunner", "location_history no existe en Supabase; aplica la migración 20261026120100.")
-                }
-                database.markLocationFailure(record.id)
-                onError()
-            } catch (_: Exception) {
-                database.markLocationFailure(record.id)
-                onError()
-            }
-        }
-        if (!store.prefs.getBoolean("include_location", false)) return
-        val latest = database.latestLocation() ?: return
-        if (latest.capturedAtMillis <= store.prefs.getLong("sync_location_last_upsert_at", 0L)) return
-        try {
-            backend.upsertCaregiverLocation(phoneId, latest.latitude, latest.longitude,
-                latest.accuracyM?.toFloat(), latest.capturedAtMillis)
-            store.prefs.edit().putLong("sync_location_last_upsert_at", latest.capturedAtMillis).apply()
-        } catch (_: Exception) {
-            onError()
-        }
+        val success = LocationSharing(store).flush(
+            uploadHistory = { backend.insertLocationHistory(it, phoneId) },
+            uploadLive = { backend.upsertCaregiverLocation(phoneId, it.latitude, it.longitude, it.accuracyM?.toFloat(), it.capturedAtMillis) },
+            clearRemote = { backend.deleteCaregiverLocation(it) },
+            canPublishLive = { GuardianMonitorService.monitoring },
+        )
+        if (!success) onError()
     }
 
     private inline fun syncPhoneMotion(userId: String, onError: () -> Unit) {

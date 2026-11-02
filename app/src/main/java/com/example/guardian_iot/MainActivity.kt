@@ -4066,7 +4066,9 @@ class MainActivity : ComponentActivity() {
             AlertDialog.Builder(this).setTitle("Eliminar perfil")
                 .setMessage("Se eliminarán los datos del perfil y su contacto de emergencia. Los contactos de confianza se conservarán.")
                 .setNegativeButton("Cancelar", null).setPositiveButton("Eliminar") { _, _ ->
+                    LocationSharing(store).setConsent(false)
                     store.prefs.edit().remove("profile").putBoolean("include_location", false).commit()
+                    SyncScheduler.enqueue(store.appContext, immediate = true)
                     profileDraft = null; profileReturnTab = 0; updateServiceIfActive(); selectTab(0)
                 }.show()
         })
@@ -4232,7 +4234,8 @@ class MainActivity : ComponentActivity() {
         } catch (_: Exception) { toast("No se pudieron consultar las SIM. Configura una SIM predeterminada para SMS en Android.", true) }
     }
     private fun setLocationConsent(value: Boolean) {
-        store.prefs.edit().putBoolean("include_location", value).commit()
+        LocationSharing(store).setConsent(value)
+        SyncScheduler.enqueue(store.appContext, immediate = true)
         val profile = store.profile()
         if (profile.length() > 0) {
             profile.put("locationConsent", value)
@@ -4243,7 +4246,8 @@ class MainActivity : ComponentActivity() {
             updateServiceIfActive()
             io.execute {
                 runCatching {
-                    if (backend.isConfigured && backend.currentSession() != null) backend.deleteCaregiverLocation(store.localDeviceId())
+                    if (backend.isConfigured && backend.currentSession() != null &&
+                        !LocationSharing(store).clearPending { backend.deleteCaregiverLocation(it) }) SyncScheduler.enqueue(applicationContext)
                 }
             }
         }
@@ -4251,9 +4255,9 @@ class MainActivity : ComponentActivity() {
     private fun requestLocation() {
         if (!store.prefs.getBoolean("include_location", false)) {
             AlertDialog.Builder(this).setTitle("Compartir ubicación")
-                .setMessage("¿Quieres incluir tu ubicación disponible en los SMS de ayuda?")
+                .setMessage("¿Quieres incluir tu ubicación disponible en los SMS de ayuda y compartirla con tu cuidador mediante Supabase durante el monitoreo?")
                 .setNegativeButton("Cancelar", null).setPositiveButton("Permitir") { _, _ ->
-                    store.prefs.edit().putBoolean("include_location", true).commit(); requestLocation()
+                    LocationSharing(store).setConsent(true); requestLocation()
                 }.show(); return
         }
         if (!hasLocation()) { requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), REQUEST_LOCATION); return }
