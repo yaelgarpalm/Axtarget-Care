@@ -151,3 +151,14 @@ Validación final:
 - Asesor local de seguridad: dos avisos INFO por tablas de cámara con RLS sin políticas directas; usan RPC y su revisión integral continúa. No acredita por sí solo la seguridad del backend.
 
 Evidencia: `lote-6-validacion-final.log`, resúmenes JSON, `lote-6-rls-final.log`, políticas remotas leídas, lista de migraciones y asesores locales. El proyecto remoto no recibió cambios. Falta coordinar el despliegue de la migración con el cliente nuevo, verificar el recorrido contra un proyecto de pruebas y completar las demás áreas de la auditoría. Los clientes anteriores que crean tomas como cuidador necesitarán actualizarse; el cliente nuevo únicamente actualiza tomas existentes.
+
+
+## Lote 7: propiedad de dispositivos en resúmenes de movimiento
+
+Se reprodujo el candidato de seguridad en la base local antes de la corrección: un usuario ficticio B insertó phone_motion_status con el UUID del teléfono de A. La política solo comparaba user_id con auth.uid() y la FK únicamente comprobaba que existiera device_id. La transacción de reproducción se revirtió completa; ver `lote-7-propiedad-antes.sql` y `.log`.
+
+La migración `20261102182134_phone_motion_device_ownership.sql` añade una FK compuesta (user_id, device_id) hacia devices y exige propiedad del dispositivo en INSERT/UPDATE. Conserva las filas heredadas: si hay inconsistencias, deja la restricción NOT VALID para revisar esas filas, pero protege escrituras nuevas; si no las hay, la valida. No borra registros. Se retiran permisos anónimos y privilegios no usados. La consulta de solo lectura al remoto devolvió **0 filas con propietario de dispositivo inconsistente** al momento de esta revisión; no se aplicó allí la migración.
+
+Pruebas: **16 casos pgTAP nuevos aprobados; 47 SQL en conjunto con medicamentos**. Verifican inserción y actualización propias, rechazo al usar/reasignar dispositivos ajenos, cuidador autorizado solo para lectura, revocación, aislamiento de anónimo y FK incluso sin RLS. El informe global de Codex Security continúa abierto: esta evidencia valida este defecto específico, no todo el backend. El despliegue remoto sigue pendiente.
+
+Compilación Android audit y tarea de pruebas unitarias correctas (`lote-7-compilacion.log`); este lote solo cambia SQL y no repitió instrumentación Android. Las 106 unitarias quedaron UP-TO-DATE porque no cambió Kotlin. Asesor de seguridad local: dos avisos INFO de cámara, sin advertencias nuevas de esta migración.

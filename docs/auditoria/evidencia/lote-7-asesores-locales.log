@@ -1,0 +1,41 @@
+Connecting to local database...
+[
+  {
+    "name": "rls_enabled_no_policy",
+    "title": "RLS Enabled No Policy",
+    "level": "INFO",
+    "facing": "EXTERNAL",
+    "categories": [
+      "SECURITY"
+    ],
+    "description": "Detects cases where row level security (RLS) has been enabled on a table but no RLS policies have been created.",
+    "detail": "Table `public.camera_device_invites` has RLS enabled, but no policies exist",
+    "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy",
+    "metadata": {
+      "name": "camera_device_invites",
+      "type": "table",
+      "schema": "public"
+    },
+    "cache_key": "rls_enabled_no_policy_public_camera_device_invites"
+  },
+  {
+    "name": "rls_enabled_no_policy",
+    "title": "RLS Enabled No Policy",
+    "level": "INFO",
+    "facing": "EXTERNAL",
+    "categories": [
+      "SECURITY"
+    ],
+    "description": "Detects cases where row level security (RLS) has been enabled on a table but no RLS policies have been created.",
+    "detail": "Table `public.camera_device_links` has RLS enabled, but no policies exist",
+    "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy",
+    "metadata": {
+      "name": "camera_device_links",
+      "type": "table",
+      "schema": "public"
+    },
+    "cache_key": "rls_enabled_no_policy_public_camera_device_links"
+  }
+]
+A new version of Supabase CLI is available: v3.0.0 (currently installed v2.122.0)
+We recommend updating regularly for new features and bug fixes: https://supabase.com/docs/guides/cli/getting-started#updating-the-supabase-cli

@@ -1,0 +1,13 @@
+BEGIN
+INSERT 0 2
+INSERT 0 1
+SET
+SET
+INSERT 0 1
+RESET
+ foreign_device_write_accepted 
+-------------------------------
+ t
+(1 row)
+
+ROLLBACK

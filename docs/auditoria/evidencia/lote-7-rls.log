@@ -1,0 +1,10 @@
+Connecting to local database...
+psql:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/supabase/tests/medication_authorization.test.sql:2: NOTICE:  extension "pgtap" already exists, skipping
+/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/supabase/tests/medication_authorization.test.sql .. ok
+psql:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/supabase/tests/phone_motion_ownership.test.sql:2: NOTICE:  extension "pgtap" already exists, skipping
+/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/supabase/tests/phone_motion_ownership.test.sql .... ok
+All tests successful.
+Files=2, Tests=47,  0 wallclock secs ( 0.02 usr  0.02 sys +  0.01 cusr  0.01 csys =  0.06 CPU)
+Result: PASS
+A new version of Supabase CLI is available: v3.0.0 (currently installed v2.122.0)
+We recommend updating regularly for new features and bug fixes: https://supabase.com/docs/guides/cli/getting-started#updating-the-supabase-cli
