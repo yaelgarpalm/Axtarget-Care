@@ -145,52 +145,35 @@ class MedicationRepository(
             pushFailure?.let { throw it }
         }
 
+        var caregiverPushFailure: BackendFailure? = null
         if (readOnly) {
             // El cuidador no crea ni edita medicamentos, pero sí puede confirmar tomas desde su
             // teléfono. Solo empuja las acciones que él mismo registró (actor = su sesión); el RLS
             // de medication_intakes exige actor_user_id = auth.uid() para el cuidador vinculado.
-            // No lanzamos error aquí: un fallo de red se reintenta en la próxima corrida sin
-            // bloquear la descarga de solo lectura.
+            // Conservamos el fallo hasta terminar la descarga; nunca se informa éxito parcial como total.
             database.pendingIntakes(ownerId).filter { it.actorUserId == session.userId }.forEach { intake ->
                 try {
                     backend.upsertMedicationIntake(intake)
                     database.markIntakeSynced(intake.id, intake.updatedAtMillis)
                 } catch (failure: BackendFailure) {
-                    if (failure.status != 404) database.failIntake(intake.id)
+                    database.failIntake(intake.id)
+                    if (caregiverPushFailure == null) caregiverPushFailure = failure
                 }
             }
         }
 
-        val medicationRows = try {
-            backend.medicationRecords(ownerId)
-        } catch (e: BackendFailure) {
-            if (e.status == 404) JSONArray() else throw e
-        }
-        val remoteMedicationIds = mutableSetOf<String>()
-        for (index in 0 until medicationRows.length()) {
-            parseMedication(medicationRows.optJSONObject(index) ?: continue)?.let {
-                remoteMedicationIds.add(it.id)
-                database.mergeRemoteMedication(it)
+        RemoteSnapshot.download(
+            medications = { RemoteSnapshot.parse(backend.medicationRecords(ownerId), ::parseMedication) },
+            intakes = { RemoteSnapshot.parse(backend.medicationIntakeRecords(ownerId), ::parseIntake) },
+        ) { medications, intakes ->
+            check(medications.all { it.ownerUserId == ownerId } && intakes.all { it.ownerUserId == ownerId }) {
+                "La respuesta no corresponde a la persona solicitada."
             }
+            database.applyRemoteSnapshot(ownerId, medications, intakes, prune = readOnly)
         }
-        val intakeRows = try {
-            backend.medicationIntakeRecords(ownerId)
-        } catch (e: BackendFailure) {
-            if (e.status == 404) JSONArray() else throw e
-        }
-        val remoteIntakeIds = mutableSetOf<String>()
-        for (index in 0 until intakeRows.length()) {
-            parseIntake(intakeRows.optJSONObject(index) ?: continue)?.let {
-                remoteIntakeIds.add(it.id)
-                database.mergeRemoteIntake(it)
-            }
-        }
-        if (readOnly) database.pruneRemoteSnapshot(ownerId, remoteMedicationIds, remoteIntakeIds)
-        // El cuidador (readOnly) nunca empuja filas: contar sus restos locales como fallo
-        // convertía cada descarga correcta en "Supabase no está disponible". Solo el dueño
-        // reintenta, y únicamente por filas aún reintentables (no las agotadas con retry_count>=8,
-        // que antes dejaban este throw disparándose para siempre).
-        if (!readOnly && database.retryablePendingCount(ownerId) > 0) throw BackendFailure(BackendFailure.Category.TEMPORARY)
+        caregiverPushFailure?.let { throw it }
+        if (database.syncPendingCount(ownerId) > 0) throw BackendFailure(BackendFailure.Category.TEMPORARY)
+
     }
 
     fun applyNotificationAction(intakeId: String, status: String): Boolean = acceptIntakeAction(intakeId, status)

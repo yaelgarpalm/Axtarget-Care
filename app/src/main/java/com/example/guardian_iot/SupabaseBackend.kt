@@ -252,13 +252,16 @@ class SupabaseBackend(
         request("DELETE", "/rest/v1/trusted_contacts?id=eq." + encode(id), null, needsSession = true)
     }
 
-    fun medicationRecords(ownerUserId: String): JSONArray = request(
-        "GET",
+    private fun medicationSnapshot(path: String): JSONArray = RemoteSnapshot.readAll { cursor ->
+        val after = cursor?.let { "&id=gt." + encode(it) }.orEmpty()
+        request("GET", "$path&order=id.asc&limit=500$after", null, true)
+            .optJSONArray("data") ?: throw BackendFailure(BackendFailure.Category.TEMPORARY)
+    }
+
+    fun medicationRecords(ownerUserId: String): JSONArray = medicationSnapshot(
         "/rest/v1/medications?select=id,owner_user_id,name,prescribed_dose,presentation,frequency,schedule_times,start_date,end_date,instructions,is_active,share_with_caregiver,is_deleted,created_at,updated_at" +
-            "&owner_user_id=eq." + encode(ownerUserId) + "&order=updated_at.desc&limit=500",
-        null,
-        true,
-    ).optJSONArray("data") ?: JSONArray()
+            "&owner_user_id=eq." + encode(ownerUserId),
+    )
 
     fun upsertMedication(record: Medication) {
         val body = JSONObject()
@@ -283,27 +286,10 @@ class SupabaseBackend(
         )
     }
 
-    fun medicationIntakeRecords(ownerUserId: String): JSONArray {
-        val tail = "&owner_user_id=eq." + encode(ownerUserId) + "&order=scheduled_at.desc&limit=1000"
-        return try {
-            request(
-                "GET",
-                "/rest/v1/medication_intakes?select=id,medication_id,owner_user_id,schedule_instance_id,scheduled_at,action_at,status,snoozed_until,snooze_count,actor_user_id,created_at,updated_at$tail",
-                null,
-                true,
-            ).optJSONArray("data") ?: JSONArray()
-        } catch (failure: BackendFailure) {
-            // Remoto sin la columna actor_user_id (migración pendiente): degradar el select en vez
-            // de romper toda la descarga de tomas del cuidador.
-            if (failure.status != 400) throw failure
-            request(
-                "GET",
-                "/rest/v1/medication_intakes?select=id,medication_id,owner_user_id,schedule_instance_id,scheduled_at,action_at,status,snoozed_until,snooze_count,created_at,updated_at$tail",
-                null,
-                true,
-            ).optJSONArray("data") ?: JSONArray()
-        }
-    }
+    fun medicationIntakeRecords(ownerUserId: String): JSONArray = medicationSnapshot(
+        "/rest/v1/medication_intakes?select=id,medication_id,owner_user_id,schedule_instance_id,scheduled_at,action_at,status,snoozed_until,snooze_count,actor_user_id,created_at,updated_at" +
+            "&owner_user_id=eq." + encode(ownerUserId),
+    )
 
     fun upsertMedicationIntake(record: MedicationIntake) {
         val body = JSONObject()

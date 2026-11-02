@@ -67,6 +67,47 @@ class MedicationDatabaseTest {
         assertEquals("cancelled", database.getIntake(future.id)?.status)
     }
 
+    @Test fun pendingAndFailedActionsSurviveAuthoritativeEmptySnapshot() {
+        val med = database.saveMedication(medication())
+        val intake = database.ensureIntake(med, 1_800_000_000_000L)
+        database.recordAction(intake.id, "taken")
+        repeat(8) { database.failIntake(intake.id) }
+        database.applyRemoteSnapshot(OWNER, emptyList(), emptyList(), prune = true)
+        assertEquals("failed", database.getIntake(intake.id)?.syncState)
+        assertEquals("taken", database.getIntake(intake.id)?.status)
+        assertEquals(1, database.medications(OWNER).size)
+    }
+
+    @Test fun acknowledgedOldVersionCannotDiscardNewerEdit() {
+        val old = database.saveMedication(medication())
+        database.writableDatabase.execSQL("UPDATE medications SET updated_at=?, name=? WHERE id=?",
+            arrayOf(old.updatedAtMillis + 1, "New edit", old.id))
+        database.markMedicationSynced(old.id, old.updatedAtMillis)
+        assertEquals("pending", database.getMedication(OWNER, old.id)?.syncState)
+        assertEquals("New edit", database.getMedication(OWNER, old.id)?.name)
+        val intake = database.ensureIntake(old, 1_800_000_000_000L)
+        database.recordAction(intake.id, "taken", intake.updatedAtMillis + 1)
+        database.markIntakeSynced(intake.id, intake.updatedAtMillis)
+        assertEquals("pending", database.getIntake(intake.id)?.syncState)
+        assertEquals("taken", database.getIntake(intake.id)?.status)
+    }
+
+    @Test fun successfulSnapshotPrunesOnlyConfirmedRowsForSelectedOwner() {
+        val saved = database.saveMedication(medication())
+        database.markMedicationSynced(saved.id, saved.updatedAtMillis)
+        database.saveMedication(medication().copy(id = "other-id", ownerUserId = "other-owner"))
+        database.applyRemoteSnapshot(OWNER, emptyList(), emptyList(), prune = true)
+        assertTrue(database.medications(OWNER).isEmpty())
+        assertEquals(1, database.medications("other-owner").size)
+    }
+
+    @Test fun unsentDataSurvivesDatabaseReopen() {
+        database.saveMedication(medication())
+        database.close()
+        database = MedicationDatabase(context)
+        assertEquals(1, database.pendingMedications(OWNER).size)
+    }
+
     private fun medication() = Medication(
         id = "medication-test-id", ownerUserId = OWNER, name = "Test medicine", prescribedDose = "As prescribed",
         presentation = "", frequency = "Diaria", scheduleTimes = listOf("08:00"), startDate = "2026-10-24",

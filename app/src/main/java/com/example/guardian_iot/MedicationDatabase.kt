@@ -83,7 +83,7 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
     fun markMedicationSynced(id: String, updatedAtMillis: Long) {
         writableDatabase.update("medications", ContentValues().apply {
             put("sync_state", "synced"); put("retry_count", 0); put("updated_at", updatedAtMillis)
-        }, "id=?", arrayOf(id))
+        }, "id=? AND updated_at=? AND sync_state='pending'", arrayOf(id, updatedAtMillis.toString()))
     }
 
     @Synchronized
@@ -152,7 +152,7 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
     fun markIntakeSynced(id: String, updatedAtMillis: Long) {
         writableDatabase.update("medication_intakes", ContentValues().apply {
             put("sync_state", "synced"); put("retry_count", 0); put("updated_at", updatedAtMillis)
-        }, "id=?", arrayOf(id))
+        }, "id=? AND updated_at=? AND sync_state='pending'", arrayOf(id, updatedAtMillis.toString()))
     }
 
     @Synchronized
@@ -167,6 +167,19 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
         writableDatabase.insertWithOnConflict("medication_intakes", null, remote.values(), SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    /** Both validated collections commit together, or the previous snapshot remains intact. */
+    @Synchronized
+    fun applyRemoteSnapshot(ownerId: String, medications: List<Medication>, intakes: List<MedicationIntake>, prune: Boolean) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            medications.forEach(::mergeRemoteMedication)
+            intakes.forEach(::mergeRemoteIntake)
+            if (prune) pruneRemoteSnapshot(ownerId, medications.map { it.id }.toSet(), intakes.map { it.id }.toSet())
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
     /** Remove stale read-only caregiver cache rows after remote RLS/consent changes. */
     @Synchronized
     fun pruneRemoteSnapshot(ownerId: String, medicationIds: Set<String>, intakeIds: Set<String>) {
@@ -179,17 +192,12 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
         } finally { db.endTransaction() }
     }
 
-    /**
-     * El teléfono del cuidador es solo un caché de lectura: lo remoto es la única fuente válida.
-     * Borramos cualquier fila local que no venga en el set remoto sin importar su sync_state, para
-     * que también se limpien residuos 'pending'/'failed' de versiones previas que nunca pudieron
-     * subirse (el cuidador no puede empujar) y que antes quedaban atascados para siempre.
-     */
+    /** Pending or failed local actions remain durable even when absent from a remote snapshot. */
     private fun deleteLocalRowsMissing(db: SQLiteDatabase, table: String, ownerId: String, ids: Set<String>) {
         require(table in setOf("medications", "medication_intakes"))
         val notIn = if (ids.isEmpty()) "" else " AND id NOT IN (${ids.joinToString(",") { "?" }})"
         db.execSQL(
-            "DELETE FROM $table WHERE owner_user_id=?$notIn",
+            "DELETE FROM $table WHERE owner_user_id=? AND sync_state='synced'$notIn",
             arrayOf(ownerId, *ids.toTypedArray()),
         )
     }
@@ -268,6 +276,16 @@ class MedicationDatabase(context: Context) : SQLiteOpenHelper(
             "(SELECT COUNT(*) FROM medication_intakes WHERE owner_user_id=? AND sync_state IN ('pending','failed'))",
         arrayOf(ownerId, ownerId),
     ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+
+    @Synchronized
+    fun syncState(ownerId: String): SyncStateSummary {
+        fun count(state: String): Int = readableDatabase.rawQuery(
+            "SELECT (SELECT COUNT(*) FROM medications WHERE owner_user_id=? AND sync_state=?) + " +
+                "(SELECT COUNT(*) FROM medication_intakes WHERE owner_user_id=? AND sync_state=?)",
+            arrayOf(ownerId, state, ownerId, state),
+        ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+        return SyncStateSummary(count("pending"), count("failed"))
+    }
 
     /** Filas aún reintentables (excluye las agotadas con retry_count>=8, que ya no se empujan). */
     @Synchronized

@@ -1,0 +1,10 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"migrations\":[{\"version\":\"20261021145049\",\"name\":\"initial_tzinda_backend\"},{\"version\":\"20261021145145\",\"name\":\"tighten_invites_and_fk_indexes\"},{\"version\":\"20261021145723\",\"name\":\"long_invite_codes\"},{\"version\":\"20261021145801\",\"name\":\"restrict_caregiver_link_reads\"},{\"version\":\"20261021192059\",\"name\":\"realtime_location_and_short_invites\"},{\"version\":\"20261022000805\",\"name\":\"independent_devices_and_account_links\"},{\"version\":\"20261022000838\",\"name\":\"caregiver_location_fk_indexes\"},{\"version\":\"20261022221735\",\"name\":\"camera_pairing_rpc_schema_cache\"},{\"version\":\"20261022230000\",\"name\":\"arduino_caregiver_realtime\"},{\"version\":\"20261023154908\",\"name\":\"fix_caregiver_invite_ambiguous_columns\"},{\"version\":\"20261023155057\",\"name\":\"fix_caregiver_invite_on_conflict_resolution\"},{\"version\":\"20261023161538\",\"name\":\"caregiver_phone_motion_status\"},{\"version\":\"20261023161725\",\"name\":\"caregiver_phone_motion_index\"},{\"version\":\"20261026002122\",\"name\":\"care_records_zones_routines\"},{\"version\":\"20261026002241\",\"name\":\"alert_followup_history\"},{\"version\":\"20261026002321\",\"name\":\"alert_followup_owner_event_fk\"},{\"version\":\"20261026002352\",\"name\":\"caregiver_shared_safe_zones\"},{\"version\":\"20261026004740\",\"name\":\"bidirectional_linked_device_visibility\"}]}"
+    }
+  ],
+  "structuredContent": null,
+  "isError": false
+}

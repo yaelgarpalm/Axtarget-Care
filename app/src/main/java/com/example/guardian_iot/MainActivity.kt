@@ -1543,6 +1543,9 @@ class MainActivity : ComponentActivity() {
         syncCard.addView(statusPill(syncCopy))
         syncCard.addView(text(syncCopy.detail, 14, color = muted).apply { setPadding(0, dp(8), 0, dp(2)) })
         syncCard.addView(text(store.prefs.getString("sync_status", "Aún sin sincronización remota confirmada").orEmpty(), 13, color = muted))
+        store.syncModules().forEach { (module, state) ->
+            syncCard.addView(text("$module: ${state.pending} pendientes · ${state.failed} con error", 13, color = muted))
+        }
         syncCard.addView(button("Sincronizar ahora", false) {
             store.retryFailedSyncItems()
             SyncScheduler.enqueue(applicationContext, immediate = true)
@@ -1984,7 +1987,7 @@ class MainActivity : ComponentActivity() {
     private fun careFeaturesScreen(body: LinearLayout) {
         val linkedCaregiver = isCaregiver && store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank()
         heading(body, "CUIDADOS Y ACTIVIDAD", "Bitácora y rutinas", "Registros guardados primero en este teléfono y sincronizados al volver a tener Internet.")
-        val pending = careFeatures.rowsAll().count { it.optString("syncState") != "synced" }
+        val pending = careFeatures.syncState().pending
         val sync = card(body)
         sync.addView(text("Sincronización", 20, true))
         val syncCopy = TzindaStatusCopy.sync(pending, 0, hasValidatedInternet(), sessions.read() != null)

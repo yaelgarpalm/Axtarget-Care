@@ -184,7 +184,7 @@ object TzindaStatusCopy {
             !online -> TzindaCopy("Sin Internet", "Tus datos están guardados. $safePending operación(es) esperan conexión.", TzindaTone.WARNING)
             safeFailed > 0 -> TzindaCopy("Sincronización con error", "$safeFailed operación(es) agotaron los reintentos; $safePending siguen pendientes.", TzindaTone.CRITICAL)
             safePending > 0 -> TzindaCopy("Pendiente de sincronizar", "$safePending operación(es) se enviarán cuando el servicio esté disponible.", TzindaTone.INFO)
-            else -> TzindaCopy("Sincronizado", "No hay operaciones pendientes en este teléfono.", TzindaTone.POSITIVE)
+            else -> TzindaCopy("Sin pendientes locales", "Las colas locales están vacías. Consulta la última confirmación del servidor para conocer la sincronización remota.", TzindaTone.NEUTRAL)
         }
     }
 

@@ -9,7 +9,7 @@ import kotlin.math.*
 /** Offline-first records for shared care notes, safe zones and user-authored routines. */
 class CareFeatureStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences("tzinda_care_features", Context.MODE_PRIVATE)
-    private val lock = Any()
+    companion object { private val lock = Any() }
     fun rows(kind: String): List<JSONObject> = synchronized(lock) {
         val all = runCatching { JSONArray(prefs.getString("records", "[]")) }.getOrDefault(JSONArray())
         (0 until all.length()).mapNotNull { all.optJSONObject(it) }.filter { it.optString("kind") == kind }
@@ -19,7 +19,7 @@ class CareFeatureStore(context: Context) {
         val id = values.optString("id").takeIf { runCatching { UUID.fromString(it) }.isSuccess } ?: UUID.randomUUID().toString()
         val current = rowsAll()
         val row = JSONObject(values.toString()).put("id", id).put("kind", kind)
-            .put("updatedAt", System.currentTimeMillis()).put("syncState", "pending")
+            .put("updatedAt", maxOf(System.currentTimeMillis(), (current.firstOrNull { it.optString("id") == id }?.optLong("updatedAt") ?: 0L) + 1)).put("syncState", "pending")
         val next = JSONArray()
         current.filterNot { it.optString("id") == id }.forEach { next.put(it) }
         next.put(row)
@@ -45,15 +45,33 @@ class CareFeatureStore(context: Context) {
         val next = JSONArray(); pendingDeletes().filterNot { it == id }.forEach { next.put(it) }
         prefs.edit().putString("deleted", next.toString()).apply()
     }
-    fun markSynced(id: String) = synchronized(lock) {
+    fun markSynced(id: String, uploadedAt: Long) = synchronized(lock) {
         val next = JSONArray()
-        rowsAll().forEach { next.put(if (it.optString("id") == id) it.put("syncState", "synced") else it) }
+        rowsAll().forEach { next.put(if (it.optString("id") == id && it.optLong("updatedAt") == uploadedAt) it.put("syncState", "synced") else it) }
         prefs.edit().putString("records", next.toString()).apply()
     }
     fun clearAll() = synchronized(lock) {
-        prefs.edit().remove("records").remove("deleted").commit()
+        prefs.edit().remove("records").remove("deleted").remove("zone_runtime").commit()
     }
-    fun zones(): List<JSONObject> = rows("zone")
+    fun syncState(): SyncStateSummary = synchronized(lock) {
+        SyncStateSummary(rowsAll().count { it.optString("syncState") != "synced" } + pendingDeletes().size, 0)
+    }
+
+    fun zones(): List<JSONObject> = synchronized(lock) {
+        val runtime = JSONObject(prefs.getString("zone_runtime", "{}").orEmpty())
+        rows("zone").map { row ->
+            runtime.optJSONObject(row.optString("id"))?.let { state ->
+                state.keys().forEach { key -> row.put(key, state.get(key)) }
+            }
+            row
+        }
+    }
+
+    private fun saveZoneRuntime(id: String, state: JSONObject) = synchronized(lock) {
+        val runtime = JSONObject(prefs.getString("zone_runtime", "{}").orEmpty())
+        runtime.put(id, state)
+        check(prefs.edit().putString("zone_runtime", runtime.toString()).commit())
+    }
     /** Only valid, reasonably accurate fixes produce a transition; first fix initializes state. */
     fun onLocation(latitude: Double, longitude: Double, accuracyM: Float, capturedAt: Long): List<JSONObject> {
         if (!GeoFencePolicy.validFix(latitude, longitude, accuracyM, capturedAt)) return emptyList()
@@ -71,7 +89,7 @@ class CareFeatureStore(context: Context) {
             }
             val lastPersisted = zone.optLong("lastLocationAt")
             if (previous == next && lastPersisted > 0 && capturedAt - lastPersisted < 5 * 60_000) return@forEach
-            upsert("zone", JSONObject(zone.toString()).put("lastInside", next).put("lastLocationAt", capturedAt)
+            saveZoneRuntime(zone.optString("id"), JSONObject().put("lastInside", next).put("lastLocationAt", capturedAt)
                 .put("lastLatitude", latitude).put("lastLongitude", longitude))
         }
         return events

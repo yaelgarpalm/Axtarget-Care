@@ -1,0 +1,10 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"tables\":[{\"name\":\"public.profiles\",\"rls_enabled\":true,\"rows\":3},{\"name\":\"public.devices\",\"rls_enabled\":true,\"rows\":15},{\"name\":\"public.trusted_contacts\",\"rls_enabled\":true,\"rows\":1},{\"name\":\"public.caregiver_links\",\"rls_enabled\":true,\"rows\":1},{\"name\":\"public.caregiver_invites\",\"rls_enabled\":true,\"rows\":3},{\"name\":\"public.fall_events\",\"rls_enabled\":true,\"rows\":40},{\"name\":\"public.emergency_alerts\",\"rls_enabled\":true,\"rows\":22},{\"name\":\"public.notification_attempts\",\"rls_enabled\":true,\"rows\":24},{\"name\":\"public.measurements\",\"rls_enabled\":true,\"rows\":407},{\"name\":\"public.caregiver_locations\",\"rls_enabled\":true,\"rows\":2},{\"name\":\"public.camera_device_invites\",\"rls_enabled\":true,\"rows\":0},{\"name\":\"public.camera_device_links\",\"rls_enabled\":true,\"rows\":0},{\"name\":\"public.phone_motion_status\",\"rls_enabled\":true,\"rows\":2},{\"name\":\"public.care_records\",\"rls_enabled\":true,\"rows\":2},{\"name\":\"public.alert_followups\",\"rls_enabled\":true,\"rows\":18},{\"name\":\"public.location_history\",\"rls_enabled\":true,\"rows\":255},{\"name\":\"public.medications\",\"rls_enabled\":true,\"rows\":4},{\"name\":\"public.medication_intakes\",\"rls_enabled\":true,\"rows\":20}]}"
+    }
+  ],
+  "structuredContent": null,
+  "isError": false
+}

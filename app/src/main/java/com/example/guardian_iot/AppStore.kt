@@ -195,9 +195,26 @@ class AppStore(context: Context) {
         }
     }
 
-    fun syncState(): SyncStateSummary = telemetry.syncStateSummary()
+    fun syncModules(): Map<String, SyncStateSummary> {
+        val userId = EncryptedSessionStore(appContext).read()?.userId
+        val medicationOwner = if (role() == ROLE_CAREGIVER) prefs.getString("caregiver_owner_id", "").orEmpty()
+            else userId ?: prefs.getString("medication_local_data_claimed_by", "").orEmpty().ifBlank { "local:${localDeviceId()}" }
+        val profilePending = profileUpdatedAt() > lastProfileSyncAt() || roleUpdatedAt() > lastRoleSyncAt()
+        val deviceState = prefs.getString("device_sync_state", "pending")
+        return linkedMapOf(
+            "Telemetría y contactos" to telemetry.syncStateSummary(),
+            "Medicamentos y tomas" to MedicationDatabase.getInstance(appContext).syncState(medicationOwner),
+            "Cuidados y borrados" to CareFeatureStore(appContext).syncState(),
+            "Perfil" to SyncStateSummary(if (profilePending) 1 else 0, 0),
+            "Registro de dispositivos" to SyncStateSummary(if (userId != null && deviceState == "pending") 1 else 0,
+                if (userId != null && deviceState == "error") 1 else 0),
+        )
+    }
+
+    fun syncState(): SyncStateSummary = SyncOverview.total(syncModules().values)
     fun retryFailedSyncItems() {
         telemetry.retryFailedSyncItems()
+        MedicationDatabase.getInstance(appContext).retryFailed()
         prefs.edit().putInt("sync_global_failures", 0).putString("sync_status", "Sincronización pendiente").apply()
         SyncScheduler.enqueue(appContext)
     }

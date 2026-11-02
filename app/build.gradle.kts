@@ -8,7 +8,8 @@ rootProject.file(".env.local").takeIf { it.isFile }?.forEachLine { line ->
         if (separator > 0) supabaseValues[entry.substring(0, separator).trim()] = entry.substring(separator + 1).trim().trim('"', '\'')
     }
 }
-fun configValue(name: String): String = System.getenv(name)?.takeIf { it.isNotBlank() } ?: supabaseValues[name].orEmpty()
+val auditBuild = providers.gradleProperty("tzindaAudit").orNull == "true"
+fun configValue(name: String): String = if (auditBuild) "" else System.getenv(name)?.takeIf { it.isNotBlank() } ?: supabaseValues[name].orEmpty()
 fun buildConfigString(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
@@ -16,6 +17,7 @@ android {
     compileSdk = 36
     defaultConfig {
         applicationId = "com.guardian.tzindaapp.v2"
+        if (auditBuild) applicationIdSuffix = ".audit"
         minSdk = 24
         targetSdk = 36
         versionCode = 11

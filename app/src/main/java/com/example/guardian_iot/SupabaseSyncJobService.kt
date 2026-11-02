@@ -131,6 +131,10 @@ private class SupabaseSyncRunner(context: Context) {
         var hasError = false
 
         try {
+            DeviceRegistration.confirm(writeState = { state ->
+                store.prefs.edit().putString("device_sync_state", state)
+                    .putBoolean("device_sync_configured", state == "confirmed").commit()
+            }) {
             val existing = backend.userDevices(session.userId)
             val byLogicalId = mutableMapOf<String, String>()
             val allExistingIds = mutableSetOf<String>()
@@ -207,12 +211,11 @@ private class SupabaseSyncRunner(context: Context) {
                 .putString("wearable_device_id", wearId)
                 .putString("arduino_device_id", ardId)
                 .putString("local_camera_device_id", camId)
-                .putBoolean("device_sync_configured", true)
                 .apply()
+            }
         } catch (error: Exception) {
             android.util.Log.w("SyncRunner", "Device registration warning: ${error.message}", error)
             hasError = true
-            store.prefs.edit().putBoolean("device_sync_configured", true).apply()
         }
 
         try { syncProfile() } catch (_: Exception) { hasError = true }
@@ -253,16 +256,16 @@ private class SupabaseSyncRunner(context: Context) {
                     catch (e: Exception) { android.util.Log.w("CareSync", "delete care_record falló: ${syncError(e)}"); hasError = true }
                 }
                 careFeatures.rows("alert_followup").filter { it.optString("syncState") != "synced" }.forEach { followup ->
-                    try { backend.insertAlertFollowup(ownerId, followup); careFeatures.markSynced(followup.optString("id")) }
+                    try { backend.insertAlertFollowup(ownerId, followup); careFeatures.markSynced(followup.optString("id"), followup.optLong("updatedAt")) }
                     catch (e: Exception) { android.util.Log.w("CareSync", "alert_followup falló: ${syncError(e)}"); hasError = true }
                 }
                 careFeatures.rows("zone").filter { it.optString("syncState") != "synced" }.forEach { zone ->
-                    try { backend.upsertCareRecord(zone.optString("ownerUserId", ownerId).ifBlank { ownerId }, zone); careFeatures.markSynced(zone.optString("id")) }
+                    try { backend.upsertCareRecord(zone.optString("ownerUserId", ownerId).ifBlank { ownerId }, zone); careFeatures.markSynced(zone.optString("id"), zone.optLong("updatedAt")) }
                     catch (e: Exception) { android.util.Log.w("CareSync", "upsert zone falló: ${syncError(e)}"); hasError = true }
                 }
                 listOf("journal", "routine").forEach { kind ->
                     careFeatures.rows(kind).filter { it.optString("syncState") != "synced" }.forEach { record ->
-                        try { backend.upsertCareRecord(record.optString("ownerUserId", ownerId).ifBlank { ownerId }, record); careFeatures.markSynced(record.optString("id")) }
+                        try { backend.upsertCareRecord(record.optString("ownerUserId", ownerId).ifBlank { ownerId }, record); careFeatures.markSynced(record.optString("id"), record.optLong("updatedAt")) }
                         catch (e: Exception) { android.util.Log.w("CareSync", "upsert $kind falló: ${syncError(e)}"); hasError = true }
                     }
                 }
@@ -274,7 +277,7 @@ private class SupabaseSyncRunner(context: Context) {
             }
         } else {
             careFeatures.rows("alert_followup").filter { it.optString("syncState") != "synced" }.forEach { followup ->
-                try { backend.insertAlertFollowup(session.userId, followup); careFeatures.markSynced(followup.optString("id")) }
+                try { backend.insertAlertFollowup(session.userId, followup); careFeatures.markSynced(followup.optString("id"), followup.optLong("updatedAt")) }
                 catch (e: Exception) { android.util.Log.w("CareSync", "alert_followup falló: ${syncError(e)}"); hasError = true }
             }
             careFeatures.pendingDeletes().forEach { id ->
@@ -282,12 +285,12 @@ private class SupabaseSyncRunner(context: Context) {
                 catch (e: Exception) { android.util.Log.w("CareSync", "delete care_record falló: ${syncError(e)}"); hasError = true }
             }
             careFeatures.rowsAll().filter { it.optString("kind") != "alert_followup" && it.optString("syncState") != "synced" }.forEach { record ->
-                try { backend.upsertCareRecord(record.optString("ownerUserId", session.userId).ifBlank { session.userId }, record); careFeatures.markSynced(record.optString("id")) }
+                try { backend.upsertCareRecord(record.optString("ownerUserId", session.userId).ifBlank { session.userId }, record); careFeatures.markSynced(record.optString("id"), record.optLong("updatedAt")) }
                 catch (e: Exception) { android.util.Log.w("CareSync", "upsert ${record.optString("kind")} falló: ${syncError(e)}"); hasError = true }
             }
         }
 
-        val summary = database.syncStateSummary()
+        val summary = store.syncState()
         val failures = if (hasError) store.prefs.getInt("sync_global_failures", 0) + 1 else 0
         store.prefs.edit().putInt("sync_global_failures", failures).apply()
         val retry = (summary.pending > 0 || hasError) && failures < MAX_GLOBAL_RETRIES

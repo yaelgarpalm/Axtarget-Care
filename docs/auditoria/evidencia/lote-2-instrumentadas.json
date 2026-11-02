@@ -1,0 +1,10 @@
+{
+  "source": "app\\build\\outputs\\androidTest-results\\connected\\debug",
+  "suites": [],
+  "totals": {
+    "tests": 0,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}

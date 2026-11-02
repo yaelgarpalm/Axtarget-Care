@@ -63,7 +63,7 @@ class TzindaNavigationPolicyTest {
         assertEquals("Sin Internet", TzindaStatusCopy.sync(3, 0, online = false, signedIn = true).title)
         assertEquals("Sincronización con error", TzindaStatusCopy.sync(3, 1, online = true, signedIn = true).title)
         assertEquals("Pendiente de sincronizar", TzindaStatusCopy.sync(3, 0, online = true, signedIn = true).title)
-        assertEquals("Sincronizado", TzindaStatusCopy.sync(0, 0, online = true, signedIn = true).title)
+        assertEquals("Sin pendientes locales", TzindaStatusCopy.sync(0, 0, online = true, signedIn = true).title)
     }
 
     @Test fun countsUseNaturalSingularAndPlural() {
