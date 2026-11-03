@@ -22,6 +22,7 @@ data class AuthSession(
 
 class EncryptedSessionStore(context: Context) {
     private val file = File(context.noBackupFilesDir, "supabase-session.v1")
+    internal val recovery = PasswordRecoveryStore(context)
 
     fun read(): AuthSession? = synchronized(lock) { runCatching {
         if (!file.isFile) return null

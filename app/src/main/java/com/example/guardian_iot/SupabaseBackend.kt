@@ -13,7 +13,7 @@ class BackendFailure(val category: Category, val status: Int = 0, cause: Throwab
     IOException(messageFor(category), cause) {
     enum class Category {
         NETWORK, INVALID_CREDENTIALS, EMAIL_UNCONFIRMED, EMAIL_CONFIRMATION_REQUIRED,
-        EMAIL_RATE_LIMIT, AUTH_RATE_LIMIT, EMAIL_DELIVERY, VALIDATION, TEMPORARY, SESSION,
+        EMAIL_RATE_LIMIT, AUTH_RATE_LIMIT, EMAIL_DELIVERY, VALIDATION, TEMPORARY, SESSION, RECOVERY,
         CONFIGURATION, MISSING_MIGRATION, CAREGIVER_INVITE_INVALID_OR_EXPIRED,
         CAREGIVER_INVITE_SELF, CAMERA_INVITE_INVALID_OR_EXPIRED, CAMERA_INVITE_SELF, UNKNOWN
     }
@@ -24,11 +24,12 @@ class BackendFailure(val category: Category, val status: Int = 0, cause: Throwab
             Category.INVALID_CREDENTIALS -> "Correo o contraseña incorrectos."
             Category.EMAIL_UNCONFIRMED -> "Confirma tu correo antes de iniciar sesión."
             Category.EMAIL_CONFIRMATION_REQUIRED -> "Supabase todavía exige confirmar el correo. Desactiva “Confirm email” en Authentication → Providers → Email para usar registro normal."
-            Category.EMAIL_RATE_LIMIT -> "Supabase sigue enviando confirmaciones por correo y alcanzó su límite. Desactiva “Confirm email” en Authentication → Providers → Email."
+            Category.EMAIL_RATE_LIMIT -> "Se alcanzó el límite de correos. Espera unos minutos antes de solicitar otro enlace."
             Category.AUTH_RATE_LIMIT -> "Se hicieron demasiados intentos. Espera un momento antes de volver a probar."
-            Category.EMAIL_DELIVERY -> "No se pudo enviar el correo de verificación. Revisa la configuración SEND_EMAIL_HOOK_SECRET y TWILIO_* en Supabase."
+            Category.EMAIL_DELIVERY -> "No se pudo enviar el correo. Inténtalo de nuevo más tarde."
             Category.VALIDATION -> "Revisa los datos e inténtalo de nuevo."
             Category.TEMPORARY -> "Supabase no está disponible ahora. Inténtalo más tarde."
+            Category.RECOVERY -> "El enlace no corresponde a una recuperación vigente en este teléfono. Solicita un enlace nuevo aquí y ábrelo en este mismo teléfono."
             Category.SESSION -> "Tu sesión terminó. Inicia sesión otra vez."
             Category.CONFIGURATION -> "Falta configurar la URL o la clave pública de Supabase."
             Category.MISSING_MIGRATION -> "Supabase todavía no tiene activada la vinculación de cámaras. Aplica la migración correspondiente en el proyecto de Supabase."
@@ -85,34 +86,61 @@ class SupabaseBackend(
     }
 
     fun requestPasswordRecovery(email: String) {
-        request(
-            "POST",
-            "/auth/v1/recover?redirect_to=" + encode(redirectUrl),
-            JSONObject().put("email", email.trim()),
-            needsSession = false,
-        )
+        val state = sessions.recovery.begin(email)
+        try {
+            request("POST", "/auth/v1/recover?redirect_to=" + encode(redirectUrl),
+                JSONObject().put("email", email.trim())
+                    .put("code_challenge", PasswordRecoveryStore.challenge(state.getString("verifier")))
+                    .put("code_challenge_method", "s256"), needsSession = false)
+        } catch (failure: Throwable) {
+            sessions.recovery.clear(state.getString("id"))
+            throw failure
+        }
     }
 
     fun acceptPasswordRecovery(uri: Uri): AuthSession {
-        val values = parseQuery(uri.encodedFragment.orEmpty())
-        val access = values["access_token"].orEmpty()
-        val refresh = values["refresh_token"].orEmpty()
-        if (access.isBlank() || refresh.isBlank()) throw BackendFailure(BackendFailure.Category.SESSION)
-        val expiresAt = epochSeconds(values["expires_at"], values["expires_in"])
-        val interim = AuthSession(access, refresh, expiresAt, "", "")
-        val user = request("GET", "/auth/v1/user", null, needsSession = false, sessionOverride = interim)
-        val validated = interim.copy(userId = user.optString("id"), email = user.optString("email"))
-        if (validated.userId.isBlank()) throw BackendFailure(BackendFailure.Category.SESSION)
-        sessions.write(validated)
-        boundUserId = validated.userId
-        return validated
+        val expected = Uri.parse(redirectUrl)
+        val code = if (uri.isHierarchical) uri.getQueryParameters("code").singleOrNull() else null
+        if (uri.scheme != expected.scheme || uri.encodedAuthority != expected.encodedAuthority ||
+            uri.encodedPath.orEmpty() != expected.encodedPath.orEmpty() || !uri.fragment.isNullOrEmpty() ||
+            uri.queryParameterNames != setOf("code") || code.isNullOrBlank() || code.length > 2048)
+            throw BackendFailure(BackendFailure.Category.RECOVERY)
+        val state = sessions.recovery.claim() ?: throw BackendFailure(BackendFailure.Category.RECOVERY)
+        val id = state.getString("id")
+        try {
+            val response = request("POST", "/auth/v1/token?grant_type=pkce",
+                JSONObject().put("auth_code", code).put("code_verifier", state.getString("verifier")), needsSession = false)
+            val user = response.optJSONObject("user") ?: throw BackendFailure(BackendFailure.Category.RECOVERY)
+            val session = AuthSession(response.optString("access_token"), response.optString("refresh_token"),
+                epochSeconds(response.optString("expires_at"), response.optString("expires_in")),
+                user.optString("id"), user.optString("email"))
+            if (session.userId.isBlank() || session.accessToken.isBlank() || session.refreshToken.isBlank() ||
+                session.expiresAtSeconds <= System.currentTimeMillis() / 1000 ||
+                !session.email.equals(state.getString("email"), ignoreCase = true) ||
+                !sessions.recovery.complete(id, session)) throw BackendFailure(BackendFailure.Category.RECOVERY)
+            return session
+        } catch (failure: Throwable) {
+            sessions.recovery.clear(id)
+            throw BackendFailure(BackendFailure.Category.RECOVERY, cause = failure)
+        }
     }
 
+    val hasPasswordRecovery: Boolean get() = sessions.recovery.ready() != null
+    internal val passwordRecoveryRevision: Long get() = sessions.recovery.revision
+    fun cancelPasswordRecovery() { sessions.recovery.clear() }
+
     fun updatePassword(newPassword: String) {
-        request("PUT", "/auth/v1/user", JSONObject().put("password", newPassword), needsSession = true)
+        val state = sessions.recovery.ready() ?: throw BackendFailure(BackendFailure.Category.RECOVERY)
+        val recoverySession = AuthSession(state.getString("access_token"), state.getString("refresh_token"),
+            state.getLong("expires_at"), state.getString("user_id"), state.getString("email"))
+        val user = request("PUT", "/auth/v1/user", JSONObject().put("password", newPassword),
+            needsSession = false, sessionOverride = recoverySession)
+        if (user.optString("id") != recoverySession.userId) throw BackendFailure(BackendFailure.Category.RECOVERY)
+        sessions.recovery.clear(state.getString("id"))
     }
 
     fun signOut() {
+        cancelPasswordRecovery()
         val owner = boundUserId ?: sessions.read()?.userId ?: return
         try { request("POST", "/auth/v1/logout", null, needsSession = true) }
         finally { sessions.clearIfUser(owner) }
@@ -689,7 +717,10 @@ class SupabaseBackend(
         if (expectedSession != null) {
             if (session.userId != expectedSession.userId || !sessions.writeIfCurrent(expectedSession, session))
                 throw BackendFailure(BackendFailure.Category.SESSION)
-        } else sessions.write(session)
+        } else {
+            sessions.recovery.clear()
+            sessions.write(session)
+        }
         boundUserId = session.userId
         return session
     }
@@ -763,7 +794,7 @@ class SupabaseBackend(
                     ?: errorJson?.optString("message")?.takeIf { it.isNotBlank() }
                     ?: errorJson?.optString("details")?.takeIf { it.isNotBlank() }
                     ?: errorJson?.optString("hint").orEmpty()).lowercase(Locale.ROOT)
-                val sendsEmail = path == "/auth/v1/recover"
+                val sendsEmail = path.substringBefore('?') == "/auth/v1/recover"
                 val category = when {
                     path == "/rest/v1/rpc/accept_caregiver_invite" && message.contains("cannot_link_self") ->
                         BackendFailure.Category.CAREGIVER_INVITE_SELF
@@ -806,14 +837,6 @@ class SupabaseBackend(
         val absolute = expiresAt?.toLongOrNull() ?: 0L
         return if (absolute > 0L) absolute else System.currentTimeMillis() / 1000 + (expiresIn?.toLongOrNull() ?: 3600L)
     }
-
-    private fun parseQuery(value: String): Map<String, String> = value.split('&').mapNotNull {
-        val pair = it.split('=', limit = 2)
-        if (pair.size == 2) runCatching {
-            java.net.URLDecoder.decode(pair[0], Charsets.UTF_8.name()) to
-                java.net.URLDecoder.decode(pair[1], Charsets.UTF_8.name())
-        }.getOrNull() else null
-    }.toMap()
 
     companion object {
         private const val CONNECT_TIMEOUT_MS = 12_000

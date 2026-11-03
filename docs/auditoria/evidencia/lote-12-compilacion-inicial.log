@@ -1,0 +1,59 @@
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:generateDebugBuildConfig UP-TO-DATE
+> Task :app:mergeDebugMlModels UP-TO-DATE
+> Task :app:generateDebugMlModelClass UP-TO-DATE
+> Task :app:generateDebugResources UP-TO-DATE
+> Task :app:packageDebugResources UP-TO-DATE
+> Task :app:processDebugNavigationResources UP-TO-DATE
+> Task :app:parseDebugLocalResources UP-TO-DATE
+> Task :app:generateDebugRFile UP-TO-DATE
+> Task :app:compileDebugKotlin
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/GuardianMonitorService.kt:46:32 'class PhoneStateListener : Any' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:315:43 'val systemWindowInsetLeft: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:315:73 'val systemWindowInsetTop: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:315:102 'val systemWindowInsetRight: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:315:133 'val stableInsetBottom: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:321:16 'var statusBarColor: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:322:16 'var navigationBarColor: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:345:38 The corresponding parameter in the supertype 'ComponentActivity' is named 'outState'. This may cause problems when calling this function with named arguments.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:711:65 'static field FLAG_SHOW_WHEN_LOCKED: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:711:117 'static field FLAG_TURN_SCREEN_ON: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:723:63 'static field FLAG_SHOW_WHEN_LOCKED: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:723:115 'static field FLAG_TURN_SCREEN_ON: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:948:16 'var statusBarColor: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:949:16 'var navigationBarColor: Int' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:1412:59 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:1413:68 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:1622:77 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:1759:59 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:1760:68 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:2070:82 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:2104:93 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:2903:110 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:2904:90 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:2906:43 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:2971:53 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:3360:60 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:3469:71 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:3520:73 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:3706:58 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:4390:18 This declaration overrides a deprecated member but is not marked as deprecated itself. Add the '@Deprecated' annotation or suppress the diagnostic.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:4391:15 'fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray): Unit' is deprecated. This method has been deprecated in favor of using the Activity Result API
+      which brings increased type safety via an {@link ActivityResultContract} and the prebuilt
+      contracts for common intents available in
+      {@link androidx.activity.result.contract.ActivityResultContracts}, provides hooks for
+      testing, and allow receiving results in separate, testable classes independent from your
+      activity. Use
+      {@link #registerForActivityResult(ActivityResultContract, ActivityResultCallback)} passing
+      in a {@link RequestMultiplePermissions} object for the {@link ActivityResultContract} and
+      handling the result in the {@link ActivityResultCallback#onActivityResult(Object) callback}.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:4686:67 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:4701:58 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MainActivity.kt:4702:72 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MedicationModuleUi.kt:1144:86 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+w: file:///C:/Users/yaelg/Documents/Codex/2026-10-20/me-ayudas-a-hacer-cambios-a/work/tzina/app/src/main/java/com/example/guardian_iot/MedicationModuleUi.kt:1146:86 'constructor(p0: String!, p1: String!): Locale' is deprecated. Deprecated in Java.
+
+BUILD SUCCESSFUL in 39s
+9 actionable tasks: 1 executed, 8 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html

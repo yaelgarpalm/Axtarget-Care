@@ -57,6 +57,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var root: View
     private var tab = 0
     private var authMode: AuthMode? = null
+    private var recoveryRevision = -1L
     private var authStatus: TextView? = null
     private var authEmail: EditText? = null
     private var authPassword: EditText? = null
@@ -253,6 +254,8 @@ class MainActivity : ComponentActivity() {
         careFeatures = CareFeatureStore(this)
         authMode = restoredState?.getString("auth_mode")?.let { runCatching { AuthMode.valueOf(it) }.getOrNull() }
             ?: if (backend.isConfigured && sessions.read() == null && !store.prefs.getBoolean("local_only_mode", false)) AuthMode.LOGIN else null
+        if (backend.hasPasswordRecovery) authMode = AuthMode.RESET
+        else if (authMode == AuthMode.RESET) authMode = AuthMode.RECOVER
         if (dark) setTheme(R.style.AppTheme_Dark)
         super.onCreate(restoredState)
         tab = restoredState?.getInt("tab") ?: if (store.role().isBlank()) ROLE_TAB else 0
@@ -356,6 +359,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (!AccountStorage.isCurrent(store.appContext)) { recreate(); return }
+        refreshPasswordRecovery()
         handler.post(live); refreshPermissionUi(); updateServiceIfActive()
         MedicationReminderScheduler.synchronizeAll(this)
         if (tab == CAMERA_TAB && cameraRequested && has(Manifest.permission.CAMERA)) launchCameraDetection()
@@ -398,10 +402,11 @@ class MainActivity : ComponentActivity() {
     private fun processAuthCallback(intent: Intent) {
         val callback = intent.data ?: return
         if (callback.scheme == "com.guardian.tzindaapp.v2" && callback.host == "auth-callback") {
-            io.execute {
+            intent.data = null // Do not replay the one-use callback after Activity recreation.
+            passwordRecoveryIo.execute {
                 runCatching { backend.acceptPasswordRecovery(callback) }
-                    .onSuccess { runOnUiThread { authMode = AuthMode.RESET; render() } }
-                    .onFailure { failure -> runOnUiThread { authMode = AuthMode.LOGIN; render(); toast(failure.message ?: "No se pudo abrir el enlace.", true) } }
+                    .onSuccess { runOnUiThread { if (!isDestroyed && !isFinishing) refreshPasswordRecovery() } }
+                    .onFailure { failure -> runOnUiThread { if (!isDestroyed && !isFinishing) { authMode = AuthMode.RECOVER; render(); toast(failure.message ?: "No se pudo abrir el enlace.", true) } } }
             }
         }
     }
@@ -644,8 +649,17 @@ class MainActivity : ComponentActivity() {
         }
         return android.graphics.Bitmap.createBitmap(pixels, size, size, android.graphics.Bitmap.Config.ARGB_8888)
     }
+    private fun refreshPasswordRecovery() {
+        val revision = backend.passwordRecoveryRevision
+        if (revision == recoveryRevision) return
+        recoveryRevision = revision
+        if (backend.hasPasswordRecovery && authMode != AuthMode.RESET) {
+            authMode = AuthMode.RESET
+            render()
+        }
+    }
     private val live = object : Runnable {
-        override fun run() { refreshLive(); handler.postDelayed(this, 1_000) }
+        override fun run() { refreshPasswordRecovery(); refreshLive(); handler.postDelayed(this, 1_000) }
     }
     private fun refreshLive() {
         if (tab == DEVICE_TAB) {
@@ -1062,8 +1076,8 @@ class MainActivity : ComponentActivity() {
         heading(body, "TZINDAAPP · CUENTA SEGURA", title, when(mode) {
             AuthMode.LOGIN -> "Sincroniza tu perfil, contactos y alertas con tu cuenta."
             AuthMode.REGISTER -> "Crea una cuenta con tu correo y contraseña para sincronizar tus datos."
-            AuthMode.RECOVER -> "Te enviaremos un enlace para restablecer tu contraseña."
-            AuthMode.RESET -> "Elige una contraseña nueva para tu cuenta."
+            AuthMode.RECOVER -> "Solicita el enlace aquí y ábrelo en este mismo teléfono. Solo el enlace más reciente será válido."
+            AuthMode.RESET -> "Elige una contraseña nueva. Después inicia sesión con ella; la cuenta activa de la app no cambia al abrir este enlace."
         })
         val form = card(body)
         if (mode == AuthMode.REGISTER) authName = field(form, "Nombre", "", tag = "auth_name") else authName = null
@@ -1108,7 +1122,7 @@ class MainActivity : ComponentActivity() {
         if (mode == AuthMode.LOGIN) body.addView(button("Crear una cuenta", false) { authMode = AuthMode.REGISTER; render() })
         if (mode == AuthMode.LOGIN) body.addView(button("Olvidé mi contraseña", false) { authMode = AuthMode.RECOVER; render() })
         if (mode == AuthMode.REGISTER || mode == AuthMode.RECOVER) body.addView(button("Volver a iniciar sesión", false) { authMode = AuthMode.LOGIN; render() })
-        if (mode == AuthMode.RESET) body.addView(button("Volver a la app", false) { authMode = null; render() })
+        if (mode == AuthMode.RESET) body.addView(button("Cancelar recuperación", false) { backend.cancelPasswordRecovery(); authMode = null; render() })
         if (mode == AuthMode.LOGIN) body.addView(button("Usar la app en este teléfono", false) {
             store.prefs.edit().putBoolean("local_only_mode", true).apply(); authMode = null; render()
         })
@@ -1139,13 +1153,14 @@ class MainActivity : ComponentActivity() {
                         "Cuenta creada."
                     }
                     AuthMode.RECOVER -> { backend.requestPasswordRecovery(email); "Si el correo está registrado, recibirás un enlace para restablecer la contraseña." }
-                    AuthMode.RESET -> { backend.updatePassword(password); "Contraseña actualizada." }
+                    AuthMode.RESET -> { backend.updatePassword(password); "Contraseña actualizada. Inicia sesión con la nueva contraseña." }
                 }
             }
             runOnUiThread {
                 result.onSuccess { message ->
                     authStatus?.text = message
-                    if (mode in setOf(AuthMode.LOGIN, AuthMode.REGISTER, AuthMode.RESET) && sessions.read() != null) {
+                    if (mode == AuthMode.RESET) { authMode = AuthMode.LOGIN; render(); authStatus?.text = message }
+                    if (mode in setOf(AuthMode.LOGIN, AuthMode.REGISTER) && sessions.read() != null) {
                         sessions.read()?.let { session ->
                             if (store.bindLocalDataToUser(session.userId)) {
                                 disposeCameraController()
@@ -4735,6 +4750,8 @@ class MainActivity : ComponentActivity() {
         }
     }
     companion object {
+        // A code exchange must survive Activity recreation; its result is stored independently.
+        private val passwordRecoveryIo = Executors.newSingleThreadExecutor()
         private const val CAMERA_TAB = TzindaTabs.CAMERA
         private const val ROLE_TAB = TzindaTabs.ROLE
         private const val DEVICE_TAB = TzindaTabs.DEVICE
