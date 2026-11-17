@@ -1,0 +1,14 @@
+Fecha local: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Lote 17: historial compartido del cuidador.
+
+Cambio: página remota con límite 100 y orden estable occurred_at DESC, id DESC; UI carga páginas bajo demanda, deduplica por ID y conserva hasta 1000 eventos por vínculo. Refresh conserva páginas antiguas conocidas. Se añadió contrato HTTP loopback.
+
+Validación final sobre estado actual:
+  git diff --check: sin errores.
+  testDebugUnitTest: 111 pruebas, 0 fallos, 0 errores, 0 omitidas.
+  connectedDebugAndroidTest con -PtzindaAudit=true: 89 pruebas en Medium_Phone_API_37.0, 0 fallos/omitidas.
+  Primera instrumentación detectó un error en el test de página parcial y dos tests UI con navegación obsoleta; se corrigieron y la segunda pasada aprobó completa.
+
+El primer intento de wrapper sin autorización quedó bloqueado por red; se ejecutó después con autorización de descarga de Gradle. No se usó teléfono físico, Supabase remoto, SMS ni llamadas. Prueba RLS de privilegios pendiente de PostgreSQL/Docker local.

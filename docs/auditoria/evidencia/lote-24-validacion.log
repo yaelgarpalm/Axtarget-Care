@@ -1,0 +1,19 @@
+TzindaApp - Lote 24: política de seguimientos extraída de MainActivity
+Fecha: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Comando ejecutado:
+  .\gradlew.bat :app:testDebugUnitTest :app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon
+
+Resultado: BUILD SUCCESSFUL (4m 32s; código de salida 0).
+Unitarias: 114; fallos: 0; errores: 0; omitidas: 0.
+Instrumentadas: 94; fallos: 0; errores: 0; omitidas: 0.
+Dispositivo: Medium_Phone_API_37.0 (AVD), API 37.
+
+Las tres nuevas pruebas unitarias verifican la selección cronológica del
+seguimiento más reciente por evento, la resolución por seguimiento del
+cuidador y los estados por defecto de alertas sin confirmar.
+
+`git diff --check`: sin errores de whitespace. Se mantienen advertencias de
+Git sobre conversión LF/CRLF en archivos existentes y modificados.
+No se usaron dispositivos físicos, servicios Supabase remotos ni alertas reales.

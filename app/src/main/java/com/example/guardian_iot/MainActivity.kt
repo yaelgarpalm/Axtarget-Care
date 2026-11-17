@@ -41,8 +41,6 @@ import com.example.deteccioncaidas.PoseOverlayView
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.Executors
@@ -56,6 +54,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var frame: FrameLayout
     private lateinit var root: View
     private var tab = 0
+    private val navigationHistory = TzindaNavigationHistory()
     private var authMode: AuthMode? = null
     private var recoveryRevision = -1L
     private var authStatus: TextView? = null
@@ -68,6 +67,8 @@ class MainActivity : ComponentActivity() {
     private var caregiverRefreshAt = 0L
     private var caregiverRefreshScope: CaregiverScope? = null
     private var caregiverRefreshRequest = 0L
+    private var caregiverEventsPageInFlight = false
+    private var caregiverEventsHasMore = true
     private var wearerLinkRefreshInFlight = false
     private var wearerLinkRefreshAt = 0L
     private var caregiverLocationRealtime: CaregiverLocationRealtime? = null
@@ -88,7 +89,9 @@ class MainActivity : ComponentActivity() {
     private var supervisionReturnTab = 0
     private var settingsReturnTab = 0
     private var activityFilter = 0
-    private var activitySection = 0
+    private var activityHistoryLimit = 100
+    private var cameraHistoryLimit = 100
+    private var activitySection = 1
     private var careJournalFilter = ""
     private var patientPulseValue: TextView? = null
     private var patientSpo2Value: TextView? = null
@@ -201,7 +204,7 @@ class MainActivity : ComponentActivity() {
         if (uri == null) callback?.invoke(null, null) else readMedicationLabel(uri, callback)
     }
     private val medicationLabelScanner = object : MedicationLabelScanner {
-        override val cloudAvailable: Boolean get() = NvidiaMedicationLabelReader.isConfigured
+        override val cloudAvailable: Boolean get() = NvidiaMedicationLabelReader.isAvailable(this@MainActivity)
 
         override fun takePhoto(mode: MedicationScanMode, onResult: (MedicationLabelGuess?, String?) -> Unit) {
             medicationScanCloud = mode == MedicationScanMode.CLOUD
@@ -259,6 +262,7 @@ class MainActivity : ComponentActivity() {
         if (dark) setTheme(R.style.AppTheme_Dark)
         super.onCreate(restoredState)
         tab = restoredState?.getInt("tab") ?: if (store.role().isBlank()) ROLE_TAB else 0
+        navigationHistory.restore(restoredState?.getIntArray("navigation_back_stack"))
         pendingAction = restoredState?.getString("action")
         profileReturnTab = restoredState?.getInt("profile_return_tab", 0) ?: 0
         cameraReturnTab = restoredState?.getInt("camera_return_tab", 0) ?: 0
@@ -267,7 +271,7 @@ class MainActivity : ComponentActivity() {
         careReturnTab = restoredState?.getInt("care_return_tab", 0) ?: 0
         supervisionReturnTab = restoredState?.getInt("supervision_return_tab", 0) ?: 0
         activityFilter = restoredState?.getInt("activity_filter", 0) ?: 0
-        activitySection = restoredState?.getInt("activity_section", 0) ?: 0
+        activitySection = restoredState?.getInt("activity_section", 1) ?: 1
         editingContacts = restoredState?.getBoolean("editing_contacts", false) ?: false
         smsRequestInFlight = restoredState?.getBoolean("sms_request_pending") ?: false
         resumeAlertSetup = restoredState?.getBoolean("resume_alert_setup") ?: false
@@ -288,7 +292,7 @@ class MainActivity : ComponentActivity() {
         back.setColorFilter(accent)
         back.setOnClickListener {
             if (isSecondaryScreen(tab)) {
-                selectTab(returnTabFor(tab))
+                navigateBack()
             } else if (tab == CAMERA_TAB && !isCameraRole) {
                 selectTab(primaryTabOr(cameraReturnTab))
             } else onBackPressedDispatcher.onBackPressed()
@@ -301,7 +305,7 @@ class MainActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (isSecondaryScreen(tab)) {
-                    selectTab(returnTabFor(tab))
+                    navigateBack()
                 } else {
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -346,7 +350,8 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(out: Bundle) {
         saveDrafts()
         out.putString("account_scope", AccountStorage.key(store.appContext))
-        out.putInt("tab", tab); out.putInt("profile_return_tab", profileReturnTab); out.putInt("camera_return_tab", cameraReturnTab); out.putInt("device_return_tab", deviceReturnTab); out.putInt("medication_return_tab", medicationReturnTab); out.putInt("care_return_tab", careReturnTab); out.putInt("supervision_return_tab", supervisionReturnTab)
+        out.putInt("tab", tab); out.putIntArray("navigation_back_stack", navigationHistory.snapshot())
+        out.putInt("profile_return_tab", profileReturnTab); out.putInt("camera_return_tab", cameraReturnTab); out.putInt("device_return_tab", deviceReturnTab); out.putInt("medication_return_tab", medicationReturnTab); out.putInt("care_return_tab", careReturnTab); out.putInt("supervision_return_tab", supervisionReturnTab)
         out.putInt("activity_filter", activityFilter); out.putInt("activity_section", activitySection); out.putBoolean("editing_contacts", editingContacts)
         out.putString("action", pendingAction); out.putInt("import_slot", importSlot)
         out.putBoolean("sms_request_pending", smsRequestInFlight)
@@ -509,7 +514,7 @@ class MainActivity : ComponentActivity() {
                     caregiverHealthRealtime = null
                     caregiverHealthRealtimeKey = ""
                     toast("Cuenta vinculada.")
-                    tab = 0; render()
+                    resetNavigation(0)
                 }.onFailure { status?.text = it.message ?: "No se pudo vincular la cuenta."; if (status == null) toast(it.message ?: "Código inválido o vencido.", true) }
             }
         }
@@ -537,7 +542,7 @@ class MainActivity : ComponentActivity() {
                     }
                     editor.apply()
                     toast("Cámara vinculada a ${ownerName ?: deviceName}.")
-                    tab = 0; render()
+                    resetNavigation(0)
                 }.onFailure { status?.text = it.message ?: "No se pudo vincular la cámara."; if (status == null) toast(it.message ?: "Código inválido o vencido.", true) }
             }
         }
@@ -553,6 +558,9 @@ class MainActivity : ComponentActivity() {
         val payload = Uri.Builder().scheme("tzinda").authority("pair")
             .appendQueryParameter("type", type).appendQueryParameter("code", normalizedCode).build().toString()
         val image = runCatching { createQrBitmap(payload, dp(232)) }.getOrNull()
+        val connectionStatus = text("Esperando a que el otro dispositivo se conecte…", 13, color = accent).apply {
+            gravity = Gravity.CENTER; setPadding(0, dp(6), 0, 0)
+        }
         val content = column().apply {
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(18), dp(8), dp(18), dp(10))
@@ -574,16 +582,17 @@ class MainActivity : ComponentActivity() {
                 clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Código de vinculación", normalizedCode))
                 toast("Código copiado.")
             })
-            addView(text("Esperando a que el otro dispositivo se conecte…", 13, color = accent).apply {
-                gravity = Gravity.CENTER; setPadding(0, dp(6), 0, 0)
-            })
+            addView(connectionStatus)
             addView(text("Código de un solo uso · vence a las $expiresAt\n\nSi no puede escanearlo, puede escribir los 8 caracteres.", 14, color = muted).apply {
                 gravity = Gravity.CENTER; setPadding(dp(4), dp(10), dp(4), 0)
             })
         }
         val dialog = AlertDialog.Builder(this).setView(content).setPositiveButton("Listo", null).create()
+        dialog.setCancelable(false)
+        dialog.setCanceledOnTouchOutside(false)
         val pollHandler = Handler(Looper.getMainLooper())
         var dismissed = false
+        var pairingCompleted = false
         val pollRunnable = object : Runnable {
             override fun run() {
                 if (dismissed || !backend.isConfigured || sessions.read() == null) return
@@ -604,10 +613,8 @@ class MainActivity : ComponentActivity() {
                             if (newlyLinked && !dismissed) {
                                 runOnUiThread {
                                     if (!dismissed) {
-                                        dismissed = true
-                                        runCatching { dialog.dismiss() }
-                                        toast("¡Cámara vinculada exitosamente!")
-                                        render()
+                                        pairingCompleted = true
+                                        connectionStatus?.text = "¡Cámara vinculada exitosamente! Pulsa Listo para cerrar."
                                     }
                                 }
                                 return@execute
@@ -618,10 +625,8 @@ class MainActivity : ComponentActivity() {
                                 store.prefs.edit().putBoolean("wearer_has_linked_caregiver", true).apply()
                                 runOnUiThread {
                                     if (!dismissed) {
-                                        dismissed = true
-                                        runCatching { dialog.dismiss() }
-                                        toast("¡Cuidador/a vinculado exitosamente!")
-                                        render()
+                                        pairingCompleted = true
+                                        connectionStatus?.text = "¡Cuidador/a vinculado exitosamente! Pulsa Listo para cerrar."
                                     }
                                 }
                                 return@execute
@@ -637,6 +642,15 @@ class MainActivity : ComponentActivity() {
         dialog.setOnDismissListener {
             dismissed = true
             pollHandler.removeCallbacksAndMessages(null)
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                dialog.dismiss()
+                if (pairingCompleted) {
+                    toast(if (type == "camera") "¡Cámara vinculada exitosamente!" else "¡Cuidador/a vinculado exitosamente!")
+                    render()
+                }
+            }
         }
         dialog.show()
         pollHandler.postDelayed(pollRunnable, 2500L)
@@ -830,19 +844,30 @@ class MainActivity : ComponentActivity() {
         countdownDialog = dialog
     }
     private fun selectTab(index: Int) {
+        navigationHistory.record(tab, index, isSecondaryScreen(index))
+        showTab(index)
+    }
+    private fun navigateBack() {
+        val destination = navigationHistory.back() ?: returnTabFor(tab)
+        showTab(if (destination == tab) returnTabFor(tab) else destination)
+    }
+    private fun showTab(index: Int) {
         if (tab == CAMERA_TAB && index != CAMERA_TAB) disposeCameraController()
         saveDrafts(); tab = index; hideKeyboard(); render()
     }
+    private fun resetNavigation(index: Int) {
+        navigationHistory.clear()
+        showTab(index)
+    }
     private fun chooseRole(role: String) {
-        if (role == store.role()) { tab = 0; render(); return }
+        if (role == store.role()) { resetNavigation(0); return }
         val applyRole = {
             if (GuardianMonitorService.monitoring || store.prefs.getBoolean("monitor_enabled", false))
                 service(GuardianMonitorService.ACTION_STOP)
             // Leaving the camera role must release the lens instead of keeping a hidden session.
             disposeCameraController()
             store.saveRole(role)
-            tab = 0
-            render()
+            resetNavigation(0)
         }
         if (store.role().isNotBlank() && (GuardianMonitorService.monitoring || store.prefs.getBoolean("monitor_enabled", false))) {
             AlertDialog.Builder(this).setTitle("Cambiar modo de este teléfono")
@@ -990,7 +1015,7 @@ class MainActivity : ComponentActivity() {
         findViewById<ImageView>(R.id.app_bar_back).apply {
             setColorFilter(accent)
             visibility = if (secondary) View.VISIBLE else View.GONE
-            contentDescription = "Volver a ${TzindaNavigationPolicy.screenName(role, returnTabFor(tab))}"
+            contentDescription = "Volver a ${TzindaNavigationPolicy.screenName(role, navigationHistory.peek() ?: returnTabFor(tab))}"
         }
         appBarProfile?.apply { setTextColor(onAccent); background = rounded(tz.primaryFill, 24) }
         val navItems = TzindaNavigationPolicy.items(role)
@@ -1111,8 +1136,8 @@ class MainActivity : ComponentActivity() {
                 action = {},
             )
             form.addView(button("Leer aviso de privacidad y uso", false) {
-                AlertDialog.Builder(this).setTitle("Privacidad y uso de TzindaApp")
-                    .setMessage("Al iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador vinculado puede registrar tomas compartidas; no puede editar el medicamento ni sus horarios. Puedes retirar el permiso de compartir editando el registro. TzindaApp no recomienda ni modifica dosis. Si escaneas la caja o la receta, la foto se lee en este teléfono y no se guarda ni se envía.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. TzindaApp es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
+                    AlertDialog.Builder(this).setTitle("Privacidad y uso de TzindaApp")
+                    .setMessage("Al iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador vinculado puede registrar tomas compartidas; no puede editar el medicamento ni sus horarios. Puedes retirar el permiso de compartir editando el registro. TzindaApp no recomienda ni modifica dosis. Al escanear una caja o receta puedes elegir procesar la foto en el teléfono sin enviarla. Si eliges la lectura en la nube con sesión iniciada, la foto pasa por Supabase y NVIDIA para extraer texto; TzindaApp no la almacena y vuelve a la lectura local si falla la nube.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. TzindaApp es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
                     .setPositiveButton("Entendido", null).show()
             })
         }
@@ -1172,6 +1197,7 @@ class MainActivity : ComponentActivity() {
                                 medicationRepository = MedicationRepository(this, backend, store)
                                 careFeatures = CareFeatureStore(this)
                                 contactDraft = null; profileDraft = null; contactEdits.clear(); profileEdits.clear()
+                                navigationHistory.clear()
                                 tab = if (store.role().isBlank()) ROLE_TAB else 0
                                 toast("Cuenta cambiada. Los datos anteriores siguen guardados por separado.")
                             }
@@ -1187,6 +1213,7 @@ class MainActivity : ComponentActivity() {
                             store.prefs.edit().remove("pending_pairing_type").remove("pending_pairing_code").apply()
                             if (pendingType in setOf("caregiver", "camera") && pendingCode.isNotBlank()) {
                                 store.saveRole(if (pendingType == "camera") AppStore.ROLE_CAMERA else AppStore.ROLE_CAREGIVER)
+                                navigationHistory.clear()
                                 tab = 0
                                 SyncScheduler.enqueue(applicationContext)
                                 render()
@@ -1231,11 +1258,12 @@ class MainActivity : ComponentActivity() {
             top.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
             item.addView(top)
             if (selected) item.addView(statusPill(TzindaCopy("Modo actual", "La navegación está adaptada a este teléfono.", TzindaTone.POSITIVE)))
-            item.addView(button(
-                if (selected) "Continuar como ${TzindaNavigationPolicy.roleLabel(TzindaNavigationPolicy.role(role)).lowercase(Locale.getDefault())}"
-                else "Elegir este modo",
-                !selected,
-            ) { chooseRole(role) })
+            val actionLabel = if (selected) {
+                "Continuar como ${TzindaNavigationPolicy.roleLabel(TzindaNavigationPolicy.role(role)).lowercase(Locale.getDefault())}"
+            } else "Elegir modo: $title"
+            item.addView(button(actionLabel, !selected) { chooseRole(role) }.apply {
+                contentDescription = actionLabel
+            })
         }
         body.addView(text("Puedes usar TzindaApp sin cuenta; en ese caso los datos permanecen en este teléfono. La sincronización con Supabase solo empieza al iniciar sesión.", 13, color = muted).apply {
             setPadding(dp(4), dp(14), dp(4), dp(4))
@@ -1331,7 +1359,7 @@ class MainActivity : ComponentActivity() {
         val privacy = card(body)
         privacy.addView(text("Privacidad de la cámara", 18, true))
         privacy.addView(text("El video se procesa localmente y no se guarda. Solo se comparte el evento técnico autorizado. La cámara no funciona en segundo plano.", 13, color = muted))
-        body.addView(button("Cambiar modo de este teléfono", false) { tab = ROLE_TAB; render() })
+        body.addView(button("Cambiar modo de este teléfono", false) { resetNavigation(ROLE_TAB) })
     }
     private fun formatPairingCode(code: EditText, maxChars: Int = 8) {
         var formatting = false
@@ -1547,7 +1575,7 @@ class MainActivity : ComponentActivity() {
         if (recipients.isEmpty()) {
             contactsCard.addView(text("Aún no tienes contactos", 17, true, ink).apply { setPadding(0, dp(6), 0, 0) })
             contactsCard.addView(text("Agrega al menos una persona para activar el monitoreo y enviar alertas.", 14, color = muted))
-            contactsCard.addView(button("Agregar contactos", false) { selectTab(2) })
+            contactsCard.addView(button("Agregar contactos", false) { selectTab(2) }.apply { tag = "open_contacts" })
         } else {
             recipients.take(2).forEachIndexed { index, contact ->
                 tz.actionRow(
@@ -1563,7 +1591,7 @@ class MainActivity : ComponentActivity() {
                         .onFailure { toast("No se pudo abrir el marcador del teléfono.", true) }
                 }
             }
-            contactsCard.addView(button("Ver y editar contactos", false) { selectTab(2) })
+            contactsCard.addView(button("Ver y editar contactos", false) { selectTab(2) }.apply { tag = "open_contacts" })
         }
 
         val shortcuts = card(body)
@@ -1764,8 +1792,8 @@ class MainActivity : ComponentActivity() {
         val person = ownerName.ifBlank { "Persona protegida" }
         val events = sharedEvents()
         val devices = sharedDevices()
-        val alertFollowups = latestAlertFollowups()
-        val pending = events.filter { isPendingSharedAlert(it, alertFollowups) }
+        val alertFollowups = AlertFollowupPolicy.latestByEvent(sharedAlertFollowups())
+        val pending = events.filter { AlertFollowupPolicy.isPendingSharedAlert(it, alertFollowups) }
         val fetchedAt = store.prefs.getLong("caregiver_shared_fetched_at", 0L)
         val today = SimpleDateFormat("EEEE, d 'de' MMMM", Locale("es", "MX")).format(Date())
             .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale("es", "MX")) else it.toString() }
@@ -1891,7 +1919,7 @@ class MainActivity : ComponentActivity() {
             recent.addView(text("Cuando la persona comparta una detección o alerta, aparecerá aquí. No se muestran eventos inventados.", 14, color = muted))
         } else {
             events.take(4).forEachIndexed { index, event ->
-                val prepared = isPendingSharedAlert(event, alertFollowups)
+                val prepared = AlertFollowupPolicy.isPendingSharedAlert(event, alertFollowups)
                 tz.actionRow(
                     recent,
                     TzindaStatusCopy.classification(event.optString("classification")),
@@ -2037,7 +2065,15 @@ class MainActivity : ComponentActivity() {
         sync.addView(statusPill(syncCopy))
         sync.addView(text(if (isCaregiver) "Vista de solo lectura de los registros compartidos. No puedes crear ni modificar rutinas." else syncCopy.detail, 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
         val unassigned = careFeatures.unassignedCount()
-        if (unassigned > 0) sync.addView(text("Hay $unassigned registros o borrados antiguos sin propietario confirmado. Se conservan en este teléfono; no se asignan a la persona vinculada. Al sincronizar se compararán sus identificadores con la cuenta autorizada.", 14, color = muted))
+        if (unassigned > 0) {
+            sync.addView(text("Hay $unassigned registros o borrados antiguos sin propietario confirmado. Se conservan en este teléfono y no se asignan automáticamente.", 14, color = muted))
+            val actor = sessions.read()?.userId
+            if (!isCaregiver && !isCameraRole && !actor.isNullOrBlank() && actor == store.ownerUserId()) {
+                sync.addView(button("Revisar registros antiguos", false) { showUnassignedCareRecovery() })
+            } else {
+                sync.addView(text("Para revisarlos, inicia sesión con la cuenta propietaria y cambia este teléfono al modo Persona protegida.", 13, color = muted))
+            }
+        }
         if (!isCaregiver) {
             sync.addView(button("Sincronizar ahora", false) {
                 SyncScheduler.enqueue(applicationContext, immediate = true)
@@ -2168,6 +2204,48 @@ class MainActivity : ComponentActivity() {
             row.optJSONObject("record")?.put("ownerUserId", owner)?.put("id", row.optString("id"))
             row
         }
+    }
+
+    private fun showUnassignedCareRecovery() {
+        val actor = sessions.read()?.userId ?: run { toast("Inicia sesión con la cuenta propietaria.", true); return }
+        if (isCaregiver || isCameraRole || actor != store.ownerUserId()) {
+            toast("La revisión requiere la cuenta propietaria en modo Persona protegida.", true)
+            return
+        }
+        val entries = careFeatures.unassignedEntries()
+        if (entries.isEmpty()) { toast("No quedan registros antiguos por revisar."); render(); return }
+        val labels = entries.map { entry ->
+            val type = entry.kind.ifBlank { "sin tipo" }
+            val action = if (entry.deletion) "Borrado pendiente" else type.replaceFirstChar { it.uppercase() }
+            "$action · ${entry.summary} · …${entry.id.takeLast(8)}"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Datos sin propietario")
+            .setItems(labels) { _, index ->
+                val entry = entries.getOrNull(index) ?: return@setItems
+                val message = if (entry.deletion) {
+                    "${entry.summary}\nID: ${entry.id}\n\nSi confirmas que pertenece a tu cuenta, la próxima sincronización volverá a intentar borrarlo del servidor."
+                } else {
+                    "${entry.summary}\nID: ${entry.id}\n\nSi confirmas que es tuyo, se asignará a esta cuenta y quedará pendiente de sincronización."
+                }
+                val detailDialog = AlertDialog.Builder(this)
+                    .setTitle(if (entry.deletion) "Confirmar borrado pendiente" else "Confirmar propiedad")
+                    .setMessage(message)
+                    .setNegativeButton("Dejar sin asignar", null)
+                val validId = runCatching { java.util.UUID.fromString(entry.id) }.isSuccess
+                if (validId) detailDialog.setPositiveButton(if (entry.deletion) "Confirmar y reintentar" else "Asignar a mi cuenta") { _, _ ->
+                        val claimed = runCatching { careFeatures.claimUnassignedEntry(entry, actor, actor) }.getOrDefault(false)
+                        if (claimed) {
+                            SyncScheduler.enqueue(applicationContext, immediate = true)
+                            toast(if (entry.deletion) "Borrado asignado y reintento programado; revisa el estado de sincronización." else "Registro asignado; se sincronizará en segundo plano.")
+                        } else toast("El registro cambió o no pudo guardarse. Sigue conservado en el teléfono.", true)
+                        render()
+                    }
+                else detailDialog.setMessage("$message\n\nEste dato no tiene un identificador válido para sincronizar; se conservará sin asignar.")
+                detailDialog.show()
+            }
+            .setNegativeButton("Cerrar", null)
+            .show()
     }
 
     private fun sharedAlertFollowups(): List<JSONObject> {
@@ -2505,10 +2583,14 @@ class MainActivity : ComponentActivity() {
                 caregiverRefreshInFlight = false
                 if (store !== requestStore || !access.isCurrent(scope)) return@runOnUiThread
                 result.onSuccess { data ->
+                    val latestEvents = data.optJSONArray("events") ?: JSONArray()
+                    val oldEvents = if (store.prefs.getString("caregiver_cache_owner_id", "") == scope.owner &&
+                        store.prefs.getString("caregiver_cache_link_id", "") == scope.link) sharedEventsJson() else JSONArray()
+                    val mergedEvents = mergeCaregiverEventPages(latestEvents, oldEvents)
                     if (!access.write(scope) {
                         putString("caregiver_shared_name", data.optString("name"))
                         putString("caregiver_shared_devices", data.optJSONArray("devices")?.toString() ?: "[]")
-                        putString("caregiver_shared_events", data.optJSONArray("events")?.toString() ?: "[]")
+                        putString("caregiver_shared_events", mergedEvents.toString())
                         putString("caregiver_shared_measurements", data.optJSONArray("measurements")?.toString() ?: "[]")
                         putString("caregiver_location_device_id", data.optString("device_id"))
                         putString("caregiver_shared_status", "Actualizado · ${data.optJSONArray("measurements")?.length() ?: 0} lecturas y ${data.optJSONArray("events")?.length() ?: 0} eventos")
@@ -2522,6 +2604,9 @@ class MainActivity : ComponentActivity() {
                     }) return@onSuccess
                     ensureCaregiverLocationRealtime(data.optString("device_id"))
                     ensureCaregiverHealthRealtime(data.optString("owner_id"), data.optString("link_device_id").takeIf { it.isNotBlank() })
+                    caregiverEventsHasMore = latestEventsPageCouldHaveMore(
+                        latestEvents, oldEvents, mergedEvents, caregiverEventsHasMore,
+                    )
                     if (renderWhenDone || !hadSharedData) render()
                     else {
                         caregiverLocationUpdater?.invoke()
@@ -2541,6 +2626,71 @@ class MainActivity : ComponentActivity() {
                         ?: "No se pudieron actualizar los datos compartidos.") }
                     if (renderWhenDone) render()
                     else caregiverSharedStatusView?.text = store.prefs.getString("caregiver_shared_status", "").orEmpty()
+                }
+            }
+        }
+    }
+
+    private fun latestEventsPageCouldHaveMore(
+        page: JSONArray,
+        cached: JSONArray,
+        merged: JSONArray,
+        previouslyHadMore: Boolean,
+    ): Boolean = merged.length() < CAREGIVER_EVENT_CACHE_LIMIT &&
+        (page.length() >= CAREGIVER_EVENT_PAGE_SIZE || cached.length() > page.length() && previouslyHadMore)
+
+    private fun mergeCaregiverEventPages(latest: JSONArray, cached: JSONArray): JSONArray {
+        val byId = LinkedHashMap<String, JSONObject>()
+        listOf(latest, cached).forEach { rows ->
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val id = row.optString("id").takeIf { it.isNotBlank() } ?: continue
+                byId.putIfAbsent(id, row)
+            }
+        }
+        return JSONArray().apply {
+            byId.values.sortedWith(
+                compareByDescending<JSONObject> { it.optString("occurred_at") }
+                    .thenByDescending { it.optString("id") },
+            ).take(CAREGIVER_EVENT_CACHE_LIMIT).forEach(::put)
+        }
+    }
+
+    private fun sharedEventsJson(): JSONArray = runCatching {
+        JSONArray(store.prefs.getString("caregiver_shared_events", "[]"))
+    }.getOrDefault(JSONArray())
+
+    private fun loadMoreCaregiverEvents() {
+        if (caregiverEventsPageInFlight || !caregiverEventsHasMore) return
+        val requestStore = store
+        val access = CaregiverAccess(requestStore)
+        val scope = access.snapshot() ?: return
+        val offset = sharedEvents().size
+        if (offset >= CAREGIVER_EVENT_CACHE_LIMIT) {
+            caregiverEventsHasMore = false
+            render()
+            return
+        }
+        caregiverEventsPageInFlight = true
+        io.execute {
+            val result = runCatching {
+                SupabaseBackend(sessions, expectedUserId = scope.actor).sharedEventPage(
+                    scope.owner, scope.device, offset, CAREGIVER_EVENT_PAGE_SIZE,
+                )
+            }
+            runOnUiThread {
+                caregiverEventsPageInFlight = false
+                if (store !== requestStore || !access.isCurrent(scope)) return@runOnUiThread
+                result.onSuccess { page ->
+                    val merged = mergeCaregiverEventPages(sharedEventsJson(), page)
+                    if (access.write(scope) { putString("caregiver_shared_events", merged.toString()) }) {
+                        caregiverEventsHasMore = page.length() >= CAREGIVER_EVENT_PAGE_SIZE &&
+                            merged.length() < CAREGIVER_EVENT_CACHE_LIMIT
+                        if (page.length() == 0) caregiverEventsHasMore = false
+                        render()
+                    }
+                }.onFailure { failure ->
+                    toast("No se pudieron cargar eventos anteriores: ${failure.message ?: "error de conexión"}", true)
                 }
             }
         }
@@ -2705,9 +2855,7 @@ class MainActivity : ComponentActivity() {
             tz.emptyState(body, "Sin eventos compartidos", "La persona aún no ha compartido detecciones o alertas. No se muestran eventos de ejemplo.")
             return
         }
-        val latestFollowups = sharedAlertFollowups()
-            .groupBy { it.optString("fall_event_id") }
-            .mapValues { (_, rows) -> rows.maxByOrNull { it.optString("created_at") } }
+        val latestFollowups = AlertFollowupPolicy.latestByEvent(sharedAlertFollowups())
         var lastDay = ""
         events.forEach { event ->
             val day = dayLabel(isoMillis(event.optString("occurred_at")))
@@ -2716,7 +2864,7 @@ class MainActivity : ComponentActivity() {
                 body.addView(tz.eyebrow(day).apply { setPadding(0, dp(12), 0, dp(2)) })
             }
             val followup = latestFollowups[event.optString("id")]
-            val prepared = isPendingSharedAlert(event, latestFollowups)
+            val prepared = AlertFollowupPolicy.isPendingSharedAlert(event, latestFollowups)
             val state = followup?.let { TzindaStatusCopy.confirmation(it.optString("status")) }
                 ?: TzindaStatusCopy.confirmation(event.optString("confirmation_status"))
             val item = card(body)
@@ -2743,6 +2891,13 @@ class MainActivity : ComponentActivity() {
             item.addView(button(if (followup == null) "Registrar seguimiento" else "Cambiar estado · $state", false) {
                 recordAlertFollowup(event.optString("id"))
             })
+        }
+        if (caregiverEventsHasMore) {
+            body.addView(button(if (caregiverEventsPageInFlight) "Cargando eventos…" else "Cargar 100 eventos anteriores", false) {
+                loadMoreCaregiverEvents()
+            }.apply { isEnabled = !caregiverEventsPageInFlight })
+        } else if (events.size >= CAREGIVER_EVENT_CACHE_LIMIT) {
+            body.addView(text("Se muestran hasta $CAREGIVER_EVENT_CACHE_LIMIT eventos en este teléfono.", 13, color = muted))
         }
     }
     private fun caregiverPersonScreen(body: LinearLayout) {
@@ -2804,7 +2959,7 @@ class MainActivity : ComponentActivity() {
         }
         addSharedPhoneMotionCard(body)
         addCaregiverSyncControls(body)
-        body.addView(button("Cambiar modo de este teléfono", false) { tab = ROLE_TAB; render() })
+        body.addView(button("Cambiar modo de este teléfono", false) { resetNavigation(ROLE_TAB) })
     }
     private fun vitalsUnavailableCard(parent: LinearLayout, caregiver: Boolean) {
         val shared = if (caregiver) runCatching { JSONArray(store.prefs.getString("caregiver_shared_measurements", "[]")) }.getOrDefault(JSONArray()) else JSONArray()
@@ -3037,49 +3192,27 @@ class MainActivity : ComponentActivity() {
     private fun deviceLinkScreen(body: LinearLayout) {
         refreshRemoteDevicesIfStale()
         cameraRegistryRenderedRevision = store.prefs.getLong("camera_registry_revision", 0L)
-        heading(body, "CONECTAR DISPOSITIVOS", "Dispositivos y enlaces", "Gestiona la pulsera, las cámaras y la vinculación con tu red de apoyo.")
         if (isCaregiver) {
             refreshCaregiverSharedData()
             val remote = store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank()
             val person = store.prefs.getString("caregiver_shared_name", "").orEmpty().ifBlank { "Persona protegida" }
-            val link = card(body)
-            link.addView(statusPill(TzindaStatusCopy.link(remote, person, store.prefs.getLong("caregiver_shared_fetched_at", 0L))))
-            link.addView(text(if (remote) "Consulta los equipos registrados por la persona protegida. El estado de cada equipo se muestra por separado del vínculo." else "Escanea el código de la persona protegida para acompañarla.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
-            link.addView(button(if (remote) "Administrar vínculo" else "Vincular persona", false) { selectTab(2) })
-            if (remote) {
-                val devices = sharedDevices()
-                tz.section(body, "Equipos de $person", TzindaText.count(devices.size, "registrado", "registrados"))
-                if (devices.isEmpty()) {
-                    tz.emptyState(body, "Sin equipos registrados", "La cuenta vinculada aún no tiene una pulsera o teléfono registrado.")
-                } else devices.forEach { device ->
-                    val copy = sharedDeviceCopy(device)
-                    val last = deviceLastSignal(device)
-                    val item = card(body)
-                    item.addView(text(device.optString("name").ifBlank { "Dispositivo" }, 18, true))
-                    item.addView(text(device.optString("device_type").replace('_', ' ').replaceFirstChar { it.uppercase() } + if (last > 0) " · Última señal ${TzindaStatusCopy.freshness(System.currentTimeMillis() - last)}" else " · Sin señal registrada", 13, color = muted))
-                    item.addView(statusPill(copy))
-                }
-                val cameras = devices.filter { it.optString("device_type") == "camera" }
-                if (cameras.isNotEmpty()) {
-                    tz.section(body, "Cámaras de $person", TzindaText.count(cameras.size, "cámara", "cámaras"))
-                    cameras.forEachIndexed { index, camera ->
-                        val item = card(body)
-                        item.addView(text(camera.optString("name").ifBlank { "Cámara" }, 18, true))
-                        item.addView(statusPill(sharedDeviceCopy(camera)))
-                        item.addView(text("Los eventos de esta cámara aparecen en el historial compartido.", 13, color = muted))
-                        if (index == 0) item.addView(button("Ver eventos de cámara", false) {
-                            activitySection = 1; selectTab(1)
-                        })
-                    }
-                }
-                body.addView(button("Actualizar datos de la persona", false) { refreshCaregiverSharedData(force = true, renderWhenDone = true) })
-                body.addView(button("Abrir centro de supervisión", false) { openSupervisionCenter() })
-            }
-            val limits = card(body)
-            limits.addView(text("Qué puedes administrar", 18, true))
-            limits.addView(text("Puedes cambiar el estado de las alertas y crear, editar o pausar las zonas seguras que la persona comparte. La pulsera, la vinculación de cámaras y los medicamentos siguen bajo el control de la persona protegida.", 13, color = muted))
+            CaregiverDeviceLinksUi(
+                activity = this,
+                design = tz,
+                linked = remote,
+                personName = person,
+                fetchedAt = store.prefs.getLong("caregiver_shared_fetched_at", 0L),
+                devices = if (remote) sharedDevices() else emptyList(),
+                deviceCopy = ::sharedDeviceCopy,
+                lastSignal = ::deviceLastSignal,
+                onManageLink = { selectTab(2) },
+                onOpenCameraEvents = { activitySection = 1; selectTab(1) },
+                onRefresh = { refreshCaregiverSharedData(force = true, renderWhenDone = true) },
+                onOpenSupervision = { openSupervisionCenter() },
+            ).render(body)
             return
         }
+        heading(body, "CONECTAR DISPOSITIVOS", "Dispositivos y enlaces", "Gestiona la pulsera, las cámaras y la vinculación con tu red de apoyo.")
         refreshWearerLinkedData()
         val caregivers = runCatching { JSONArray(store.prefs.getString("wearer_linked_caregivers", "[]")) }.getOrDefault(JSONArray())
         val phoneCard = card(body)
@@ -3206,27 +3339,46 @@ class MainActivity : ComponentActivity() {
         })
         if (!includeMethodOptions || store.braceletConnectionMode() != AppStore.BRACELET_MODE_WIFI) return
 
-        val arduinoUrl = field(parent, "Dirección Wi-Fi del UNO Q", store.arduinoBaseUrl(),
+        val arduinoUrl = field(parent, "Dirección HTTPS del UNO Q", store.arduinoBaseUrl(),
             InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI, "arduino_base_url")
-        parent.addView(button("Guardar dirección Wi-Fi", false) {
-            runCatching { store.saveArduinoBaseUrl(arduinoUrl.text.toString()) }
-                .onSuccess { toast("Dirección guardada para la próxima conexión.") }
-                .onFailure { toast(it.message ?: "No se pudo guardar la dirección.", true) }
+        parent.addView(text("Huella SHA-256 del certificado HTTPS (64 dígitos hexadecimales). Obtén y confirma esta huella directamente en el UNO Q antes de guardar el token.", 14, color = muted))
+        val arduinoFingerprint = field(parent, "Huella del certificado HTTPS", "",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD, "uno_q_tls_fingerprint")
+        parent.addView(text("Token local (mínimo 32 caracteres). Usa el mismo valor que TZINDA_API_TOKEN en el UNO Q. Se guarda cifrado en este teléfono. Nunca lo envíes por HTTP.", 14, color = muted))
+        val arduinoToken = field(parent, "Token de la API local", "",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD, "uno_q_api_token").apply {
+                isSaveEnabled = false
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+                }
+            }
+        parent.addView(button("Guardar conexión segura", false) {
+            runCatching {
+                store.saveArduinoConnectionSettings(arduinoUrl.text.toString(), arduinoFingerprint.text.toString(), arduinoToken.text.toString())
+            }
+                .onSuccess { arduinoToken.text?.clear(); toast("Conexión HTTPS, huella y token guardados para la próxima conexión.") }
+                .onFailure { toast(it.message ?: "No se pudo guardar la conexión segura.", true) }
         })
         val testStatus = text("", 14, color = muted)
         parent.addView(testStatus)
         parent.addView(button("Probar conexión Wi-Fi", false) {
-            testStatus.text = "Conectando con la pulsera…"
+            testStatus.text = "Validando HTTPS y la huella del UNO Q…"
             io.execute {
                 val result = runCatching {
-                    val connection = (URL("${store.arduinoBaseUrl().trimEnd('/')}/api/v1/sensor").openConnection() as HttpURLConnection).apply {
+                    val settings = store.arduinoConnectionSettings()
+                    val token = settings.token
+                        ?: throw IllegalStateException("Guarda la configuración segura del UNO Q.")
+                    val connection = ArduinoHttps.openPinnedConnection(
+                        "${settings.baseUrl.trimEnd('/')}/api/v1/sensor", settings.certificateFingerprint
+                    ).apply {
                         connectTimeout = 3_000; readTimeout = 3_000; requestMethod = "GET"
+                        setRequestProperty("Authorization", "Bearer $token")
                     }
                     val code = connection.responseCode
                     val response = (if (code in 200..299) connection.inputStream else connection.errorStream)
                         ?.bufferedReader()?.use { it.readText() }.orEmpty()
                     connection.disconnect()
-                    if (code !in 200..299) throw IllegalStateException("La pulsera respondió HTTP $code.")
+                    if (code !in 200..299) throw IllegalStateException("El UNO Q respondió HTTP $code.")
                     val root = JSONObject(response)
                     val sample = root.optJSONObject("reading") ?: root.optJSONObject("data") ?: root
                     val bpm = sample.optDouble("bpm", sample.optDouble("heart_rate_bpm", 0.0))
@@ -3346,12 +3498,7 @@ class MainActivity : ComponentActivity() {
         val start = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
         }.timeInMillis
-        return store.events().let { events ->
-            (0 until events.length()).mapNotNull { events.optJSONObject(it) }
-                .filter { it.optLong("time") >= start && it.optString("message").contains("caída", ignoreCase = true) }
-                .distinctBy { it.optString("incident").ifBlank { it.optLong("time").toString() } }
-                .size
-        }
+        return store.possibleFallCountSince(start)
     }
     private fun addPeaceSummary(body: LinearLayout, recipients: List<TrustedContact>) {
         val summary = card(body)
@@ -3366,7 +3513,7 @@ class MainActivity : ComponentActivity() {
         support.addView(text("contactos de apoyo", 14, color = muted))
         row.addView(support, LinearLayout.LayoutParams(0, -2, 1f))
         summary.addView(row)
-        val last = store.events().optJSONObject(0)
+        val last = store.eventHistory(limit = 1).firstOrNull()
         val lastText = last?.let {
             "Último registro · ${SimpleDateFormat("HH:mm", Locale("es", "MX")).format(Date(it.optLong("time")))} · ${it.optString("message")}"
         } ?: "Sin registros todavía · aquí verás el estado de tus alertas."
@@ -3420,10 +3567,10 @@ class MainActivity : ComponentActivity() {
         emergencyProgressCard = progress
         progress.visibility = if (store.prefs.getString("dispatch_id", "").orEmpty().isNotBlank()) View.VISIBLE else View.GONE
 
-        val records = store.events().let { events -> (0 until events.length()).mapNotNull { events.optJSONObject(it) } }
+        val records = store.eventHistory(limit = activityHistoryLimit)
         val summary = card(body)
         val row = tz.twoColumns(summary)
-        tz.metricTile(row, "Eventos guardados", records.size.toString(), "", "En este teléfono", TzindaDesign.Tone.INFO)
+        tz.metricTile(row, "Eventos guardados", store.eventHistoryCount().toString(), "", "En este teléfono", TzindaDesign.Tone.INFO)
         val state = tz.metricTile(
             row,
             "Monitoreo",
@@ -3497,6 +3644,12 @@ class MainActivity : ComponentActivity() {
                 },
             )))
         }
+        if (store.eventHistoryCount() > activityHistoryLimit) {
+            body.addView(button("Cargar 100 eventos anteriores", false) {
+                activityHistoryLimit = minOf(store.eventHistoryCount(), activityHistoryLimit + 100)
+                render()
+            })
+        }
         body.addView(text("Los eventos locales describen lo que ocurrió en este teléfono. La recepción de un SMS o una llamada no se confirma desde la app.", 13, color = muted).apply {
             setPadding(dp(4), dp(12), dp(4), dp(4))
         })
@@ -3511,10 +3664,8 @@ class MainActivity : ComponentActivity() {
             SyncScheduler.enqueue(applicationContext, immediate = true)
             toast("Sincronización solicitada.")
         })
-        val cameraEvents = store.events().let { rows ->
-            (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.filter { row ->
-                row.optString("message").contains("cámara", ignoreCase = true)
-            }
+        val cameraEvents = store.eventHistory(limit = cameraHistoryLimit).filter { row ->
+            row.optString("message").contains("cámara", ignoreCase = true)
         }
         if (cameraEvents.isEmpty()) {
             tz.emptyState(
@@ -3532,6 +3683,12 @@ class MainActivity : ComponentActivity() {
                 row.addView(text(event.optString("message"), 17, true))
                 row.addView(statusPill(TzindaCopy("Procesado en este teléfono", "La imagen no se guarda ni se comparte.", TzindaTone.INFO)))
             }
+        }
+        if (store.eventHistoryCount() > cameraHistoryLimit) {
+            body.addView(button("Cargar eventos anteriores", false) {
+                cameraHistoryLimit = minOf(store.eventHistoryCount(), cameraHistoryLimit + 100)
+                render()
+            })
         }
     }
     private fun contacts(body: LinearLayout) {
@@ -3604,7 +3761,7 @@ class MainActivity : ComponentActivity() {
         editor.addView(text(if (editingContacts) "Editar lista de contactos" else "Administrar contactos", 20, true))
         editor.addView(text("Hasta 5 contactos. El contacto principal se llama primero en caso de alerta.", 14, color = muted))
         if (!editingContacts) {
-            editor.addView(button(if (recipients.isEmpty()) "Agregar contactos" else "Editar contactos") { editingContacts = true; render() })
+            editor.addView(button(if (recipients.isEmpty()) "Agregar contactos" else "Editar contactos") { editingContacts = true; render() }.apply { tag = "edit_contacts" })
             editor.addView(button("Importar desde mi agenda", false) {
                 editingContacts = true; render(); handler.post { beginImport(-1) }
             })
@@ -3673,7 +3830,7 @@ class MainActivity : ComponentActivity() {
             AlertDialog.Builder(this).setTitle("Cambiar rol")
                 .setMessage("¿Deseas cambiar el rol de este dispositivo? La navegación y las funciones de la pantalla principal se ajustarán al nuevo rol.")
                 .setNegativeButton("Cancelar", null)
-                .setPositiveButton("Cambiar rol") { _, _ -> tab = ROLE_TAB; render() }.show()
+                .setPositiveButton("Cambiar rol") { _, _ -> resetNavigation(ROLE_TAB) }.show()
         })
 
         if (isCaregiver) {
@@ -4040,7 +4197,7 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) { toast(e.message ?: "No se pudieron guardar los contactos.", true) }
     }
     private fun profile(body: LinearLayout) {
-        heading(body, "INFORMACIÓN PERSONAL", "Mi perfil", "Estos datos se guardan en este teléfono. Domicilio y fecha de nacimiento no se sincronizan.")
+        heading(body, "INFORMACIÓN PERSONAL", "Tu información", "Estos datos se guardan en este teléfono. Domicilio y fecha de nacimiento no se sincronizan.")
         val p = profileDraft ?: store.profile()
         body.addView(statusPill(TzindaCopy(
             if (p.length() == 0) "Perfil sin completar" else "Perfil guardado",
@@ -4126,6 +4283,7 @@ class MainActivity : ComponentActivity() {
         })
         group = card(body)
         tz.actionRow(group, "Ajustes de la app", "Rol, sesión, sincronización y permisos", R.drawable.ic_settings, showDivider = false) { openSettings() }
+            .apply { tag = "open_app_settings" }
         body.addView(text("Los cambios se conservan si sales de esta pantalla mientras la app sigue abierta. Pulsa Guardar perfil para confirmarlos.", 13, color = muted).apply {
             setPadding(dp(4), dp(12), dp(4), dp(4))
         })
@@ -4370,7 +4528,7 @@ class MainActivity : ComponentActivity() {
 
     private fun readMedicationLabel(uri: Uri, callback: ((MedicationLabelGuess?, String?) -> Unit)?) {
         if (callback == null) return
-        val useCloud = medicationScanCloud && NvidiaMedicationLabelReader.isConfigured
+        val useCloud = medicationScanCloud && NvidiaMedicationLabelReader.isAvailable(this@MainActivity)
         medicationScanCloud = false
         val finish: (MedicationLabelGuess?, String?) -> Unit = { guess, error ->
             medicationScanFile?.delete()
@@ -4646,33 +4804,9 @@ class MainActivity : ComponentActivity() {
             TzindaTone.INFO,
         )
     }
-    private fun isPendingAlert(row: JSONObject): Boolean =
-        row.optString("confirmation_status") == "pending" ||
-            row.optString("classification") in setOf("possible_fall", "fall") &&
-            row.optString("confirmation_status").isBlank()
-
-    /** Latest caregiver follow-up per fall event; a newer row overrides the event's own status. */
-    private fun latestAlertFollowups(): Map<String, JSONObject> {
-        val latest = mutableMapOf<String, JSONObject>()
-        sharedAlertFollowups().forEach { row ->
-            val key = row.optString("fall_event_id")
-            val current = latest[key]
-            if (current == null || row.optString("created_at") > current.optString("created_at")) latest[key] = row
-        }
-        return latest
-    }
-
-    private fun isResolvedFollowup(status: String): Boolean =
-        status.trim().lowercase() in setOf("confirmed", "attended", "closed", "false_alarm", "dismissed", "cancelled", "canceled")
-
-    private fun isPendingSharedAlert(event: JSONObject, followups: Map<String, JSONObject?>): Boolean {
-        val followup = followups[event.optString("id")]
-        return if (followup != null) !isResolvedFollowup(followup.optString("status")) else isPendingAlert(event)
-    }
-
     private fun pendingSharedAlerts(events: List<JSONObject>): List<JSONObject> {
-        val followups = latestAlertFollowups()
-        return events.filter { isPendingSharedAlert(it, followups) }
+        val followups = AlertFollowupPolicy.latestByEvent(sharedAlertFollowups())
+        return events.filter { AlertFollowupPolicy.isPendingSharedAlert(it, followups) }
     }
     /**
      * Pref events created before the telemetry table existed do not carry a classification or
@@ -4680,7 +4814,7 @@ class MainActivity : ComponentActivity() {
      * resolved even though its original fall event remains in the local history.
      */
     private fun isPendingLocalAlert(event: JSONObject, all: List<JSONObject>): Boolean {
-        if (isPendingAlert(event)) return true
+        if (AlertFollowupPolicy.isPendingAlert(event)) return true
         val message = event.optString("message")
         val isFall = message.startsWith("Posible caída") ||
             message.startsWith("Detección con cámara IA señaló")
@@ -4753,6 +4887,8 @@ class MainActivity : ComponentActivity() {
         // A code exchange must survive Activity recreation; its result is stored independently.
         private val passwordRecoveryIo = Executors.newSingleThreadExecutor()
         private const val CAMERA_TAB = TzindaTabs.CAMERA
+        private const val CAREGIVER_EVENT_PAGE_SIZE = 100
+        private const val CAREGIVER_EVENT_CACHE_LIMIT = 1000
         private const val ROLE_TAB = TzindaTabs.ROLE
         private const val DEVICE_TAB = TzindaTabs.DEVICE
         private const val MEDICATIONS_TAB = TzindaTabs.MEDICATIONS

@@ -128,6 +128,33 @@ object TzindaNavigationPolicy {
     }
 }
 
+/** Small account-local screen history for secondary destinations and system/back-button parity. */
+class TzindaNavigationHistory {
+    private val previousTabs = mutableListOf<Int>()
+
+    fun record(from: Int, to: Int, destinationIsSecondary: Boolean) {
+        if (from == to) return
+        if (!destinationIsSecondary) {
+            previousTabs.clear()
+            return
+        }
+        previousTabs += from
+        if (previousTabs.size > MAX_DEPTH) previousTabs.removeAt(0)
+    }
+
+    fun back(): Int? = if (previousTabs.isEmpty()) null else previousTabs.removeAt(previousTabs.lastIndex)
+    fun peek(): Int? = previousTabs.lastOrNull()
+    fun clear() = previousTabs.clear()
+    fun snapshot(): IntArray = previousTabs.toIntArray()
+
+    fun restore(tabs: IntArray?) {
+        previousTabs.clear()
+        (tabs ?: intArrayOf()).takeLast(MAX_DEPTH).filter { it in 0..TzindaTabs.SUPERVISION }.forEach { previousTabs.add(it) }
+    }
+
+    private companion object { const val MAX_DEPTH = 32 }
+}
+
 object TzindaText {
     fun count(value: Int, singular: String, plural: String = "${singular}s"): String {
         val safe = value.coerceAtLeast(0)

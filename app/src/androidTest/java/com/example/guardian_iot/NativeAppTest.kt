@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.provider.ContactsContract
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SdkSuppress
 import androidx.test.platform.app.InstrumentationRegistry
@@ -74,21 +75,190 @@ class NativeAppTest {
     @Test fun saveFromNativeSettingsAndReopenActivity() {
         val store = AppStore(context)
         store.prefs.edit().putBoolean("contacts_offered", true).commit()
+        store.saveRole(AppStore.ROLE_WEARER)
         activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         instrumentation.runOnMainSync {
-            activity!!.findViewById<Button>(R.id.nav_settings).performClick()
-            activity!!.findViewById<android.view.View>(R.id.root).findViewWithTag<EditText>("contact_name_0").setText("Contacto prueba")
-            activity!!.findViewById<android.view.View>(R.id.root).findViewWithTag<EditText>("contact_phone_0").setText("+52 55 0000 1122")
-            activity!!.findViewById<android.view.View>(R.id.root).findViewWithTag<Button>("save_contacts").performClick()
+            val root = activity!!.findViewById<android.view.View>(R.id.root)
+            root.findViewWithTag<Button>("open_contacts").performClick()
+            root.findViewWithTag<Button>("edit_contacts").performClick()
+            root.findViewWithTag<EditText>("contact_name_0").setText("Contacto prueba")
+            root.findViewWithTag<EditText>("contact_phone_0").setText("+52 55 0000 1122")
+            root.findViewWithTag<Button>("save_contacts").performClick()
         }
         assertEquals(listOf(TrustedContact("Contacto prueba", "+525500001122")), store.contacts())
         instrumentation.runOnMainSync { activity!!.finish() }
         instrumentation.waitForIdleSync()
         activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         instrumentation.runOnMainSync {
-            activity!!.findViewById<Button>(R.id.nav_settings).performClick()
-            assertEquals("+525500001122", activity!!.findViewById<android.view.View>(R.id.root).findViewWithTag<EditText>("contact_phone_0").text.toString())
+            val root = activity!!.findViewById<android.view.View>(R.id.root)
+            root.findViewWithTag<Button>("open_contacts").performClick()
+            root.findViewWithTag<Button>("edit_contacts").performClick()
+            assertEquals("+525500001122", root.findViewWithTag<EditText>("contact_phone_0").text.toString())
         }
+    }
+    @Test fun caregiverDeviceLinksViewRendersSharedDevicesAndRoutesCameraEvents() {
+        activity = instrumentation.startActivitySync(
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ) as MainActivity
+        var cameraEventsOpened = 0
+        instrumentation.runOnMainSync {
+            val screen = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+            val devices = listOf(
+                JSONObject().put("name", "Pulsera UNO Q").put("device_type", "wearable").put("last_signal_ms", 1_700_000_000_000L),
+                JSONObject().put("name", "Cámara sala").put("device_type", "camera"),
+            )
+            CaregiverDeviceLinksUi(
+                activity = activity!!,
+                design = TzindaDesign(activity!!, dark = false, simple = false),
+                linked = true,
+                personName = "Teresa",
+                fetchedAt = System.currentTimeMillis(),
+                devices = devices,
+                deviceCopy = { TzindaStatusCopy.device(DeviceConnectionState.REGISTERED, null) },
+                lastSignal = { it.optLong("last_signal_ms") },
+                onManageLink = {},
+                onOpenCameraEvents = { cameraEventsOpened++ },
+                onRefresh = {},
+                onOpenSupervision = {},
+            ).render(screen)
+            val matches = ArrayList<android.view.View>()
+            screen.findViewsWithText(matches, "EQUIPOS DE TERESA", android.view.View.FIND_VIEWS_WITH_TEXT)
+            assertTrue("La lista compartida debe mostrar su sección", matches.isNotEmpty())
+            matches.clear()
+            screen.findViewsWithText(matches, "Ver eventos de cámara", android.view.View.FIND_VIEWS_WITH_TEXT)
+            assertEquals("Debe mostrar la acción de eventos de cámara", 1, matches.size)
+            (matches.single() as Button).performClick()
+        }
+        assertEquals("La acción debe delegarse al host", 1, cameraEventsOpened)
+    }
+    @Test fun wearerAlertsTabDefaultsToNotificationsAndKeepsVitalsOption() {
+        AppStore(context).saveRole(AppStore.ROLE_WEARER)
+        activity = instrumentation.startActivitySync(
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ) as MainActivity
+        instrumentation.runOnMainSync {
+            activity!!.findViewById<Button>(R.id.nav_activity).performClick()
+            val root = activity!!.findViewById<android.view.View>(R.id.root)
+            fun descriptions(view: android.view.View): List<String> = buildList {
+                view.contentDescription?.toString()?.let(::add)
+                if (view is android.view.ViewGroup) {
+                    for (index in 0 until view.childCount) addAll(descriptions(view.getChildAt(index)))
+                }
+            }
+            fun exactButton(label: String): Button {
+                val matches = ArrayList<android.view.View>()
+                root.findViewsWithText(matches, label, android.view.View.FIND_VIEWS_WITH_TEXT)
+                return matches.filterIsInstance<Button>().single { it.text.toString() == label }
+            }
+            assertTrue("Alertas debe abrir Notificaciones por defecto", descriptions(root).contains("Notificaciones, seleccionado"))
+            exactButton("Signos vitales").performClick()
+            assertTrue("La opción de signos vitales debe seguir disponible", descriptions(root).contains("Signos vitales, seleccionado"))
+            exactButton("Notificaciones").performClick()
+            assertTrue("La subpestaña elegida debe conservarse al cambiar", descriptions(root).contains("Notificaciones, seleccionado"))
+        }
+    }
+    @Test fun roleSelectionButtonsHaveDistinctAccessibleNames() {
+        activity = instrumentation.startActivitySync(
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ) as MainActivity
+        instrumentation.runOnMainSync {
+            val root = activity!!.findViewById<android.view.View>(R.id.root)
+            val descriptions = ArrayList<String>()
+            fun collect(view: android.view.View) {
+                view.contentDescription?.toString()?.let(descriptions::add)
+                if (view is android.view.ViewGroup) {
+                    for (index in 0 until view.childCount) collect(view.getChildAt(index))
+                }
+            }
+            collect(root)
+            val modeNames = descriptions.filter { it.startsWith("Elegir modo:") }
+            assertEquals("Cada perfil debe tener una etiqueta distinta", 3, modeNames.distinct().size)
+            assertTrue(modeNames.contains("Elegir modo: Llevo el teléfono"))
+            assertTrue(modeNames.contains("Elegir modo: Acompaño a otra persona"))
+            assertTrue(modeNames.contains("Elegir modo: Este teléfono es una cámara"))
+        }
+    }
+    @Test fun profileEditorUsesOneClearPageTitle() {
+        AppStore(context).saveRole(AppStore.ROLE_WEARER)
+        activity = instrumentation.startActivitySync(
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ) as MainActivity
+        instrumentation.runOnMainSync {
+            activity!!.findViewById<android.view.View>(R.id.app_bar_profile).performClick()
+            val root = activity!!.findViewById<android.view.View>(R.id.root)
+            val oldTitle = ArrayList<android.view.View>()
+            root.findViewsWithText(oldTitle, "Mi perfil", android.view.View.FIND_VIEWS_WITH_TEXT)
+            assertEquals("El nombre de navegación debe aparecer una sola vez", 1,
+                oldTitle.filterIsInstance<android.widget.TextView>().count { it.text.toString() == "Mi perfil" })
+            val pageTitle = ArrayList<android.view.View>()
+            root.findViewsWithText(pageTitle, "Tu información", android.view.View.FIND_VIEWS_WITH_TEXT)
+            assertTrue("La pantalla conserva un título de contenido claro", pageTitle.any {
+                it is android.widget.TextView && it.text.toString() == "Tu información"
+            })
+        }
+    }
+    @Test fun androidBackupsExcludeSharedPreferencesFromCloudAndDeviceTransfer() {
+        fun excludedScopes(resourceId: Int): Set<String> {
+            val parser = context.resources.getXml(resourceId)
+            val scopes = mutableSetOf<String>()
+            var scope = "legacy"
+            try {
+                while (parser.eventType != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                    if (parser.eventType == org.xmlpull.v1.XmlPullParser.START_TAG) {
+                        when (parser.name) {
+                            "cloud-backup", "device-transfer" -> scope = parser.name
+                            "exclude" -> if (parser.getAttributeValue(null, "domain") == "sharedpref" &&
+                                parser.getAttributeValue(null, "path") == ".") scopes += scope
+                        }
+                    } else if (parser.eventType == org.xmlpull.v1.XmlPullParser.END_TAG &&
+                        (parser.name == "cloud-backup" || parser.name == "device-transfer")) {
+                        scope = "legacy"
+                    }
+                    parser.next()
+                }
+            } finally {
+                parser.close()
+            }
+            return scopes
+        }
+        assertEquals(setOf("legacy"), excludedScopes(R.xml.backup_rules))
+        assertEquals(setOf("cloud-backup", "device-transfer"), excludedScopes(R.xml.data_extraction_rules))
+    }
+    @Test fun unoQHttpsSettingsAreValidatedAndSavedAtomically() {
+        val store = AppStore(context)
+        val oldToken = "audit-token-initial-0123456789abcdef"
+        val newToken = "audit-token-replacement-0123456789abcdef"
+        val firstFingerprint = "11".repeat(32)
+        val secondFingerprint = "22".repeat(32)
+        store.saveArduinoConnectionSettings("https://192.168.18.35:8081/", firstFingerprint, oldToken)
+        assertEquals("https://192.168.18.35:8081", store.arduinoConnectionSettings().baseUrl)
+        assertEquals(firstFingerprint.uppercase(), store.arduinoConnectionSettings().certificateFingerprint)
+        assertEquals(oldToken, store.arduinoConnectionSettings().token)
+        assertFalse(store.prefs.getString("uno_q_api_token_encrypted", "").orEmpty().contains(oldToken))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            store.saveArduinoConnectionSettings("http://192.168.18.35:8081", secondFingerprint, newToken)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            store.saveArduinoConnectionSettings("https://user@192.168.18.35:8081", secondFingerprint, newToken)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            store.saveArduinoConnectionSettings("https://192.168.18.35:8081", "bad-pin", newToken)
+        }
+        assertEquals("https://192.168.18.35:8081", store.arduinoConnectionSettings().baseUrl)
+        assertEquals(firstFingerprint.uppercase(), store.arduinoConnectionSettings().certificateFingerprint)
+        assertEquals(oldToken, store.arduinoConnectionSettings().token)
+
+        store.saveArduinoConnectionSettings("https://192.168.18.36:8081", secondFingerprint, newToken)
+        val saved = AppStore(context).arduinoConnectionSettings()
+        assertEquals("https://192.168.18.36:8081", saved.baseUrl)
+        assertEquals(secondFingerprint, saved.certificateFingerprint)
+        assertEquals(newToken, saved.token)
+    }
+    @Test fun cleartextNetworkPolicyAllowsOnlyTheAuditLoopbackHost() {
+        val policy = android.security.NetworkSecurityPolicy.getInstance()
+        assertTrue(policy.isCleartextTrafficPermitted("127.0.0.1"))
+        assertFalse(policy.isCleartextTrafficPermitted("example.com"))
     }
     @Test @SdkSuppress(minSdkVersion = 29)
     fun realContactsProviderReturnsPhoneNumbersWithoutWritingFromApp() {
@@ -270,12 +440,15 @@ class NativeAppTest {
         instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.SEND_SMS)
         val store = AppStore(context)
         store.prefs.edit().putBoolean("contacts_offered", true).putBoolean("sms_permission_requested", false).commit()
+        store.saveRole(AppStore.ROLE_WEARER)
         activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         instrumentation.runOnMainSync {
-            activity!!.findViewById<Button>(R.id.nav_settings).performClick()
+            activity!!.findViewById<android.view.View>(R.id.app_bar_profile).performClick()
             val root = activity!!.findViewById<android.view.View>(R.id.root)
-            val status = root.findViewWithTag<android.widget.TextView>("sms_permission_status")
-            val enable = root.findViewWithTag<Button>("enable_sms")
+            root.findViewWithTag<android.view.View>("open_app_settings").performClick()
+            val settingsRoot = activity!!.findViewById<android.view.View>(R.id.root)
+            val status = settingsRoot.findViewWithTag<android.widget.TextView>("sms_permission_status")
+            val enable = settingsRoot.findViewWithTag<Button>("enable_sms")
             assertTrue(status.text.toString().startsWith("SMS habilitado"))
             assertFalse(enable.isEnabled)
             assertEquals("SMS habilitado", enable.text.toString())

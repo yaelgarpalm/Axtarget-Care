@@ -26,8 +26,6 @@ android {
         buildConfigField("String", "SUPABASE_URL", buildConfigString(configValue("TZINDA_SUPABASE_URL")))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", buildConfigString(configValue("TZINDA_SUPABASE_PUBLISHABLE_KEY")))
         buildConfigField("String", "SUPABASE_REDIRECT_URL", buildConfigString(configValue("TZINDA_SUPABASE_REDIRECT_URL").ifBlank { "com.guardian.tzindaapp.v2://auth-callback" }))
-        buildConfigField("String", "NVIDIA_API_KEY", buildConfigString(configValue("TZINDA_NVIDIA_API_KEY")))
-        buildConfigField("String", "NVIDIA_VISION_MODEL", buildConfigString(configValue("TZINDA_NVIDIA_VISION_MODEL").ifBlank { "nvidia/nemotron-3.5-super-vl-120b-a12b" }))
     }
     buildFeatures { buildConfig = true
         mlModelBinding = true

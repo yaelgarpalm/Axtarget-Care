@@ -146,6 +146,13 @@ class SupabaseBackend(
         finally { sessions.clearIfUser(owner) }
     }
 
+    fun readMedicationLabel(imageBase64: String): JSONObject {
+        if (imageBase64.isBlank() || imageBase64.length > 4 * 1024 * 1024)
+            throw BackendFailure(BackendFailure.Category.VALIDATION)
+        return request("POST", "/functions/v1/medication-label", JSONObject().put("image_base64", imageBase64),
+            needsSession = true, readTimeoutMs = 135_000, responseByteLimit = 16 * 1024, followRedirects = false)
+    }
+
     fun deleteAccount() {
         request("POST", "/functions/v1/delete-account", JSONObject(), needsSession = true)
         boundUserId?.let(sessions::clearIfUser)
@@ -578,13 +585,19 @@ class SupabaseBackend(
         ).optJSONArray("data") ?: JSONArray()
     }
 
-    fun sharedEvents(ownerId: String, deviceId: String? = null): JSONArray = request(
-        "GET",
-        "/rest/v1/fall_events?select=id,device_id,occurred_at,source,classification,confirmation_status,summary&user_id=eq." +
-            encode(ownerId) + (deviceId?.takeIf { it.isNotBlank() }?.let { "&device_id=eq." + encode(it) } ?: "") + "&order=occurred_at.desc&limit=100",
-        null,
-        true,
-    ).optJSONArray("data") ?: JSONArray()
+    fun sharedEvents(ownerId: String, deviceId: String? = null): JSONArray = sharedEventPage(ownerId, deviceId, 0, 100)
+
+    fun sharedEventPage(ownerId: String, deviceId: String? = null, offset: Int, limit: Int = 100): JSONArray {
+        require(offset >= 0 && limit in 1..100) { "Invalid shared event page" }
+        return request(
+            "GET",
+            "/rest/v1/fall_events?select=id,device_id,occurred_at,source,classification,confirmation_status,summary&user_id=eq." +
+                encode(ownerId) + (deviceId?.takeIf { it.isNotBlank() }?.let { "&device_id=eq." + encode(it) } ?: "") +
+                "&order=occurred_at.desc,id.desc&limit=$limit&offset=$offset",
+            null,
+            true,
+        ).optJSONArray("data") ?: JSONArray()
+    }
 
     fun recentCameraFallEvents(ownerId: String, createdAfterMillis: Long): JSONArray = request(
         "GET",
@@ -756,6 +769,9 @@ class SupabaseBackend(
         prefer: String? = null,
         isRetry: Boolean = false,
         sessionOverride: AuthSession? = null,
+        readTimeoutMs: Int = READ_TIMEOUT_MS,
+        responseByteLimit: Int = Int.MAX_VALUE,
+        followRedirects: Boolean = true,
     ): JSONObject {
         if (!isConfigured) throw BackendFailure(BackendFailure.Category.CONFIGURATION)
         val session = sessionOverride ?: if (needsSession) requireSession() else null
@@ -767,7 +783,8 @@ class SupabaseBackend(
         try {
             connection.requestMethod = method
             connection.connectTimeout = CONNECT_TIMEOUT_MS
-            connection.readTimeout = READ_TIMEOUT_MS
+            connection.readTimeout = readTimeoutMs
+            connection.instanceFollowRedirects = followRedirects
             connection.setRequestProperty("apikey", publishableKey)
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -779,12 +796,23 @@ class SupabaseBackend(
             }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            val text = stream?.use {
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val count = it.read(buffer)
+                    if (count < 0) break
+                    if (output.size().toLong() + count > responseByteLimit) throw BackendFailure(BackendFailure.Category.TEMPORARY)
+                    output.write(buffer, 0, count)
+                }
+                output.toString(Charsets.UTF_8.name())
+            }.orEmpty()
             if (status !in 200..299) {
                 if (status == 401 && needsSession && !isRetry) {
                     val refreshed = runCatching { currentSession(forceRefresh = true) }.getOrNull()
                     if (refreshed != null) {
-                        return request(method, path, body, needsSession, prefer, isRetry = true)
+                        return request(method, path, body, needsSession, prefer, isRetry = true,
+                            readTimeoutMs = readTimeoutMs, responseByteLimit = responseByteLimit, followRedirects = followRedirects)
                     }
                 }
                 val errorJson = runCatching { JSONObject(text) }.getOrNull()

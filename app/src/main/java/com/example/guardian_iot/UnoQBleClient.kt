@@ -40,6 +40,7 @@ internal class UnoQBleClient(
     private var descriptorIndex = 0
     private var scanning = false
     private var active = false
+    private var pairingHintShown = false
     @Volatile var isConnected: Boolean = false
         private set
 
@@ -49,7 +50,7 @@ internal class UnoQBleClient(
     private val scanTimeoutTask = Runnable {
         if (active && scanning) {
             stopScan()
-            retry("Pulsera no encontrada; verifica que el UNO Q esté encendido y cerca.")
+            retry("Pulsera no encontrada o no vinculada. Empareja Tzinda en Ajustes de Bluetooth y vuelve a conectar.")
         }
     }
 
@@ -68,6 +69,7 @@ internal class UnoQBleClient(
         bpm = null; spo2 = null; falls = null
         runCatching { gatt?.disconnect(); gatt?.close() }
         gatt = null
+        pairingHintShown = false
     }
 
     private fun hasScanPermission(): Boolean = if (Build.VERSION.SDK_INT >= 31) {
@@ -95,9 +97,17 @@ internal class UnoQBleClient(
             return
         }
         publishStatus("Buscando la pulsera UNO Q por Bluetooth…")
+        pairingHintShown = false
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 if (!active || gatt != null) return
+                if (!UnoQBlePolicy.mayConnect(result.device.bondState == BluetoothDevice.BOND_BONDED)) {
+                    if (!pairingHintShown) {
+                        pairingHintShown = true
+                        publishStatus("Vincula Tzinda en Ajustes de Bluetooth antes de conectar; no se aceptan dispositivos sin emparejar.")
+                    }
+                    return
+                }
                 stopScan()
                 publishStatus("Pulsera encontrada; conectando…")
                 gatt = runCatching {
@@ -129,6 +139,10 @@ internal class UnoQBleClient(
             }
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    if (!UnoQBlePolicy.mayConnect(connectedGatt.device.bondState == BluetoothDevice.BOND_BONDED)) {
+                        disconnectAndRetry(connectedGatt, "Se rechazó una pulsera sin vínculo Bluetooth cifrado.")
+                        return
+                    }
                     gatt = connectedGatt
                     val started = runCatching { connectedGatt.discoverServices() }.getOrDefault(false)
                     if (!started) disconnectAndRetry(connectedGatt, "No se pudieron consultar los servicios BLE.")

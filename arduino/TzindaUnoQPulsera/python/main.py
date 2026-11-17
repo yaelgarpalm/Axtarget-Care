@@ -6,11 +6,15 @@ import os
 import sqlite3
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
 from arduino.app_utils import App, Bridge
+from api_auth import authorized, configured_token
+from api_server import BoundedThreadingHTTPServer, DeadlineRequestHandler
+from api_tls import create_server_context
 import tzindable
 
 
@@ -33,9 +37,19 @@ def connect_db() -> sqlite3.Connection:
     return connection
 
 
+@contextmanager
+def db_connection():
+    connection = connect_db()
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
 def initialize_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with db_lock, connect_db() as connection:
+    with db_lock, db_connection() as connection:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute(
             """CREATE TABLE IF NOT EXISTS readings (
@@ -121,7 +135,7 @@ def store_reading(document: dict[str, Any]) -> dict[str, Any]:
         "raw_json": raw_json,
     }
 
-    with db_lock, connect_db() as connection:
+    with db_lock, db_connection() as connection:
         cursor = connection.execute(
             """INSERT INTO readings (
                 received_at_ms, captured_at_ms, source, event_type,
@@ -148,7 +162,7 @@ def store_reading(document: dict[str, Any]) -> dict[str, Any]:
 
 
 def latest_reading() -> dict[str, Any] | None:
-    with db_lock, connect_db() as connection:
+    with db_lock, db_connection() as connection:
         row = connection.execute(
             "SELECT id, received_at_ms, captured_at_ms, raw_json FROM readings ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -164,13 +178,13 @@ def latest_reading() -> dict[str, Any] | None:
 
 
 def database_stats() -> dict[str, Any]:
-    with db_lock, connect_db() as connection:
+    with db_lock, db_connection() as connection:
         count = int(connection.execute("SELECT COUNT(*) FROM readings").fetchone()[0])
         latest = connection.execute("SELECT MAX(received_at_ms) FROM readings").fetchone()[0]
     return {"readings": count, "latest_received_at_ms": latest}
 
 
-class ApiHandler(BaseHTTPRequestHandler):
+class ApiHandler(DeadlineRequestHandler, BaseHTTPRequestHandler):
     server_version = "TzindaLocalAPI/1.0"
 
     def log_message(self, format_string: str, *args: Any) -> None:
@@ -185,14 +199,31 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def require_api_auth(self) -> bool:
+        expected = configured_token()
+        if expected is None:
+            self.send_json(503, {"error": "service_not_configured", "message": "Configura TZINDA_API_TOKEN con al menos 32 caracteres."})
+            return False
+        if not authorized(self.headers.get("Authorization"), expected):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Bearer realm="Tzinda UNO Q"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return False
+        return True
+
     def do_GET(self) -> None:
         if self.path == "/health":
             self.send_json(200, {"ok": True, "service": "tzinda-local-sqlite", "time_ms": int(time.time() * 1000)})
             return
         if self.path == "/api/v1/stats":
+            if not self.require_api_auth():
+                return
             self.send_json(200, {"ok": True, **database_stats()})
             return
         if self.path == "/api/v1/sensor":
+            if not self.require_api_auth():
+                return
             reading = latest_reading()
             if reading is None:
                 self.send_json(
@@ -221,6 +252,8 @@ class ApiHandler(BaseHTTPRequestHandler):
         if self.path != "/api/v1/sensor":
             self.send_json(404, {"error": "not_found", "message": "Ruta no encontrada"})
             return
+        if not self.require_api_auth():
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length < 1 or length > MAX_BODY_BYTES:
@@ -237,12 +270,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": "storage_error", "message": "No se pudo guardar la lectura."})
 
 
-def start_http_server() -> None:
+def start_https_server() -> None:
+    context = create_server_context()
     initialize_db()
-    server = ThreadingHTTPServer((HOST, PORT), ApiHandler)
-    server.daemon_threads = True
-    threading.Thread(target=server.serve_forever, name="tzinda-http", daemon=True).start()
-    print(f"Tzinda Local SQLite API escuchando en http://0.0.0.0:{PORT}")
+    server = BoundedThreadingHTTPServer((HOST, PORT), ApiHandler, ssl_context=context)
+    threading.Thread(target=server.serve_forever, name="tzinda-https", daemon=True).start()
+    print(f"Tzinda Local SQLite API escuchando en https://0.0.0.0:{PORT}")
     print(f"Base local: {DB_PATH}")
 
 
@@ -272,6 +305,7 @@ def collect_from_sketch() -> None:
     time.sleep(1)
 
 
-start_http_server()
-App.run(user_loop=collect_from_sketch)
+if __name__ == "__main__":
+    start_https_server()
+    App.run(user_loop=collect_from_sketch)
 

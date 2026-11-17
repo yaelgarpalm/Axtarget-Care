@@ -1,0 +1,18 @@
+TzindaApp - Lote 22: reconciliación idempotente de eliminaciones
+Fecha: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Comando ejecutado:
+  .\gradlew.bat :app:testDebugUnitTest :app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon
+
+Resultado: BUILD SUCCESSFUL (5m 55s; código de salida 0).
+Unitarias: 111; fallos: 0; errores: 0; omitidas: 0.
+Instrumentadas: 94; fallos: 0; errores: 0; omitidas: 0.
+Dispositivo: Medium_Phone_API_37.0 (AVD), API 37.
+
+La prueba local comprueba que el snapshot completo del propietario confirma
+un ID ya ausente y conserva otro borrado cuyo ID todavía aparece remoto. No
+se ejecutó ningún DELETE remoto ni se modificó Supabase.
+
+Pendiente: sincronización offline entre dos instalaciones, aceptación en
+teléfonos físicos y pruebas RLS sobre una instancia Supabase local o de prueba.

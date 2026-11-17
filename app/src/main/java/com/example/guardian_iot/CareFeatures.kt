@@ -6,6 +6,14 @@ import org.json.JSONObject
 import java.util.UUID
 import kotlin.math.*
 
+internal data class UnassignedCareEntry(
+    val id: String,
+    val kind: String,
+    val deletion: Boolean,
+    val summary: String,
+    val changedAt: Long,
+)
+
 /** Offline-first records for shared care notes, safe zones and user-authored routines. */
 class CareFeatureStore(context: Context) {
     private val app = AccountStorage.capture(context)
@@ -83,6 +91,27 @@ class CareFeatureStore(context: Context) {
         }.forEach { put(it) } }
         check(prefs.edit().putString("deleted", next.toString()).commit())
     }
+    /** A complete owner snapshot can confirm that a retried delete already succeeded remotely. */
+    internal fun acknowledgeDeletesAbsentFromSnapshot(remote: List<JSONObject>, ownerId: String): Int = synchronized(lock) {
+        check(ownerId.isNotBlank() && remote.all {
+            it.optString("owner_user_id") == ownerId && runCatching { UUID.fromString(it.optString("id")) }.isSuccess
+        }) { "No se puede confirmar un borrado con un snapshot inválido o de otra persona." }
+        val remoteIds = remote.map { it.optString("id") }.toSet()
+        val pending = pendingDeleteRecords()
+        val resolved = pending.filter {
+            it.optString("ownerUserId") == ownerId && it.optString("kind") != "alert_followup" &&
+                it.optString("id") !in remoteIds
+        }
+        if (resolved.isEmpty()) return@synchronized 0
+        val resolvedVersions = resolved.map {
+            Triple(it.optString("id"), it.optString("ownerUserId"), it.optLong("deletedAt"))
+        }.toSet()
+        val next = JSONArray().apply { pending.filterNot {
+            Triple(it.optString("id"), it.optString("ownerUserId"), it.optLong("deletedAt")) in resolvedVersions
+        }.forEach { put(it) } }
+        check(prefs.edit().putString("deleted", next.toString()).commit())
+        resolved.size
+    }
     fun markSynced(id: String, uploadedAt: Long) = synchronized(lock) {
         val next = JSONArray()
         rowsAll().forEach { next.put(if (it.optString("id") == id && it.optLong("updatedAt") == uploadedAt) it.put("syncState", "synced") else it) }
@@ -112,8 +141,147 @@ class CareFeatureStore(context: Context) {
         val deletes = JSONArray().apply { pendingDeleteRecords().forEach { put(reconcile(it)) } }
         check(prefs.edit().putString("records", rows.toString()).putString("deleted", deletes.toString()).commit())
     }
+
+    /** Restores an authoritative remote snapshot without deleting or replacing local pending work. */
+    internal fun mergeRemoteSnapshot(remote: List<JSONObject>, ownerId: String) = synchronized(lock) {
+        check(ownerId.isNotBlank()) { "Falta el propietario del snapshot remoto." }
+        val remoteRecords = remote.map { row ->
+            val id = row.optString("id")
+            val kind = row.optString("record_kind")
+            val declaredOwner = row.optString("owner_user_id")
+            val payload = row.optJSONObject("record")
+            check(id.isNotBlank() && kind.isNotBlank() && declaredOwner == ownerId && payload != null) {
+                "El snapshot remoto contiene una fila incompleta o de otra persona."
+            }
+            check(runCatching { UUID.fromString(id) }.isSuccess) { "ID remoto de cuidado inválido." }
+            val payloadId = payload.optString("id").takeUnless { it == "null" }.orEmpty()
+            val payloadKind = payload.optString("kind").takeUnless { it == "null" }.orEmpty()
+            val payloadOwner = payload.optString("ownerUserId").takeUnless { it == "null" }.orEmpty()
+            check(payloadId.isBlank() || payloadId == id) { "ID de registro remoto inconsistente." }
+            check(payloadKind.isBlank() || payloadKind == kind) { "Tipo de registro remoto inconsistente." }
+            check(payloadOwner.isBlank() || payloadOwner == ownerId) {
+                "El contenido remoto declara otro propietario."
+            }
+            val timestamp = runCatching { java.time.Instant.parse(row.optString("updated_at")).toEpochMilli() }.getOrDefault(0L)
+            val record = JSONObject(payload.toString())
+                .put("id", id).put("kind", kind).put("ownerUserId", ownerId)
+                .put("updatedAt", maxOf(payload.optLong("updatedAt"), timestamp))
+                .put("syncState", "synced")
+            check(record.optLong("updatedAt") > 0L) { "El snapshot remoto no tiene una versión válida." }
+            id to record
+        }
+        check(remoteRecords.map { it.first }.distinct().size == remoteRecords.size) { "El snapshot remoto repite IDs." }
+
+        val current = rowsAll()
+        val localById = current.associateBy { it.optString("id") }
+        remoteRecords.forEach { (id, _) ->
+            val localOwner = localById[id]?.optString("ownerUserId").orEmpty()
+            check(localOwner.isBlank() || localOwner == ownerId) { "El ID remoto ya pertenece a otra persona en este teléfono." }
+        }
+        val merged = current.toMutableList()
+        remoteRecords.forEach { (id, remoteRecord) ->
+            val index = merged.indexOfFirst { it.optString("id") == id }
+            if (index < 0) {
+                merged += remoteRecord
+            } else {
+                val local = merged[index]
+                if (local.optString("syncState") == "synced" && remoteRecord.optLong("updatedAt") > local.optLong("updatedAt")) {
+                    if (remoteRecord.optString("actorUserId").isBlank() && local.optString("actorUserId").isNotBlank())
+                        remoteRecord.put("actorUserId", local.optString("actorUserId"))
+                    merged[index] = remoteRecord
+                }
+            }
+        }
+        val saved = JSONArray().apply { merged.forEach(::put) }
+        check(prefs.edit().putString("records", saved.toString()).commit())
+    }
+
+    /** Restores append-only alert history using the same validated merge as care_records. */
+    internal fun mergeRemoteFollowups(remote: List<JSONObject>, ownerId: String) = synchronized(lock) {
+        val normalized = remote.map { row ->
+            val id = row.optString("id").takeUnless { it == "null" }.orEmpty()
+            val declaredOwner = row.optString("owner_user_id").takeUnless { it == "null" }.orEmpty()
+            val eventId = row.optString("fall_event_id").takeUnless { it == "null" }.orEmpty()
+            val actorId = row.optString("actor_user_id").takeUnless { it == "null" }.orEmpty()
+            val status = row.optString("status").takeUnless { it == "null" }.orEmpty()
+            val createdAt = row.optString("created_at").takeUnless { it == "null" }.orEmpty()
+            val timestamp = runCatching { java.time.Instant.parse(createdAt).toEpochMilli() }.getOrDefault(0L)
+            check(declaredOwner == ownerId && id.isNotBlank() && eventId.isNotBlank() && actorId.isNotBlank() &&
+                status in setOf("confirmed", "attended", "dismissed", "closed") && timestamp > 0L) {
+                "El snapshot remoto contiene un seguimiento incompleto o de otra persona."
+            }
+            check(runCatching { UUID.fromString(id) }.isSuccess && runCatching { UUID.fromString(eventId) }.isSuccess &&
+                runCatching { UUID.fromString(actorId) }.isSuccess) { "El snapshot contiene identificadores inválidos." }
+            val payload = JSONObject().put("id", id).put("kind", "alert_followup").put("ownerUserId", ownerId)
+                .put("actorUserId", actorId).put("fallEventId", eventId).put("status", status)
+                .put("reason", row.optString("reason").takeUnless { it == "null" }.orEmpty())
+                .put("occurredAt", timestamp)
+            JSONObject().put("id", id).put("owner_user_id", ownerId).put("record_kind", "alert_followup")
+                .put("record", payload).put("updated_at", createdAt)
+        }
+        check(normalized.map { it.optString("id") }.distinct().size == normalized.size) {
+            "El snapshot remoto repite IDs de seguimientos."
+        }
+        mergeRemoteSnapshot(normalized, ownerId)
+    }
+
     fun unassignedCount(): Int = synchronized(lock) {
         rowsAll().count { it.optString("ownerUserId").isBlank() } + pendingDeleteRecords().count { it.optString("ownerUserId").isBlank() }
+    }
+    internal fun unassignedEntries(): List<UnassignedCareEntry> = synchronized(lock) {
+        val records = rowsAll().filter { it.optString("ownerUserId").isBlank() }.map { row ->
+            UnassignedCareEntry(row.optString("id"), row.optString("kind"), false,
+                row.optString("name").ifBlank { row.optString("description").ifBlank { row.optString("type").ifBlank { "Registro local" } } },
+                row.optLong("updatedAt"))
+        }
+        val deletions = pendingDeleteRecords().filter { it.optString("ownerUserId").isBlank() }.map { row ->
+            UnassignedCareEntry(row.optString("id"), row.optString("kind"), true,
+                "Eliminación pendiente${row.optString("kind").takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()}",
+                row.optLong("deletedAt"))
+        }
+        (records + deletions).sortedWith(compareBy<UnassignedCareEntry> { it.deletion }.thenByDescending { it.changedAt })
+    }
+
+    /** Claims one item only after an explicit user choice in wearer mode; never guesses ownership. */
+    internal fun claimUnassignedEntry(entry: UnassignedCareEntry, ownerId: String, actorId: String): Boolean = synchronized(lock) {
+        if (runCatching { UUID.fromString(entry.id) }.isFailure) return false
+        check(ownerId.isNotBlank() && ownerId == actorId && currentOwner() == ownerId &&
+            accountPrefs.getString("local_data_owner_id", "") == ownerId &&
+            accountPrefs.getString("user_role", "") == AppStore.ROLE_WEARER) {
+            "Los registros antiguos solo se pueden asignar explícitamente desde la cuenta propia en modo persona protegida."
+        }
+        if (entry.deletion) {
+            var found = false
+            val next = JSONArray().apply {
+                pendingDeleteRecords().forEach { row ->
+                    if (row.optString("id") == entry.id && row.optString("ownerUserId").isBlank() &&
+                        (entry.kind.isBlank() || row.optString("kind").isBlank() || row.optString("kind") == entry.kind)) {
+                        row.put("ownerUserId", ownerId).put("actorUserId", actorId)
+                        if (entry.kind.isNotBlank()) row.put("kind", entry.kind)
+                        found = true
+                    }
+                    put(row)
+                }
+            }
+            if (!found) return false
+            check(prefs.edit().putString("deleted", next.toString()).commit())
+            return true
+        }
+        var found = false
+        val next = JSONArray().apply {
+            rowsAll().forEach { row ->
+                if (row.optString("id") == entry.id && row.optString("kind") == entry.kind && row.optString("ownerUserId").isBlank()) {
+                    row.put("ownerUserId", ownerId).put("actorUserId", actorId)
+                        .put("updatedAt", maxOf(System.currentTimeMillis(), row.optLong("updatedAt") + 1))
+                        .put("syncState", "pending")
+                    found = true
+                }
+                put(row)
+            }
+        }
+        if (!found) return false
+        check(prefs.edit().putString("records", next.toString()).commit())
+        true
     }
     fun clearAll() = synchronized(lock) {
         prefs.edit().remove("records").remove("deleted").remove("zone_runtime").commit()

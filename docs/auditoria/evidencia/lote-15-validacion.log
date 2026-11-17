@@ -1,0 +1,8 @@
+Fecha local: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Cambios de historial: lectura paginada del historial app_event desde SQLite, índice incremental por fuente/fecha, páginas de 100 en actividad y cámara, resumen total y prueba instrumentada de 125 eventos sin duplicados.
+
+Prueba instrumentada: añadida en EventHistoryDatabaseTest.kt; no ejecutada porque el Gradle Android no puede leer el paquete API 36 del SDK aislado. Resultado pendiente; no se atribuye éxito.
+Compilación: no ejecutada para este lote por el mismo bloqueo. Ver evidencia/lote-14-validacion.log.
+Revisión estática: git diff --check sin errores de whitespace.

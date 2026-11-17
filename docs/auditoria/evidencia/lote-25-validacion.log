@@ -1,0 +1,12 @@
+Fecha de la ejecución: 2026-11-03 (America/Mexico_City)
+Rama: codex/auditoria-integral-tzinda
+Comando:
+  :app:testDebugUnitTest :app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon
+Resultado Gradle: BUILD SUCCESSFUL in 2m 54s (tras añadir prueba de renderizado y callback)
+Emulador: Medium_Phone_API_37.0 (AVD), API 37
+Pruebas unitarias (XML app/build/test-results/testDebugUnitTest): 114; fallos 0; errores 0; omitidas 0.
+Pruebas instrumentadas (XML app/build/outputs/androidTest-results/connected/debug): 95; fallos 0; errores 0; omitidas 0.
+La nueva caregiverDeviceLinksViewRendersSharedDevicesAndRoutesCameraEvents renderiza equipos compartidos y confirma que el botón de eventos de cámara ejecuta el callback del host.
+Cambios de lote: CaregiverDeviceLinksUi renderiza la subpantalla de dispositivos compartidos; MainActivity conecta acciones por callbacks.
+No se usó Supabase remoto ni se enviaron alertas reales.
+Pendiente: aceptación manual de este flujo y pruebas en teléfonos físicos con cuentas vinculadas.

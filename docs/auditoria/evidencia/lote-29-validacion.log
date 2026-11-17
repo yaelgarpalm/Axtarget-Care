@@ -1,0 +1,13 @@
+Lote 29 - interfaz, navegación y accesibilidad
+Fecha: 2026-11-08 America/Mexico_City
+Rama: codex/auditoria-integral-tzinda
+APK: debug audit, applicationId com.guardian.tzindaapp.v2.audit, sin credenciales Supabase/NVIDIA.
+
+Comando Android:
+:app:testDebugUnitTest :app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon
+Resultado: BUILD SUCCESSFUL en Medium_Phone_API_37.0 (AVD, API 37); 114 pruebas unitarias y 98 instrumentadas; 0 fallos, errores u omitidas.
+Nuevas verificaciones instrumentadas: selección de notificaciones al abrir Alertas, opción de signos vitales disponible, nombres accesibles únicos para los tres modos y título no duplicado en perfil.
+
+La primera ejecución de este lote tuvo un error en la propia prueba por una consulta ambigua de vistas de texto; la búsqueda se limitó a botones cuyo texto coincide exactamente. La ejecución completa siguiente pasó.
+
+No se activó monitoreo, no se pulsó SOS, no se solicitaron permisos ni se ejecutó una alerta. No se usaron servicios remotos. Las capturas se inspeccionaron visualmente en el emulador; no validan TalkBack, tamaño de fuente máximo, teclado en hardware ni teléfonos físicos.

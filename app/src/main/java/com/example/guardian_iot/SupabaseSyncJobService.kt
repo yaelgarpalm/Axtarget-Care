@@ -268,7 +268,18 @@ private class SupabaseSyncRunner(context: Context) {
                 val remote = if (careScope != null) backend.sharedCareRecords(careOwner) else backend.careRecords(careOwner)
                 val followups = backend.sharedAlertFollowups(careOwner)
                 val identities = listOf(remote, followups).flatMap { array -> (0 until array.length()).mapNotNull { array.optJSONObject(it) } }
-                if (careScopeCurrent()) careFeatures.reconcileOwners(identities, careOwner)
+                if (careScopeCurrent()) {
+                    careFeatures.reconcileOwners(identities, careOwner)
+                    // Restore the owner's remote records after reinstall/account recovery. Never
+                    // merge linked caregiver snapshots into the owner's private local store.
+                    if (careScope == null) careFeatures.mergeRemoteSnapshot(
+                        (0 until remote.length()).mapNotNull { remote.optJSONObject(it) }, careOwner,
+                    )
+                    if (careScope == null) careFeatures.mergeRemoteFollowups(
+                        (0 until followups.length()).mapNotNull { followups.optJSONObject(it) }, careOwner,
+                    )
+                    if (careScope == null) careFeatures.acknowledgeDeletesAbsentFromSnapshot(identities, careOwner)
+                }
             } catch (e: Exception) { android.util.Log.w("CareSync", "No se pudo reconciliar propiedad: ${syncError(e)}"); hasError = true }
             careFeatures.pendingDeleteRecords().filter { it.optString("ownerUserId") == careOwner }.forEach { deletion ->
                 if (!careScopeCurrent()) return@forEach

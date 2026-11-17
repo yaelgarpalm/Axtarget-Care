@@ -1,0 +1,41 @@
+begin;
+create extension if not exists pgtap with schema extensions;
+set local search_path = public, extensions;
+select no_plan();
+-- Isolate the assertions from earlier local integration calls; rollback restores counters.
+update tzinda_private.medication_scan_limits set hour_count=0, day_count=0 where scope='global';
+insert into auth.users(id, email) values
+('aa000000-0000-0000-0000-000000000001','scan-a@example.invalid'),
+('aa000000-0000-0000-0000-000000000002','scan-b@example.invalid');
+set local role anon;
+select throws_ok($$select public.reserve_medication_scan('aa000000-0000-0000-0000-000000000001')$$,'42501',null,'anonymous cannot reserve paid inference');
+reset role;
+set local role authenticated;
+select throws_ok($$select public.reserve_medication_scan('aa000000-0000-0000-0000-000000000001')$$,'42501',null,'users cannot bypass server authorization to reserve quota');
+select throws_ok('select * from tzinda_private.medication_scan_limits','42501',null,'users cannot read or alter counters');
+reset role;
+set local role service_role;
+select ok(not public.reserve_medication_scan(null),'null user denied');
+select ok(not public.reserve_medication_scan('aa000000-0000-0000-0000-000000000099'),'unknown user denied');
+select ok(public.reserve_medication_scan('aa000000-0000-0000-0000-000000000001'),'authorized server can reserve first call');
+reset role;
+select is((select hour_count from tzinda_private.medication_scan_limits where user_id='aa000000-0000-0000-0000-000000000001'),1,'reservation persisted');
+select is((select day_count from tzinda_private.medication_scan_limits where scope='global'),1,'global quota reserved');
+do $$begin for i in 1..9 loop perform public.reserve_medication_scan('aa000000-0000-0000-0000-000000000001'); end loop; end$$;
+select ok(not public.reserve_medication_scan('aa000000-0000-0000-0000-000000000001'),'eleventh hourly call denied');
+select ok(public.reserve_medication_scan('aa000000-0000-0000-0000-000000000002'),'different user retains own allowance');
+update tzinda_private.medication_scan_limits set hour_start=hour_start-interval '1 hour' where user_id='aa000000-0000-0000-0000-000000000001';
+select ok(public.reserve_medication_scan('aa000000-0000-0000-0000-000000000001'),'hour window resets');
+select is((select hour_count from tzinda_private.medication_scan_limits where user_id='aa000000-0000-0000-0000-000000000001'),1,'new hour counts from one');
+update tzinda_private.medication_scan_limits set day_count=30 where user_id='aa000000-0000-0000-0000-000000000001';
+select ok(not public.reserve_medication_scan('aa000000-0000-0000-0000-000000000001'),'daily per-user ceiling enforced');
+update tzinda_private.medication_scan_limits set day_start=day_start-interval '1 day' where user_id='aa000000-0000-0000-0000-000000000001';
+select ok(public.reserve_medication_scan('aa000000-0000-0000-0000-000000000001'),'daily window resets');
+update tzinda_private.medication_scan_limits set day_count=1000 where scope='global';
+select ok(not public.reserve_medication_scan('aa000000-0000-0000-0000-000000000002'),'global daily ceiling enforced');
+update tzinda_private.medication_scan_limits set day_start=day_start-interval '1 day' where scope='global';
+select ok(public.reserve_medication_scan('aa000000-0000-0000-0000-000000000002'),'global daily window resets');
+delete from auth.users where id='aa000000-0000-0000-0000-000000000001';
+select is((select count(*) from tzinda_private.medication_scan_limits where user_id='aa000000-0000-0000-0000-000000000001'),0::bigint,'deleting an account removes its quota identity');
+select * from finish();
+rollback;

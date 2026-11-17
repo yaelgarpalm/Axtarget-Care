@@ -9,14 +9,10 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.io.InputStream
 import java.net.ConnectException
-import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
-import java.net.URL
 import java.net.UnknownHostException
 import java.util.concurrent.Executors
 import kotlin.math.max
@@ -26,33 +22,26 @@ import kotlin.math.max
  * cuando la persona elige esa opción; si falla, el formulario vuelve a la lectura en el teléfono.
  */
 object NvidiaMedicationLabelReader {
-    private const val ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions"
     private const val MAX_EDGE = 1600
-    private const val PROMPT =
-        "Eres un asistente que lee cajas de medicamentos y recetas médicas. Analiza la imagen y responde SOLO " +
-            "con un objeto JSON válido, sin markdown ni explicaciones, con estas claves:\n" +
-            "name: nombre del medicamento tal como aparece en la imagen, incluida la sal (por ejemplo \"Losartán potásico\").\n" +
-            "dose: dosis o concentración con unidad, por ejemplo \"50 mg\" o \"100 mg/5 ml\".\n" +
-            "presentation: contenedor y cantidad, por ejemplo \"Caja con 30 tabletas\".\n" +
-            "frequency: una de estas opciones exactas: \"Diaria\", \"Cada 2 días\", \"Cada 3 días\", \"Semanal\", " +
-            "\"Cada 4 horas\", \"Cada 6 horas\", \"Cada 8 horas\", \"Cada 12 horas\", \"Cada 24 horas\". Si no aparece, cadena vacía.\n" +
-            "anchor_time: hora de la primera toma en formato HH:mm de 24 horas, o cadena vacía.\n" +
-            "No inventes datos que no estén en la imagen. Si la imagen no es una caja ni una receta, devuelve todas las claves vacías."
+    private const val MAX_IMAGE_BYTES = 3 * 1024 * 1024
 
     private val executor = Executors.newSingleThreadExecutor()
     private val main by lazy { Handler(Looper.getMainLooper()) }
 
-    val isConfigured: Boolean get() = BuildConfig.NVIDIA_API_KEY.isNotBlank()
+    fun isAvailable(context: Context): Boolean {
+        val sessions = EncryptedSessionStore(context)
+        return SupabaseBackend(sessions).isConfigured && sessions.read() != null
+    }
 
     fun read(context: Context, uri: Uri, onResult: (MedicationLabelGuess?, String?) -> Unit) {
-        val apiKey = BuildConfig.NVIDIA_API_KEY
-        if (apiKey.isBlank()) {
-            onResult(null, "No hay clave de NVIDIA configurada.")
+        val backend = SupabaseBackend(EncryptedSessionStore(context))
+        if (!isAvailable(context)) {
+            onResult(null, "Inicia sesión para leer en la nube. Puedes leer la foto en este teléfono.")
             return
         }
         val appContext = context.applicationContext
         executor.execute {
-            val outcome = runCatching { fetch(appContext, uri, apiKey) }
+            val outcome = runCatching { fetch(appContext, uri, backend) }
             main.post {
                 outcome.fold(
                     onSuccess = { guess -> onResult(guess, null) },
@@ -70,7 +59,10 @@ object NvidiaMedicationLabelReader {
                 ?.text("content")
                 .orEmpty()
         }.getOrNull().orEmpty()
-        val payload = extractObject(content) ?: return null
+        val payload = runCatching { JSONObject(raw).optJSONObject("result") }.getOrNull()
+            ?: extractObject(content) ?: return null
+        val fields = listOf("name", "dose", "presentation", "frequency", "anchor_time")
+        if (fields.any { key -> payload.has(key) && (payload.opt(key) !is String || payload.optString(key).length > 256) }) return null
         val guess = MedicationLabelGuess(
             name = payload.text("name"),
             presentation = payload.text("presentation"),
@@ -81,56 +73,10 @@ object NvidiaMedicationLabelReader {
         return MedicationLabelParser.refine(guess).takeUnless { it.isEmpty }
     }
 
-    private fun fetch(context: Context, uri: Uri, apiKey: String): MedicationLabelGuess {
+    private fun fetch(context: Context, uri: Uri, backend: SupabaseBackend): MedicationLabelGuess {
         val encoded = encodeImage(context, uri) ?: error("No se pudo abrir la foto.")
-        val body = JSONObject().apply {
-            put("model", BuildConfig.NVIDIA_VISION_MODEL)
-            put(
-                "messages",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("role", "user")
-                        put(
-                            "content",
-                            JSONArray()
-                                .put(JSONObject().apply { put("type", "text"); put("text", PROMPT) })
-                                .put(
-                                    JSONObject().apply {
-                                        put("type", "image_url")
-                                        put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$encoded"))
-                                    },
-                                ),
-                        )
-                    },
-                ),
-            )
-            put("temperature", 0)
-            put("max_tokens", 1200)
-            put("stream", false)
-        }
-        val response = post(apiKey, body.toString())
-        return parseResponse(response) ?: error("La respuesta no trajo datos legibles.")
-    }
-
-    private fun post(apiKey: String, body: String): String {
-        val connection = URL(ENDPOINT).openConnection() as HttpURLConnection
-        return try {
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 15_000
-            connection.readTimeout = 90_000
-            connection.doOutput = true
-            connection.setRequestProperty("Authorization", "Bearer $apiKey")
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.setRequestProperty("Accept", "application/json")
-            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            val code = connection.responseCode
-            val stream: InputStream? = if (code in 200..299) connection.inputStream else connection.errorStream
-            val text = stream?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
-            if (code !in 200..299) error("RESPONSE_$code")
-            text
-        } finally {
-            connection.disconnect()
-        }
+        val response = backend.readMedicationLabel(encoded)
+        return parseResponse(response.toString()) ?: error("La respuesta no trajo datos legibles.")
     }
 
     private fun encodeImage(context: Context, uri: Uri): String? {
@@ -163,6 +109,7 @@ object NvidiaMedicationLabelReader {
         val out = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
         bitmap.recycle()
+        if (out.size() > MAX_IMAGE_BYTES) error("La foto es demasiado grande para leerla en la nube.")
         return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 
@@ -181,8 +128,10 @@ object NvidiaMedicationLabelReader {
     private fun messageFor(error: Throwable): String {
         val text = error.message.orEmpty()
         return when {
-            text.startsWith("RESPONSE_401") || text.startsWith("RESPONSE_403") ->
-                "NVIDIA rechazó la clave configurada. Se leerá la foto en el teléfono."
+            error is BackendFailure && error.category == BackendFailure.Category.SESSION ->
+                "Inicia sesión para leer en la nube. Se leerá la foto en el teléfono."
+            error is BackendFailure && error.status == 429 ->
+                "Se alcanzó el límite de lecturas en la nube. Se leerá la foto en el teléfono."
             text.startsWith("RESPONSE_") ->
                 "NVIDIA no pudo leer la foto. Se intentará en el teléfono."
             error is UnknownHostException || error is ConnectException ->

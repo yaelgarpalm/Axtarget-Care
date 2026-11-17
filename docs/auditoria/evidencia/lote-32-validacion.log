@@ -1,0 +1,26 @@
+Lote 32 - identidad y cifrado de BLE
+Rama: codex/auditoria-integral-tzinda
+
+Android:
+Comando: .\gradlew.bat :app:testDebugUnitTest :app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon
+Resultado: BUILD SUCCESSFUL
+Unitarias: 119, cero fallos/errores/omitidas.
+Instrumentadas: 101, cero fallos/errores/omitidas.
+XML: app/build/test-results/testDebugUnitTest/*.xml y app/build/outputs/androidTest-results/connected/debug/*.xml.
+AVD: Medium_Phone_API_37.0, API 37.
+
+Python:
+LocalSQLite: python -m unittest -v test_api_auth.py -> 11 tests, OK.
+Pulsera: python -m unittest -v test_api_auth.py -> 13 tests, OK.
+La prueba GATT comprueba las banderas read/notify cifradas exportadas tanto por la propiedad como por GetManagedObjects.
+
+Paquetes:
+outputs/TzindaUNOQ-LocalSQLite-App.zip: 5 entradas, ZIP íntegro.
+outputs/TzindaUNOQ-Pulsera-App.zip: 41 entradas, ZIP íntegro; incluye bricks/tzindable/app/gatt_security.py dentro del volumen montado del Brick.
+
+Controles:
+Android ignora anuncios BLE no vinculados y exige estado BOND_BONDED al escanear y tras conectar.
+BlueZ exige encrypt-read y encrypt-notify; no se genera vínculo automáticamente.
+No se ejecutó monitoreo, no se enviaron SMS/llamadas ni se conectó a Supabase.
+
+Pendiente físico: emparejamiento real desde Android, enlace cifrado, reconexión, seguridad MITM del modo de vínculo del sistema y actualidad/replay de lecturas del protocolo.

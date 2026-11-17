@@ -1,0 +1,11 @@
+Fecha local: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Primera comprobación del helper con Kotlin Compiler de Android Studio:
+  Error real: `IntArray?` no tiene extensión `orEmpty()`.
+Corrección: usar `(tabs ?: intArrayOf())` antes de filtrar/restaurar.
+
+Recompilación aislada del código actual de TzindaNavigationHistory, con un stub de TzindaTabs y comprobaciones de ruta anidada, back, restore y limpieza al entrar a una pestaña principal:
+  Resultado: NavigationHistory extracted-source checks passed.
+
+Este control compila y ejecuta el helper de navegación extraído, no la Activity completa ni el test JUnit del proyecto. La build Android permanece pendiente porque el SDK API 36 deniega lectura de package.xml; ver `lote-14-validacion.log`.

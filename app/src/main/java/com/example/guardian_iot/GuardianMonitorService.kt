@@ -15,8 +15,6 @@ import android.telecom.TelecomManager
 import android.telephony.*
 import androidx.core.app.NotificationCompat
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -177,16 +175,21 @@ class GuardianMonitorService : Service(), SensorEventListener {
             if (!shouldPollArduinoWifi()) return
             if (arduinoRequestInFlight) return
             arduinoRequestInFlight = true
-            val endpoint = "${store.arduinoBaseUrl().trimEnd('/')}/api/v1/sensor"
+            val settings = store.arduinoConnectionSettings()
+            val token = settings.token
             telemetryExecutor.execute {
                 var status = "UNO Q: no se pudo consultar el servicio."
                 val samples = mutableListOf<JSONObject>()
                 try {
-                    val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                    val accessToken = token ?: throw IllegalStateException("Configura la conexión HTTPS del UNO Q en Ajustes.")
+                    val connection = ArduinoHttps.openPinnedConnection(
+                        "${settings.baseUrl.trimEnd('/')}/api/v1/sensor", settings.certificateFingerprint
+                    ).apply {
                         requestMethod = "GET"
                         connectTimeout = 2_500
                         readTimeout = 2_500
                         setRequestProperty("Accept", "application/json")
+                        setRequestProperty("Authorization", "Bearer $accessToken")
                     }
                     val code = connection.responseCode
                     val response = (if (code in 200..299) connection.inputStream else connection.errorStream)

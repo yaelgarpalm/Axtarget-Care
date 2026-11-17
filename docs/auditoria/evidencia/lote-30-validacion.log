@@ -1,0 +1,19 @@
+Lote 30 - backups, autenticación UNO Q y cierre de SQLite
+Fecha: 2026-11-08 America/Mexico_City
+Rama: codex/auditoria-integral-tzinda
+
+Android:
+Comando: :app:testDebugUnitTest :app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon
+Resultado: BUILD SUCCESSFUL en Medium_Phone_API_37.0 (AVD, API 37).
+Unitarias: 114 aprobadas, 0 fallos, 0 errores, 0 omitidas.
+Instrumentadas: 99 aprobadas, 0 fallos, 0 errores, 0 omitidas.
+La prueba nueva inspecciona las reglas compiladas de full-backup, cloud-backup y device-transfer para sharedpref.
+
+UNO Q Python (ambas variantes probadas en loopback, solo SQLite temporal):
+LocalApi: python -m unittest discover -s arduino/TzindaUnoQLocalApi/python -p 'test_*.py' — 8/8 OK.
+Pulsera: python -m unittest discover -s arduino/TzindaUnoQPulsera/python -p 'test_*.py' — 9/9 OK.
+ZIP outputs/TzindaUNOQ-LocalSQLite-App.zip: testzip OK; contiene python/main.py, python/api_auth.py, app.yaml y README.md.
+
+La primera ejecución host de LocalApi encontró conexiones SQLite abiertas y retención de los archivos temporales en Windows. Se agregó cierre explícito de conexión y se ordenó el apagado del servidor del test; ambas suites Python pasaron después. El test de POST usa payload ficticio y el servidor enlaza solo al loopback.
+
+No se probaron copias/restauraciones reales, una placa UNO Q, redes externas, permisos físicos, llamadas/SMS ni alertas. HTTP aún no ofrece cifrado de transporte.

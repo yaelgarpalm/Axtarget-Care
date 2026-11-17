@@ -1,0 +1,25 @@
+Lote 31 - validación HTTPS UNO Q
+Rama: codex/auditoria-integral-tzinda
+
+Android:
+Comando: .\gradlew.bat :app:testDebugUnitTest :app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon
+Resultado: BUILD SUCCESSFUL
+Unitarias (app/build/test-results/testDebugUnitTest/*.xml): 118 tests, 0 failures, 0 errors, 0 skipped.
+Instrumentadas (app/build/outputs/androidTest-results/connected/debug/*.xml): 101 tests, 0 failures, 0 errors, 0 skipped.
+AVD: Medium_Phone_API_37.0, API 37.
+
+Python:
+LocalSQLite: python -m unittest -v test_api_auth.py -> 11 tests, OK.
+Pulsera: python -m unittest -v test_api_auth.py -> 12 tests, OK.
+Incluye certificado/clave faltantes o parciales, mínimo TLS 1.2 y arranque fail-closed sin listener cuando faltan archivos TLS.
+
+Paquetes Arduino App Lab:
+outputs/TzindaUNOQ-LocalSQLite-App.zip: ZIP íntegro; 5 entradas; contiene python/main.py, python/api_auth.py, python/api_tls.py, app.yaml y README.md.
+outputs/TzindaUNOQ-Pulsera-App.zip: ZIP íntegro; 39 entradas; contiene python/main.py, python/api_auth.py, python/api_tls.py, app.yaml y README.md.
+
+Seguridad/pruebas:
+La app valida URL HTTPS, pin SHA-256 y snapshot atómico URL/huella/token; los redirects quedan desactivados.
+La política de red de la variante audit permite cleartext únicamente en 127.0.0.1 para pruebas locales; el recurso principal deniega cleartext.
+La página raíz `/` en ambas API es pública pero solo muestra estado genérico; las rutas de lecturas/estadísticas requieren Bearer.
+No se accedió a Supabase, no se enviaron SMS/llamadas y no se ejecutó monitor ni alertas reales.
+Pendiente físico: archivos y permisos TLS en UNO Q, SAN de IP estable, pin obtenido fuera de banda, compatibilidad TLS del firmware emisor, lecturas BLE/Wi-Fi y reconexión.

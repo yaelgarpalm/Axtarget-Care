@@ -1,0 +1,21 @@
+TzindaApp - Lote 14: autenticación API UNO Q (validación local final)
+Fecha: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Suite UNO Q ejecutada en el host (sin conectar una placa):
+  python -m unittest -v
+Resultado: 9 pruebas aprobadas, 0 fallos, 0 errores.
+
+La primera ejecución falló porque Windows abortó la conexión al cerrar un
+POST sin autorización cuyo cuerpo aún no se había enviado/consumido. Se ajustó
+el test para comprobar el rechazo 401 en encabezados antes del envío del
+cuerpo; `store_reading` sigue comprobándose como no invocado.
+
+Validación Android adicional:
+  .\gradlew.bat :app:testDebugUnitTest :app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon
+Resultado: BUILD SUCCESSFUL; 111 unitarias y 93 instrumentadas, todas
+aprobadas en Medium_Phone_API_37.0 (AVD), API 37.
+
+Los tests Python usan módulos stub para Arduino App Lab; no validan hardware,
+BLE, red Wi-Fi ni el token configurado en una placa real. No se modificó
+Supabase remoto ni se ejecutaron alertas reales.

@@ -1,0 +1,26 @@
+Lote 33 — validación final local
+Fecha: 2026-11-09, America/Mexico_City
+Rama: codex/auditoria-integral-tzinda
+
+Android:
+  Comando: .\gradlew.bat :app:testDebugUnitTest :app:connectedDebugAndroidTest :app:assembleDebug -PtzindaAudit=true --no-daemon
+  Resultado: BUILD SUCCESSFUL; 119 unitarias + 101 instrumentadas; 0 fallos, 0 errores, 0 omitidas; emulador Medium_Phone_API_37.0 (API 37).
+  APK: app/build/outputs/apk/debug/app-debug.apk (compilación con `-PtzindaAudit=true`, variante aislada, sin credenciales reales).
+
+UNO Q:
+  LocalSQLite: python -m unittest discover -s arduino/TzindaUnoQLocalApi/python -p 'test_*.py' — 15/15 OK.
+  Pulsera: python -m unittest discover -s arduino/TzindaUnoQPulsera/python -p 'test_*.py' — 17/17 OK.
+  compileall de ambas APIs y el Brick — OK.
+  ZIP LocalSQLite: 6 entradas, testzip OK, módulos de API comparados byte por byte.
+  ZIP Pulsera: 41 entradas, testzip OK, módulos de API comparados byte por byte.
+
+Supabase local:
+  Se inició solo PostgreSQL local en puertos temporales libres; se aplicaron con `supabase migration up --local` las cuatro migraciones locales pendientes. No se reinicializó la base. Se restauró supabase/config.toml al terminar.
+  pgTAP explícito de los cinco archivos *.test.sql: 79/79 assertions, Result: PASS.
+  care_features_rls.sql: PASS, ROLLBACK.
+  medication_rls.sql: PASS, ROLLBACK. El escenario ahora espera SQLSTATE 42501 y mensaje intake_actor_or_action_invalid cuando el cuidador intenta cambiar el estado.
+  rls_isolation.sql: PASS, ROLLBACK.
+
+Archivos de salida: lote-33-android-build.log, lote-33-python-localapi.log y lote-33-python-pulsera.log. El estado remoto de Supabase está en lote-33-supabase-readonly.md. No se enviaron alertas, SMS ni llamadas.
+
+Codex Security Standard: scan 13665345-fc96-44d0-945b-88538d998564 completado; 2 hallazgos bajos (CWE-400 y CWE-345), cobertura parcial. CWE-400 está remediado y probado en el árbol actual; CWE-345 permanece abierto para autenticación/frescura del periférico y aceptación física. El escáner advierte que el árbol cambió durante la ejecución; consultar lote-33-seguridad.md para el límite de la instantánea.

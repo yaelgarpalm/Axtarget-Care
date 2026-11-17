@@ -5,6 +5,25 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TzindaNavigationPolicyTest {
+    @Test fun secondaryRoutesReturnThroughTheActualNavigationPath() {
+        val history = TzindaNavigationHistory()
+        history.record(TzindaTabs.HOME, TzindaTabs.SETTINGS, destinationIsSecondary = true)
+        history.record(TzindaTabs.SETTINGS, TzindaTabs.PROFILE, destinationIsSecondary = true)
+        assertEquals(TzindaTabs.SETTINGS, history.back())
+        assertEquals(TzindaTabs.HOME, history.back())
+        assertEquals(null, history.back())
+    }
+
+    @Test fun selectingPrimaryDestinationClearsSecondaryHistoryAndRestoresSavedRoutes() {
+        val history = TzindaNavigationHistory()
+        history.record(TzindaTabs.HOME, TzindaTabs.DEVICE, destinationIsSecondary = true)
+        val restored = TzindaNavigationHistory().apply { restore(history.snapshot()) }
+        assertEquals(TzindaTabs.HOME, restored.back())
+        restored.record(TzindaTabs.HOME, TzindaTabs.SETTINGS, destinationIsSecondary = true)
+        restored.record(TzindaTabs.SETTINGS, TzindaTabs.ACTIVITY, destinationIsSecondary = false)
+        assertEquals(null, restored.back())
+    }
+
     @Test fun caregiverPrimaryDestinationsAreHomeAlertsHealthAndSupervision() {
         val items = TzindaNavigationPolicy.items(TzindaRole.CAREGIVER)
         assertEquals(listOf("Inicio", "Alertas", "Salud", "Supervisión"), items.map { it.label })

@@ -1,0 +1,7 @@
+Fecha local: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Se añadió TzindaNavigationHistory con límite de 32 rutas, restauración de estado, regreso sin agregar historial y limpieza al seleccionar una pestaña principal o cambiar de cuenta/modo. La flecha superior y Atrás usan la misma ruta.
+
+Prueba unitaria añadida a TzindaNavigationPolicyTest.kt para rutas secundarias anidadas, restore y limpieza. No ejecutada porque el SDK API 36 es ilegible en el entorno actual; ver lote-14-validacion.log.
+Revisión estática: git diff --check sin errores de whitespace.

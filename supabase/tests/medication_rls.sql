@@ -49,9 +49,16 @@ begin
   update public.medications set name = 'caregiver modification' where id = '94000000-0000-4000-8000-000000000004';
   get diagnostics affected = row_count;
   if affected <> 0 then raise exception 'caregiver unexpectedly updated medication'; end if;
-  update public.medication_intakes set status = 'taken' where id = '95000000-0000-4000-8000-000000000005';
-  get diagnostics affected = row_count;
-  if affected <> 0 then raise exception 'caregiver unexpectedly changed intake status'; end if;
+  begin
+    update public.medication_intakes set status = 'taken' where id = '95000000-0000-4000-8000-000000000005';
+    raise exception using errcode = 'ZX001', message = 'caregiver unexpectedly changed intake status';
+  exception when insufficient_privilege then
+    if sqlerrm <> 'intake_actor_or_action_invalid' then raise; end if;
+  end;
+  if exists (
+    select 1 from public.medication_intakes
+    where id = '95000000-0000-4000-8000-000000000005' and status <> 'pending'
+  ) then raise exception 'caregiver intake action changed the stored status'; end if;
   begin
     insert into public.medications (owner_user_id, name, prescribed_dose, frequency, schedule_times, start_date)
     values ('91000000-0000-4000-8000-000000000001', 'Caregiver forged medication', 'as prescribed', 'Diaria', '["08:00"]', current_date);

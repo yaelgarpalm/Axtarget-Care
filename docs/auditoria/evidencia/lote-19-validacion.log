@@ -1,0 +1,16 @@
+Fecha local: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Lote 19: recuperación explícita de entradas locales heredadas.
+
+Se añadieron un listado de datos sin propietario, confirmación por elemento y asignación solo desde modo Persona protegida con sesión cuyo owner coincide. Cada claim conserva el ID de registro, actualiza actor/versión y mantiene estado pending; los tombstones requieren confirmar el reintento de borrado. UUID inválidos no se envían. En pruebas el cuidador no puede reasignar datos a su vínculo.
+
+Suite: `:app:testDebugUnitTest -PtzindaAudit=true --no-daemon` => 111/111 aprobadas.
+Suite: `:app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon` => 89/89 aprobadas en Medium_Phone_API_37.0.
+También compilaron `app` y `androidTest` y se generó paquete audit para el emulador.
+
+No se ejecutaron SMS, llamadas, Supabase remoto ni acciones de sincronización que borren datos reales. La prueba SQL de grants permanece sin ejecutar. Validación en teléfono físico pendiente.
+Actualización final posterior a corrección de texto del flujo de borrado heredado:
+  `:app:testDebugUnitTest -PtzindaAudit=true --no-daemon` recompiló MainActivity y terminó BUILD SUCCESSFUL.
+  Resultado XML: 111 pruebas, 0 fallos, 0 errores, 0 omitidas.
+  La suite instrumentada 89/89 se ejecutó antes de este cambio solo de texto; no se modificó lógica tras aquella ejecución.

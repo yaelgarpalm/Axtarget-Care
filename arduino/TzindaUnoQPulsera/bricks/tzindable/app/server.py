@@ -11,6 +11,7 @@ from dbus_next import BusType, Variant
 from dbus_next.aio import MessageBus
 from dbus_next.constants import PropertyAccess
 from dbus_next.service import ServiceInterface, dbus_property, method
+from gatt_security import CHARACTERISTIC_FLAGS
 
 
 SERVICE_UUID = "6b9f0001-6e2a-4f72-a11d-545a696e6461"
@@ -146,7 +147,7 @@ class SensorCharacteristic(ServiceInterface):
 
     @dbus_property(access=PropertyAccess.READ)
     def Flags(self) -> "as":
-        return ["read", "notify"]
+        return list(CHARACTERISTIC_FLAGS)
 
     @dbus_property(access=PropertyAccess.READ)
     def Value(self) -> "ay":
@@ -210,7 +211,7 @@ class ApplicationObjectManager(ServiceInterface):
             CHARACTERISTIC_PATHS[key]: {
                 "UUID": Variant("s", item.uuid),
                 "Service": Variant("o", SERVICE_PATH),
-                "Flags": Variant("as", ["read", "notify"]),
+                "Flags": Variant("as", list(CHARACTERISTIC_FLAGS)),
                 "Value": Variant("ay", item.value),
                 "Notifying": Variant("b", item.notifying),
             }

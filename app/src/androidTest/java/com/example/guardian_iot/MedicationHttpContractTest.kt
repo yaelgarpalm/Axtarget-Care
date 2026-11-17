@@ -72,7 +72,63 @@ class MedicationHttpContractTest {
         }
     }
 
-    private data class CapturedRequest(val line: String, val body: String)
+    @Test fun caregiverSharedEventHistoryUsesStableBoundedOffsetPages() {
+        withServer(200, """[{"id":"audit-event","occurred_at":"2026-11-03T10:00:00Z"}]""") { backend, request ->
+            val page = backend.sharedEventPage("audit-owner", "audit-device", offset = 200, limit = 50)
+            assertEquals("audit-event", page.getJSONObject(0).getString("id"))
+            val sent = request.get(5, TimeUnit.SECONDS)
+            assertTrue(sent.line.startsWith("GET /rest/v1/fall_events?select="))
+            assertTrue(sent.line.contains("user_id=eq.audit-owner&device_id=eq.audit-device&order=occurred_at.desc,id.desc&limit=50&offset=200"))
+            assertEquals("Bearer fake-access", sent.headers["authorization"])
+        }
+    }
+
+    @Test fun profileSyncDoesNotSendTheDeviceRole() {
+        withServer(200, """[{"user_id":"$actor","full_name":"Persona","preferences":{}}]""") { backend, request ->
+            backend.updateProfile("Persona", JSONObject().put("privacy_notice_version", "1"))
+            val body = JSONObject(request.get(5, TimeUnit.SECONDS).body)
+            assertEquals(setOf("full_name", "preferences"), body.keys().asSequence().toSet())
+            assertFalse(body.has("role"))
+            assertFalse(body.has("user_role"))
+        }
+    }
+
+    private data class CapturedRequest(val line: String, val body: String, val headers: Map<String, String>)
+
+    @Test fun cloudScanUsesAuthenticatedFunctionAndOnlyTheImageField() {
+        withServer(200, """{"result":{"name":"Tempra"}}""") { backend, request ->
+            assertEquals("Tempra", backend.readMedicationLabel("test-base64").getJSONObject("result").getString("name"))
+            val sent = request.get(5, TimeUnit.SECONDS)
+            assertTrue(sent.line.startsWith("POST /functions/v1/medication-label "))
+            assertEquals("Bearer fake-access", sent.headers["authorization"])
+            assertEquals(setOf("image_base64"), JSONObject(sent.body).keys().asSequence().toSet())
+        }
+    }
+
+    @Test fun unoQTokenIsEncryptedAtRestAndCanBeReadBack() {
+        val prefs = context.getSharedPreferences("tzinda_native", android.content.Context.MODE_PRIVATE)
+        val token = "audit-uno-q-token-0123456789abcdef"
+        try {
+            UnoQLocalAuth.saveToken(context, token)
+            assertEquals(token, UnoQLocalAuth.token(context))
+            assertFalse(prefs.getString("uno_q_api_token_encrypted", "").orEmpty().contains(token))
+        } finally {
+            prefs.edit().remove("uno_q_api_token_encrypted").commit()
+        }
+    }
+
+    @Test fun cloudScanBoundsTheResponseBeforeParsing() {
+        withServer(200, "x".repeat(16 * 1024 + 1)) { backend, _ ->
+            assertThrows(BackendFailure::class.java) { backend.readMedicationLabel("test-base64") }
+        }
+    }
+
+    @Test fun cloudScanRequiresAnActiveSessionBeforeOpeningTheConnection() {
+        sessions.clear()
+        val backend = SupabaseBackend(sessions, "http://127.0.0.1:1", "sb_publishable_audit_fake", "")
+        assertEquals(BackendFailure.Category.SESSION,
+            assertThrows(BackendFailure::class.java) { backend.readMedicationLabel("test-base64") }.category)
+    }
 
     @Test fun zeroDeletedCareRowsDoesNotAcknowledgeAnUnconfirmedDeletion() {
         withServer(200, "[]") { backend, _ ->
@@ -97,9 +153,11 @@ class MedicationHttpContractTest {
                     val reader = socket.getInputStream().bufferedReader(Charsets.UTF_8)
                     val line = reader.readLine()
                     var length = 0
+                    val headers = mutableMapOf<String, String>()
                     while (true) {
                         val header = reader.readLine() ?: break
                         if (header.isEmpty()) break
+                        headers[header.substringBefore(':').lowercase()] = header.substringAfter(':').trim()
                         if (header.startsWith("Content-Length:", ignoreCase = true)) length = header.substringAfter(':').trim().toInt()
                     }
                     val chars = CharArray(length)
@@ -109,7 +167,7 @@ class MedicationHttpContractTest {
                         check(count > 0)
                         offset += count
                     }
-                    captured.complete(CapturedRequest(line, String(chars)))
+                    captured.complete(CapturedRequest(line, String(chars), headers))
                     val bytes = response.toByteArray(Charsets.UTF_8)
                     socket.getOutputStream().apply {
                         write("HTTP/1.1 $status Test\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray(Charsets.UTF_8))

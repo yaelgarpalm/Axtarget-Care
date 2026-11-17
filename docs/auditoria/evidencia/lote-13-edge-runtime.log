@@ -1,0 +1,78 @@
+Setting up Edge Functions runtime...
+v1.77.8: Pulling from supabase/edge-runtime
+023804b316e5: Pulling fs layer
+206a9af29bad: Pulling fs layer
+11422d7ca1a4: Pulling fs layer
+a8851c9149d0: Pulling fs layer
+a9106698e2b5: Pulling fs layer
+22e01904dccc: Pulling fs layer
+44136fa355b3: Already exists
+22e01904dccc: Download complete
+fb7603e47116: Download complete
+023804b316e5: Download complete
+11422d7ca1a4: Download complete
+11422d7ca1a4: Pull complete
+206a9af29bad: Download complete
+22e01904dccc: Pull complete
+206a9af29bad: Pull complete
+a8851c9149d0: Download complete
+a8851c9149d0: Pull complete
+a9106698e2b5: Download complete
+a9106698e2b5: Pull complete
+023804b316e5: Pull complete
+Digest: sha256:178c041398a33ded8219344382d0672a90051d1babbf0af03425cafe20039a75
+Status: Downloaded newer image for public.ecr.aws/supabase/edge-runtime:v1.77.8
+public.ecr.aws/supabase/edge-runtime:v1.77.8
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\auth-email-hook (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\delete-account (WRITE)
+2026-11-03T06:43:03.829288471Z Serving functions on http://127.0.0.1:54321/functions/v1/<function-name>
+2026-11-03T06:43:03.829342150Z  - http://127.0.0.1:54321/functions/v1/auth-email-hook
+2026-11-03T06:43:03.829347805Z  - http://127.0.0.1:54321/functions/v1/delete-account
+2026-11-03T06:43:03.829350227Z  - http://127.0.0.1:54321/functions/v1/medication-label
+2026-11-03T06:43:03.829355382Z Using supabase-edge-runtime-1.77.8 (compatible with Deno v2.1.4)
+Setting up Edge Functions runtime...
+2026-11-03T06:43:07.962919467Z Serving functions on http://127.0.0.1:54321/functions/v1/<function-name>
+2026-11-03T06:43:07.962996498Z  - http://127.0.0.1:54321/functions/v1/auth-email-hook
+2026-11-03T06:43:07.963001705Z  - http://127.0.0.1:54321/functions/v1/delete-account
+2026-11-03T06:43:07.963002916Z  - http://127.0.0.1:54321/functions/v1/medication-label
+2026-11-03T06:43:07.963004142Z Using supabase-edge-runtime-1.77.8 (compatible with Deno v2.1.4)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\auth-email-hook (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\delete-account (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\medication-label (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\medication-label\deno.json (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\medication-label\handler.test.ts (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\medication-label\handler.ts (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\medication-label\index.ts (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\medication-label\tiny-test.jpg (WRITE)
+Setting up Edge Functions runtime...
+2026-11-03T07:43:08.416623177Z Serving functions on http://127.0.0.1:54321/functions/v1/<function-name>
+2026-11-03T07:43:08.416650116Z  - http://127.0.0.1:54321/functions/v1/auth-email-hook
+2026-11-03T07:43:08.416651866Z  - http://127.0.0.1:54321/functions/v1/delete-account
+2026-11-03T07:43:08.416652580Z  - http://127.0.0.1:54321/functions/v1/medication-label
+2026-11-03T07:43:08.416653345Z Using supabase-edge-runtime-1.77.8 (compatible with Deno v2.1.4)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\auth-email-hook (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\delete-account (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\medication-label (WRITE)
+Setting up Edge Functions runtime...
+2026-11-03T08:43:22.269148209Z Serving functions on http://127.0.0.1:54321/functions/v1/<function-name>
+2026-11-03T08:43:22.269203770Z  - http://127.0.0.1:54321/functions/v1/auth-email-hook
+2026-11-03T08:43:22.269207621Z  - http://127.0.0.1:54321/functions/v1/delete-account
+2026-11-03T08:43:22.269209236Z  - http://127.0.0.1:54321/functions/v1/medication-label
+2026-11-03T08:43:22.269210928Z Using supabase-edge-runtime-1.77.8 (compatible with Deno v2.1.4)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\medication-label\handler.test.ts (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\medication-label\tiny-test.jpg (WRITE)
+Setting up Edge Functions runtime...
+2026-11-03T08:43:30.641302817Z Serving functions on http://127.0.0.1:54321/functions/v1/<function-name>
+2026-11-03T08:43:30.641350080Z  - http://127.0.0.1:54321/functions/v1/auth-email-hook
+2026-11-03T08:43:30.641352348Z  - http://127.0.0.1:54321/functions/v1/delete-account
+2026-11-03T08:43:30.641353277Z  - http://127.0.0.1:54321/functions/v1/medication-label
+2026-11-03T08:43:30.641354211Z Using supabase-edge-runtime-1.77.8 (compatible with Deno v2.1.4)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\auth-email-hook (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\delete-account (WRITE)
+File change detected: C:\Users\yaelg\Documents\Codex\2026-10-20\me-ayudas-a-hacer-cambios-a\work\tzina\supabase\functions\medication-label (WRITE)
+Setting up Edge Functions runtime...
+2026-11-03T15:05:22.743421353Z Serving functions on http://127.0.0.1:54321/functions/v1/<function-name>
+2026-11-03T15:05:22.743578082Z  - http://127.0.0.1:54321/functions/v1/auth-email-hook
+2026-11-03T15:05:22.743586627Z  - http://127.0.0.1:54321/functions/v1/delete-account
+2026-11-03T15:05:22.743596418Z  - http://127.0.0.1:54321/functions/v1/medication-label
+2026-11-03T15:05:22.743599594Z Using supabase-edge-runtime-1.77.8 (compatible with Deno v2.1.4)

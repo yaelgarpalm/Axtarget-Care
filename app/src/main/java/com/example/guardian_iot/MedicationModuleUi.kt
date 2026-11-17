@@ -699,7 +699,7 @@ class MedicationModuleUi(
                 panel.addView(header)
                 panel.addView(
                     label(
-                        "Con NVIDIA la foto se envía a la nube para leer nombre, dosis y presentación; TzindaApp no la guarda. Revisa siempre lo detectado.",
+                        "Al elegir la nube, la foto pasa por Supabase y NVIDIA para leer nombre, dosis y presentación; TzindaApp no la guarda. Revisa siempre lo detectado.",
                         muted,
                         13,
                     ).apply { setPadding(0, dp(4), 0, 0) },
@@ -752,7 +752,7 @@ class MedicationModuleUi(
             scanSlot.addView(
                 label(
                     if (labelScanner.cloudAvailable) {
-                        "Con NVIDIA la foto se envía a la nube para leerla; la opción en el teléfono no envía nada. Revisa siempre lo detectado."
+                        "Al elegir la nube, la foto pasa por Supabase y NVIDIA; la opción en el teléfono no envía nada. Revisa siempre lo detectado."
                     } else {
                         "Lee el nombre, la dosis y la presentación de una foto y rellena el formulario. Revisa siempre lo detectado."
                     },

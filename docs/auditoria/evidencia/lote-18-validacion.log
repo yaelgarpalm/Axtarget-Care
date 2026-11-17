@@ -1,0 +1,14 @@
+Fecha local: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Lote 18: `profiles.role` de solo lectura para clientes.
+
+Hallazgo: la migración inicial otorgaba grants de columna INSERT/UPDATE sobre `role` a authenticated. La migración 20261103070000 revoca privilegios de tabla y los grants previos por columna; conserva INSERT de user_id/full_name/preferences, UPDATE de full_name/preferences y SELECT.
+
+Validación:
+  `ProfileSyncPolicyTest` se incluye en 111 pruebas unitarias aprobadas (0 fallos).
+  `MedicationHttpContractTest.profileSyncDoesNotSendTheDeviceRole` se incluye en 89 instrumentadas aprobadas en Medium_Phone_API_37.0.
+  Prueba pgTAP `profile_role_privileges.test.sql` añadida, sin ejecutar: no hay psql ni Docker local.
+  `git diff --check`: sin errores.
+
+No se aplicó la migración a Supabase remoto. Inspeccionar sus grants/esquema divergente antes de aplicar.

@@ -1,0 +1,33 @@
+TzindaApp - Lote 23: pgTAP de cuotas y privilegios (solo local)
+Fecha: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Entorno: contenedor PostgreSQL local de Supabase, healthy. No había proyecto
+remoto vinculado. El proxy local no publicó 127.0.0.1:54322; psql se ejecutó
+con docker exec contra el contenedor local.
+
+Método de aislamiento: para cada caso, la migración bajo prueba y el archivo
+pgTAP se ejecutaron en una única transacción. Se quitaron solamente los
+BEGIN/COMMIT envolventes de la migración y el BEGIN inicial del test; el
+ROLLBACK final del test cerró y revirtió la transacción completa.
+
+medication_scan_quota.test.sql: 17 assertions aprobadas, 0 fallos.
+  Incluye denegación a anon/authenticated, autorización a service_role,
+  cuotas por usuario/globales y reinicio de ventanas.
+profile_role_privileges.test.sql: plan 1..8; 8 assertions aprobadas.
+  Comprueba lectura heredada de role y deniega INSERT/UPDATE de role a
+  authenticated, manteniendo los grants de los campos permitidos.
+
+También se repitió el test Edge con sus mocks locales:
+  node --test supabase/functions/medication-label/handler.test.ts
+Resultado: 15 pruebas aprobadas, 0 fallos.
+
+Las dos pruebas terminaron con ROLLBACK. No se aplicaron migraciones al
+proyecto Supabase remoto, no se hicieron DELETE remotos ni se generaron
+alertas reales. Después del rollback: extensión pgTAP ausente, cero usuarios
+de prueba persistidos y grant base heredado de role aún presente. Se detuvo
+el contenedor local conservando sus volúmenes. El intento posterior de iniciar
+el stack para ejecutar toda la batería pgTAP falló porque Windows denegó el
+bind del puerto configurado y también de un puerto temporal alternativo; por
+eso quedaron ejecutadas solo estas dos suites dirigidas, no toda la carpeta.
+El resultado no verifica el esquema ni la RLS desplegados.

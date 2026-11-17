@@ -1,0 +1,25 @@
+TzindaApp - Lote 21: restauración del historial de seguimientos
+Fecha: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Comando final ejecutado:
+  .\gradlew.bat :app:testDebugUnitTest :app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon
+
+Resultado: BUILD SUCCESSFUL (2m 19s; código de salida 0).
+Unitarias: 111; fallos: 0; errores: 0; omitidas: 0.
+Instrumentadas: 93; fallos: 0; errores: 0; omitidas: 0.
+Dispositivo: Medium_Phone_API_37.0 (AVD), API 37.
+
+La primera corrida de 93 instrumentadas detectó que el fixture usaba un
+actor que no era UUID, aunque la tabla remota exige UUID. Se corrigió el
+fixture y se repitió la batería completa con el resultado final registrado
+arriba.
+
+La cobertura del lote comprueba restauración de followups remotos,
+preservación de acciones locales pendientes y rechazo de snapshots con
+propietario ajeno sin importación parcial. No había teléfono físico conectado.
+No se modificó Supabase remoto ni se ejecutaron alertas reales.
+
+Pendiente: prueba offline entre dos instalaciones y aceptación física. La
+ejecución local no valida el estado actual ni las políticas RLS del Supabase
+desplegado.

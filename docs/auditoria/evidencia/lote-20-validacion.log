@@ -1,0 +1,23 @@
+TzindaApp - Lote 20: restauración de cuidados desde Supabase
+Fecha: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Comando ejecutado:
+  .\gradlew.bat :app:testDebugUnitTest :app:connectedDebugAndroidTest -PtzindaAudit=true --no-daemon
+
+Resultado Gradle: BUILD SUCCESSFUL (3m 43s; código de salida 0).
+Unitarias: 111; fallos: 0; errores: 0; omitidas: 0.
+Instrumentadas: 91; fallos: 0; errores: 0; omitidas: 0.
+Instrumentación ejecutada en Medium_Phone_API_37.0 (AVD), API 37.
+Solo había un emulador conectado; no se ejecutaron pruebas en dispositivos físicos.
+git diff --check: correcto; solo avisos de conversión LF/CRLF de Git.
+
+Las pruebas nuevas cubren importación de filas remotas ausentes, preservación
+de ediciones locales pendientes, retención de filas locales no devueltas y
+rechazo completo de snapshots con propietario ajeno. No se modificó Supabase
+remoto ni se ejecutaron llamadas, SMS, ni alertas reales.
+
+Pendiente: validar recuperación offline entre dos instalaciones/dispositivos,
+comprobar followups en el almacén local del propietario y realizar aceptación
+en dispositivos físicos. Las pruebas locales no prueban el estado ni la RLS
+del proyecto Supabase remoto.

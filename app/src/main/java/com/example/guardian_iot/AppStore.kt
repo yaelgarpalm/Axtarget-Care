@@ -67,18 +67,33 @@ class AppStore(context: Context) {
     fun role(): String = prefs.getString("user_role", "").orEmpty()
     fun accountRole(): String = prefs.getString("account_role", "").orEmpty()
     fun arduinoBaseUrl(): String = prefs.getString("arduino_base_url", DEFAULT_ARDUINO_BASE_URL).orEmpty()
+    internal fun arduinoConnectionSettings(): ArduinoConnectionSettings {
+        val snapshot = prefs.all
+        return ArduinoConnectionSettings(
+            baseUrl = snapshot[ARDUINO_BASE_URL_KEY] as? String ?: DEFAULT_ARDUINO_BASE_URL,
+            certificateFingerprint = snapshot[ARDUINO_CERTIFICATE_FINGERPRINT_KEY] as? String ?: "",
+            token = UnoQLocalAuth.tokenFromSnapshot(appContext, snapshot),
+        )
+    }
     fun braceletConnectionMode(): String = prefs.getString("bracelet_connection_mode", BRACELET_MODE_BLE).orEmpty()
     fun saveBraceletConnectionMode(value: String) {
         require(value in setOf(BRACELET_MODE_BLE, BRACELET_MODE_WIFI)) { "Selecciona Bluetooth o Wi-Fi para la pulsera." }
         check(prefs.edit().putString("bracelet_connection_mode", value).commit()) { "No se pudo guardar el método de conexión." }
     }
-    fun saveArduinoBaseUrl(value: String) {
+    fun saveArduinoConnectionSettings(value: String, fingerprint: String, token: String) {
         val cleaned = value.trim().trimEnd('/')
         val uri = runCatching { URI(cleaned) }.getOrNull()
-        require(uri != null && uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank() && uri.userInfo == null) {
-            "Escribe una dirección HTTP o HTTPS válida, por ejemplo http://192.168.18.35:8081."
+        require(uri != null && uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank() &&
+            uri.userInfo == null && uri.query == null && uri.fragment == null && uri.path in setOf("", "/")) {
+            "Escribe una dirección HTTPS válida del UNO Q, por ejemplo https://192.168.18.35:8081."
         }
-        check(prefs.edit().putString("arduino_base_url", cleaned).commit()) { "No se pudo guardar la dirección del UNO Q." }
+        val normalizedFingerprint = ArduinoHttps.normalizeFingerprint(fingerprint)
+        require(UnoQLocalAuth.isValidToken(token)) { "El token debe tener al menos 32 bytes y no contener espacios." }
+        val editor = prefs.edit()
+            .putString(ARDUINO_BASE_URL_KEY, cleaned)
+            .putString(ARDUINO_CERTIFICATE_FINGERPRINT_KEY, normalizedFingerprint)
+        UnoQLocalAuth.putEncryptedToken(editor, appContext, token)
+        check(editor.commit()) { "No se pudo guardar la configuración segura del UNO Q." }
     }
     fun saveRole(role: String) {
         require(role in setOf(ROLE_WEARER, ROLE_CAREGIVER, ROLE_CAMERA)) { "Selecciona un rol válido." }
@@ -103,6 +118,22 @@ class AppStore(context: Context) {
         return PhoneNumbers.recipients(contacts(), emergency)
     }
     fun events(): JSONArray = runCatching { JSONArray(prefs.getString("events", "[]")) }.getOrDefault(JSONArray())
+    fun eventHistory(limit: Int = 100, offset: Int = 0): List<JSONObject> {
+        val stored = telemetry.recentAppEvents(limit, offset)
+        if (stored.isNotEmpty() || offset > 0) return stored
+        val legacy = events()
+        return (offset until minOf(legacy.length(), offset + limit)).mapNotNull { legacy.optJSONObject(it) }
+    }
+    fun eventHistoryCount(): Int = maxOf(telemetry.appEventCount(), events().length())
+    fun possibleFallCountSince(capturedAt: Long): Int {
+        val stored = telemetry.possibleFallCountSince(capturedAt)
+        if (stored > 0) return stored
+        val legacy = events()
+        return (0 until legacy.length()).mapNotNull { legacy.optJSONObject(it) }
+            .filter { it.optLong("time") >= capturedAt && it.optString("message").contains("caída", ignoreCase = true) }
+            .distinctBy { it.optString("incident").ifBlank { it.optLong("time").toString() } }
+            .size
+    }
     fun event(message: String, incident: String = "", queueFallEvent: Boolean = true) {
         synchronized(lock) {
             val old = events()
@@ -111,7 +142,7 @@ class AppStore(context: Context) {
             val next = JSONArray().put(JSONObject().put("id", eventId).put("time", now).put("message", message).put("incident", incident))
             for (i in 0 until minOf(old.length(), 99)) next.put(old.get(i))
             prefs.edit().putString("events", next.toString()).putString("status", message).commit()
-            runCatching { telemetry.recordEvent(message, incident, now) }
+            runCatching { telemetry.recordEvent(message, incident, now, eventId) }
             val incidentId = incident.takeIf { runCatching { java.util.UUID.fromString(it) }.isSuccess }
             val eventInfo = if (queueFallEvent) classifyFallEvent(message, eventId, incidentId, now) else null
             if (eventInfo != null) runCatching { telemetry.queueFallEvent(eventInfo) }
@@ -352,11 +383,19 @@ class AppStore(context: Context) {
         const val ROLE_CAMERA = "camera"
         const val BRACELET_MODE_BLE = "ble"
         const val BRACELET_MODE_WIFI = "wifi"
-        const val DEFAULT_ARDUINO_BASE_URL = "http://192.168.18.35:8081"
+        const val DEFAULT_ARDUINO_BASE_URL = "https://192.168.18.35:8081"
+        private const val ARDUINO_BASE_URL_KEY = "arduino_base_url"
+        private const val ARDUINO_CERTIFICATE_FINGERPRINT_KEY = "arduino_certificate_fingerprint"
         private const val LOCAL_DATA_OWNER_KEY = "local_data_owner_id"
         private val lock = Any()
     }
 }
+
+internal data class ArduinoConnectionSettings(
+    val baseUrl: String,
+    val certificateFingerprint: String,
+    val token: String?,
+)
 
 data class RegisteredCamera(val id: String, val name: String)
 

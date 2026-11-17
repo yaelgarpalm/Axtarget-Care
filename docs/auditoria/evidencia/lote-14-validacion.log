@@ -1,0 +1,21 @@
+Fecha local: 2026-11-03
+Rama: codex/auditoria-integral-tzinda
+
+Prueba Python solicitada:
+  python -m unittest -v
+Resultado: no ejecutable; PowerShell informa que `python` no es un cmdlet ni ejecutable disponible.
+
+Gradle inicial con caché del usuario:
+  .\gradlew.bat -PtzindaAudit=true testDebugUnitTest assembleDebug
+Resultado: bloqueo de acceso al archivo wrapper zip.lck del perfil C:\Users\yaelg.
+
+Gradle con GRADLE_USER_HOME local y distribución Gradle 9.3.1:
+  -PtzindaAudit=true testDebugUnitTest assembleDebug --offline
+Resultado: plugin Android resuelto después de copiar la caché local; la configuración de Android falla al leer C:\Users\yaelg\AppData\Local\Android\Sdk\platforms\android-36\package.xml (Acceso denegado), antes de ejecutar compilación o pruebas.
+
+No se afirma que las pruebas Android/Python nuevas hayan pasado. Los casos se añadieron, pero requieren un entorno que permita ejecutar Python y leer Android SDK API 36.
+
+Revisión estática final del cambio:
+  git diff --check
+Resultado: sin errores de whitespace.
+Se confirmó en el código que el token Android se lee/escribe con `store.appContext`, cuyo SharedPreferences está separado por el ámbito local de cuenta de AccountStorage.

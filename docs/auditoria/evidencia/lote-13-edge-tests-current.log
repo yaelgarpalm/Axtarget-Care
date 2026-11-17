@@ -1,0 +1,23 @@
+✔ signed-in scan uses only server-controlled request and returns bounded fields (53.8424ms)
+✔ method and missing/malformed authorization are rejected before any fetch (2.4823ms)
+✔ forged and expired tokens require authoritative user verification (2.8325ms)
+✔ anonymous or malformed users cannot consume quota or call provider (2.5962ms)
+✔ upstream-control fields, URLs, arrays and invalid base64/JPEG rejected (4.0477ms)
+✔ content type and declared size enforced before buffering body (0.9353ms)
+✔ streaming input exceeding limit is cancelled even without Content-Length (7.5319ms)
+✔ invalid JSON does not invoke quota or provider (1.3335ms)
+✔ persistent quota denial prevents paid invocation (0.9927ms)
+✔ quota outages or malformed acknowledgement fail closed (1.1006ms)
+✔ provider redirects and failures are not followed or echoed (2.2872ms)
+✔ provider response byte limit and field limits reject unbounded output (2.1047ms)
+✔ provider timeout aborts without exposing credentials (15.2028ms)
+✔ missing server secret disables only cloud without calling upstream (0.7268ms)
+✔ provider extra fields never reach the medication form (1.3643ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 379.2466

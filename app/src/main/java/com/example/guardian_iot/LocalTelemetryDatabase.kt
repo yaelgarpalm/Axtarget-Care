@@ -43,12 +43,14 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
         )
         db.execSQL("CREATE INDEX readings_captured_at_idx ON readings(captured_at)")
         db.execSQL("CREATE INDEX readings_source_idx ON readings(source)")
+        db.execSQL("CREATE INDEX readings_source_time_idx ON readings(source, captured_at DESC)")
         createSyncTables(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createSyncTables(db)
         if (oldVersion < 3) createLocationSyncTable(db)
+        if (oldVersion < 4) db.execSQL("CREATE INDEX IF NOT EXISTS readings_source_time_idx ON readings(source, captured_at DESC)")
     }
 
     @Synchronized
@@ -177,8 +179,13 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     @Synchronized
-    fun recordEvent(message: String, incident: String, capturedAt: Long = System.currentTimeMillis()) {
-        val payload = JSONObject().put("message", message).put("incident", incident)
+    fun recordEvent(
+        message: String,
+        incident: String,
+        capturedAt: Long = System.currentTimeMillis(),
+        eventId: String = UUID.randomUUID().toString(),
+    ) {
+        val payload = JSONObject().put("id", eventId).put("message", message).put("incident", incident)
         insert(
             ContentValues().apply {
                 put("captured_at", capturedAt)
@@ -187,6 +194,49 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
                 put("payload_json", payload.toString())
             },
         )
+    }
+
+    /** Reads a bounded page from the durable local event history, newest first. */
+    @Synchronized
+    fun recentAppEvents(limit: Int = 100, offset: Int = 0): List<JSONObject> {
+        require(limit in 1..1_000) { "El tamaño de página debe estar entre 1 y 1000." }
+        require(offset >= 0) { "El desplazamiento no puede ser negativo." }
+        return readableDatabase.rawQuery(
+            "SELECT id, captured_at, payload_json FROM readings WHERE source=? " +
+                "ORDER BY captured_at DESC, id DESC LIMIT ? OFFSET ?",
+            arrayOf(SOURCE_APP_EVENT, limit.toString(), offset.toString()),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    val payload = runCatching { JSONObject(cursor.getString(2).orEmpty()) }.getOrNull() ?: continue
+                    payload.put("id", payload.optString("id").ifBlank { cursor.getLong(0).toString() })
+                    payload.put("time", cursor.getLong(1))
+                    add(payload)
+                }
+            }
+        }
+    }
+
+    @Synchronized
+    fun appEventCount(): Int = readableDatabase.rawQuery(
+        "SELECT COUNT(*) FROM readings WHERE source=?", arrayOf(SOURCE_APP_EVENT),
+    ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+
+    @Synchronized
+    fun possibleFallCountSince(capturedAt: Long): Int {
+        val incidents = HashSet<String>()
+        readableDatabase.rawQuery(
+            "SELECT id, captured_at, payload_json FROM readings WHERE source=? AND captured_at>=? AND payload_json LIKE ?",
+            arrayOf(SOURCE_APP_EVENT, capturedAt.toString(), "%caída%"),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val payload = runCatching { JSONObject(cursor.getString(2).orEmpty()) }.getOrNull() ?: continue
+                if (!payload.optString("message").contains("caída", ignoreCase = true)) continue
+                val incident = payload.optString("incident").ifBlank { cursor.getLong(1).toString() }
+                incidents += incident
+            }
+        }
+        return incidents.size
     }
 
     @Synchronized
@@ -617,7 +667,7 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
         }
 
         private const val DATABASE_NAME = "tzinda_local_telemetry.db"
-        private const val DATABASE_VERSION = 3
+        private const val DATABASE_VERSION = 4
         private const val RETENTION_MS = 30L * 24 * 60 * 60 * 1000
         private const val LOCATION_QUEUE_INTERVAL_MS = 30_000L
         private const val LOCATION_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
