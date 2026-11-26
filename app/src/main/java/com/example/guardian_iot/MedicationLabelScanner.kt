@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
@@ -610,7 +611,8 @@ internal object MedicationLabelReader {
     fun read(context: Context, uri: Uri, document: MedicationDocument, onResult: (MedicationScanResult?, String?) -> Unit) {
         val appContext = context.applicationContext
         executor.execute {
-            val image = runCatching { InputImage.fromFilePath(appContext, uri) }.getOrElse {
+            val image = runCatching { InputImage.fromFilePath(appContext, uri) }.getOrElse { failure ->
+                Log.w("MedicationScan", "No se pudo abrir la imagen (${failure.javaClass.simpleName})")
                 main.post { onResult(null, "No se pudo abrir la imagen. Intenta con otra foto o con una imagen de la galería.") }
                 return@execute
             }
