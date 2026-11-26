@@ -180,7 +180,7 @@ internal class TzindaMapService(context: Context) : Closeable {
     }
     private val routeRequests = Mutex()
     private var lastRouteRequest = 0L
-    private val userAgent = "TzindaApp/${BuildConfig.VERSION_NAME} (${BuildConfig.APPLICATION_ID}; Android)"
+    private val userAgent = "AxTargetCare/${BuildConfig.VERSION_NAME} (${BuildConfig.APPLICATION_ID}; Android)"
 
     suspend fun tile(zoom: Int, x: Int, y: Int): Bitmap? = withContext(Dispatchers.IO) {
         val response = tileClient.value.get("https://tile.openstreetmap.org/$zoom/$x/$y.png") {

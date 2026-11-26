@@ -33,7 +33,7 @@ object CameraAlertNotifier {
         )
         manager.notify(NOTIFICATION_ID, NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("TzindaApp · posible caída detectada")
+            .setContentTitle("AxTarget Care · posible caída detectada")
             .setContentText("El aviso quedó guardado y se enviará a la persona protegida al sincronizarse.")
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(NotificationCompat.PRIORITY_HIGH)

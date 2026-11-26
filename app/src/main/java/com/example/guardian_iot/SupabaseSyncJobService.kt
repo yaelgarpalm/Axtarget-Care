@@ -168,7 +168,7 @@ private class SupabaseSyncRunner(context: Context) {
                     .firstOrNull { it.optString("id") == existingPhoneId }?.optString("logical_id")?.takeIf { it.isNotBlank() } ?: "phone-primary"
             } else "phone-primary"
             val phoneId = backend.registerOrUpdateDevice(
-                existingPhoneId, phoneFallbackId, phoneLogical, "Teléfono TzindaApp", "phone", "not_applicable"
+                existingPhoneId, phoneFallbackId, phoneLogical, "Teléfono AxTarget Care", "phone", "not_applicable"
             )
 
             val existingFallId = byLogicalId["fall-sensor-phone"]

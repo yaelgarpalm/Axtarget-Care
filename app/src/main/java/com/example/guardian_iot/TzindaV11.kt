@@ -412,11 +412,11 @@ internal class TzindaV11(
                 withFix { refreshZonePosition(); view.centerMap() }
             }
         }
-        mapPage(view, "Zonas seguras", if (example) "TZINDA · Ubicación de ejemplo" else if (shared) "TZINDA · Zonas compartidas" else "TZINDA · Tus lugares de confianza",
+        mapPage(view, "Zonas seguras", if (example) "AXTARGET CARE · Ubicación de ejemplo" else if (shared) "AXTARGET CARE · Zonas compartidas" else "AXTARGET CARE · Tus lugares de confianza",
             panel, back, "Buscar un lugar seguro", if (save != null || example) find else null, status = badge,
             menu = {
                 if (example) exampleMenu { reload(selected?.id) }
-                else AlertDialog.Builder(activity).setTitle("Mapas de Tzinda")
+                else AlertDialog.Builder(activity).setTitle("Mapas de AxTarget Care")
                     .setItems(arrayOf(if (shared) "Centrar ubicación compartida" else "Usar mi ubicación",
                         "Ver ejemplo de mapas", "Cartografía y rutas")) { _, selectedAction ->
                         when (selectedAction) {
@@ -540,7 +540,7 @@ internal class TzindaV11(
             }
         }
         mapPage(mapView, if (zone.id.isNotBlank()) "Editar zona segura" else "Configurar zona segura",
-            "TZINDA · Ajusta el radio en el mapa", panel, back,
+            "AXTARGET CARE · Ajusta el radio en el mapa", panel, back,
             "Buscar dirección o lugar", { search(zones, { place -> editZone(selected.copy(point = place.point, name = name.text.toString().ifBlank { place.name }), zones, onSave, back) },
                 { editZone(selected.copy(name = name.text.toString()), zones, onSave, back) }) },
             controlsBottom = 56, menu = {
@@ -615,7 +615,7 @@ internal class TzindaV11(
         val row = v5.horizontal()
         row.addView(v5.iconButton(R.drawable.v5_back, "Volver", glyphSize = 30, action = back),
             LinearLayout.LayoutParams(dp(44), dp(44)))
-        row.addView(v5.label("TZINDA / UBICACIÓN", theme.accent), rowParams().apply { marginStart = dp(17) })
+        row.addView(v5.label("AXTARGET CARE / UBICACIÓN", theme.accent), rowParams().apply { marginStart = dp(17) })
         if (example) row.addView(tag("Ejemplo").apply { minimumWidth = dp(80) })
         body.addView(row)
         v5.gap(body, 15)
@@ -827,7 +827,7 @@ internal class TzindaV11(
             v5.action(body, "Ver zonas compartidas", R.drawable.v5_shield, theme.cardColor, theme.accent, height = 48, margin = 0, action = zones)
         }
         val inZone = zone?.takeIf { it.enabled }?.let { positionInZone(fix, it) } == true
-        mapPage(view, "Ubicación de ${person.firstName}", "TZINDA · Supervisión autorizada", panel, back,
+        mapPage(view, "Ubicación de ${person.firstName}", "AXTARGET CARE · Supervisión autorizada", panel, back,
             status = if (inZone || example) tag("Dentro de ${zone?.name ?: "Casa"}", theme.mint, theme.positive) else null,
             menu = if (example) ({ exampleMenu(back) }) else (::showAttribution))
         watchPosition(fix) { person(read, retry, zones, back) }
@@ -868,7 +868,7 @@ internal class TzindaV11(
                 else -> "Aviso de salida de zona"
             },
                 if (arrived) theme.mint else theme.warningSurface, if (arrived) theme.positive else theme.warning)
-        mapPage(view, header, "TZINDA · ${person.name}", panel, back, status = status,
+        mapPage(view, header, "AXTARGET CARE · ${person.name}", panel, back, status = status,
             menu = if (example) ({ exampleMenu(back) }) else (::showAttribution))
         watchPosition(fix) { incident(read, alert, retry, back) }
     }
@@ -894,7 +894,7 @@ internal class TzindaV11(
             v5.action(body, "Reintentar", R.drawable.v5_sync, height = 48, margin = 10, action = retry)
             v5.action(body, "Contactar a ${person.firstName}", R.drawable.v5_phone, theme.cardColor, theme.accent, height = 48, margin = 0) { contact() }
         }
-        mapPage(map(ExampleMap.UNAVAILABLE), "Ubicación no disponible", "TZINDA · Supervisión", panel, back, controls = false,
+        mapPage(map(ExampleMap.UNAVAILABLE), "Ubicación no disponible", "AXTARGET CARE · Supervisión", panel, back, controls = false,
             menu = if (example) ({ exampleMenu(back) }) else (::showAttribution))
     }
 
@@ -1009,7 +1009,7 @@ internal class TzindaV11(
                 }
             }
         }
-        mapPage(view, "Llegar a ${person.firstName}", "TZINDA · Última ubicación compartida", panel, back,
+        mapPage(view, "Llegar a ${person.firstName}", "AXTARGET CARE · Última ubicación compartida", panel, back,
             controlsBottom = 66, menu = ::showAttribution)
         person.fix?.let { watchPosition(it, back) }
         if (routes == null) job = work.launch {

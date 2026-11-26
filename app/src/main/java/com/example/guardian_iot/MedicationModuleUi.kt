@@ -262,7 +262,7 @@ class MedicationModuleUi(
             }
         }
 
-        target.addView(label("TzindaApp registra la dosis que tú escribes. No recomienda ni cambia tratamientos.", muted, 13).apply { setPadding(dp(4), dp(16), dp(4), 0) })
+        target.addView(label("AxTarget Care registra la dosis que tú escribes. No recomienda ni cambia tratamientos.", muted, 13).apply { setPadding(dp(4), dp(16), dp(4), 0) })
         if (!initialSyncStarted && ownerId.isNotBlank() && !ownerId.startsWith("local:")) {
             initialSyncStarted = true
             syncNow(silent = true)
@@ -647,7 +647,7 @@ class MedicationModuleUi(
             }.trim()
             AlertDialog.Builder(activity)
                 .setTitle("Datos detectados")
-                .setMessage("$details\n\nLa lectura automática puede confundir nombres parecidos. Compara con la caja o la receta: todo se puede editar antes de guardar y TzindaApp no interpreta ni cambia la indicación médica.")
+                .setMessage("$details\n\nLa lectura automática puede confundir nombres parecidos. Compara con la caja o la receta: todo se puede editar antes de guardar y AxTarget Care no interpreta ni cambia la indicación médica.")
                 .setNegativeButton("No usar", null)
                 .setNeutralButton("Escanear otra vez") { _, _ -> scanAgain() }
                 .setPositiveButton("Usar estos datos") { _, _ -> applyGuess(guess) }
@@ -685,7 +685,7 @@ class MedicationModuleUi(
                 panel.addView(header)
                 panel.addView(
                     label(
-                        "Al elegir la nube, la foto pasa por Supabase y NVIDIA para leer nombre, dosis y presentación; TzindaApp no la guarda. Revisa siempre lo detectado.",
+                        "Al elegir la nube, la foto pasa por Supabase y NVIDIA para leer nombre, dosis y presentación; AxTarget Care no la guarda. Revisa siempre lo detectado.",
                         muted,
                         13,
                     ).apply { setPadding(0, dp(4), 0, 0) },
@@ -1053,7 +1053,7 @@ class MedicationModuleUi(
 
     private fun requestExactAlarmPermission() {
         AlertDialog.Builder(activity).setTitle("Horarios precisos")
-            .setMessage("Android puede exigir un permiso especial para avisar cerca de la hora indicada. Si no lo autorizas, TzindaApp usará recordatorios aproximados.")
+            .setMessage("Android puede exigir un permiso especial para avisar cerca de la hora indicada. Si no lo autorizas, AxTarget Care usará recordatorios aproximados.")
             .setNegativeButton("Seguir con avisos aproximados", null)
             .setPositiveButton("Abrir ajustes") { _, _ ->
                 if (Build.VERSION.SDK_INT >= 31) runCatching {

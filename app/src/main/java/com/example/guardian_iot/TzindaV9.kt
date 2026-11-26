@@ -80,7 +80,7 @@ internal class TzindaV9(private val activity: Activity, private val v5: TzindaV5
         v5.gap(body, 33)
         body.addView(v5.label("PRIMER INGRESO", theme.accent))
         v5.gap(body, 13)
-        body.addView(v5.title("¿Cómo usarás\nTzinda?", 34))
+        body.addView(v5.title("¿Cómo usarás\nAxTarget Care?", 34))
         v5.gap(body, 22)
         body.addView(v5.text("Elige un modo para personalizar tu guía.", 13, theme.muted))
         v5.gap(body, 37)
@@ -117,7 +117,7 @@ internal class TzindaV9(private val activity: Activity, private val v5: TzindaV5
         backBar(body, eyebrow, theme.accent, previous)
         v5.gap(body, 22)
         val progress = v5.horizontal().apply { minimumHeight = v5.dp(24) }
-        progress.addView(v5.text("Conoce Tzinda", 12, theme.muted, bold = true))
+        progress.addView(v5.text("Conoce AxTarget Care", 12, theme.muted, bold = true))
         v5.push(progress)
         progress.addView(v5.text("${step + 1} de ${lessons.size}", 12, theme.accent, bold = true))
         body.addView(progress)
@@ -236,8 +236,8 @@ internal class TzindaV9(private val activity: Activity, private val v5: TzindaV5
 
     private fun brandBar(parent: LinearLayout, skip: (() -> Unit)? = null) {
         val row = v5.horizontal().apply { minimumHeight = v5.dp(44) }
-        row.addView(v5.badge(R.drawable.v5_shield, theme.primaryFill, Color.WHITE, 37, 24, 13))
-        row.addView(v5.title("Tzinda", 20), LinearLayout.LayoutParams(-2, -2).apply { marginStart = v5.dp(11) })
+        row.addView(v5.art(R.drawable.axtarget_care_logo), LinearLayout.LayoutParams(v5.dp(44), v5.dp(44)))
+        row.addView(v5.title(activity.getString(R.string.app_name), 20), LinearLayout.LayoutParams(-2, -2).apply { marginStart = v5.dp(11) })
         skip?.let {
             v5.push(row)
             row.addView(v5.text("Omitir", 13, theme.muted).apply {

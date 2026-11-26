@@ -200,7 +200,7 @@ object TzindaStatusCopy {
 
     fun cameraLink(linked: Boolean, cameraName: String): TzindaCopy = if (linked) {
         TzindaCopy(
-            "Cámara vinculada · ${cameraName.ifBlank { "Cámara Tzinda" }}",
+            "Cámara vinculada · ${cameraName.ifBlank { "Cámara AxTarget Care" }}",
             "Las detecciones se guardan aquí y se sincronizan cuando hay Internet. La cámara solo funciona cuando la abres.",
             TzindaTone.POSITIVE,
         )

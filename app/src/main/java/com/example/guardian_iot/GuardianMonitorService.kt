@@ -563,7 +563,7 @@ class GuardianMonitorService : Service(), SensorEventListener {
         val location = store.locationText()
         val summary = DirectSmsDispatcher.dispatch(targets, { c ->
             val greeting = c.name.takeIf { it.isNotBlank() }?.let { "Hola $it" } ?: "Hola"
-            "$greeting, TzindaApp solicita ayuda: posible caída o alerta manual. Verifica cómo estoy. $vitalSummary $location"
+            "$greeting, AxTarget Care solicita ayuda: posible caída o alerta manual. Verifica cómo estoy. $vitalSummary $location"
         }, SmsTransport { contact, body ->
             try {
                 smsTransportOverride?.let { transport ->
@@ -781,7 +781,7 @@ class GuardianMonitorService : Service(), SensorEventListener {
                     if (!backend.isConfigured || backend.currentSession() == null) return@execute
                     val deviceId = store.localDeviceId()
                     if (!remoteDeviceRegistered) {
-                        backend.upsertDevice(deviceId, deviceId, "Teléfono TzindaApp", "phone", "not_applicable")
+                        backend.upsertDevice(deviceId, deviceId, "Teléfono AxTarget Care", "phone", "not_applicable")
                         remoteDeviceRegistered = true
                     }
                     val success = LocationSharing(store).flush(
@@ -822,14 +822,14 @@ class GuardianMonitorService : Service(), SensorEventListener {
     private fun openApp() = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java)
         .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP), PI_FLAGS)
     private fun monitorNotification() = NotificationCompat.Builder(this, MONITOR_CHANNEL).setSmallIcon(R.drawable.ic_launcher)
-        .setContentTitle("TzindaApp · ${when { monitoring -> "monitoreo activo"; gate.state != IncidentGate.State.IDLE -> "alerta en proceso"; else -> "servicio activo" }}")
+        .setContentTitle("AxTarget Care · ${when { monitoring -> "monitoreo activo"; gate.state != IncidentGate.State.IDLE -> "alerta en proceso"; else -> "servicio activo" }}")
         .setContentText(store.prefs.getString("status", "Preparando monitoreo"))
         .setContentIntent(openApp()).setOnlyAlertOnce(true).setOngoing(true).build()
     private fun updateNotification() { (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(MONITOR_ID, monitorNotification()) }
     private fun statusNotification(text: String) {
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(SMS_ID,
             NotificationCompat.Builder(this, STATUS_CHANNEL).setSmallIcon(R.drawable.ic_launcher)
-                .setContentTitle("TzindaApp · estado de SMS").setContentText(text).setContentIntent(openApp()).setAutoCancel(true).build())
+                .setContentTitle("AxTarget Care · estado de SMS").setContentText(text).setContentIntent(openApp()).setAutoCancel(true).build())
     }
     private fun channels() {
         if (Build.VERSION.SDK_INT < 26) return
@@ -953,7 +953,7 @@ class SmsStatusReceiver : BroadcastReceiver() {
         if (sent) GuardianMonitorService.instance?.smsResult(incident, key, success)
         (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(2003,
             NotificationCompat.Builder(context, GuardianMonitorService.STATUS_CHANNEL).setSmallIcon(R.drawable.ic_launcher)
-                .setContentTitle("TzindaApp · resultado de SMS").setContentText("$detail · $name").setOnlyAlertOnce(true).setAutoCancel(true).build())
+                .setContentTitle("AxTarget Care · resultado de SMS").setContentText("$detail · $name").setOnlyAlertOnce(true).setAutoCancel(true).build())
     }
 }
 
@@ -972,14 +972,14 @@ class GuardianBootReceiver : BroadcastReceiver() {
             context.checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED ||
             (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) || store.recipients().isEmpty()) {
             store.prefs.edit().putBoolean("monitor_enabled", false).apply()
-            store.event("Abre TzindaApp y configura los permisos para reactivar el monitoreo.")
+            store.event("Abre AxTarget Care y configura los permisos para reactivar el monitoreo.")
             return
         }
         try {
             val start = Intent(context, GuardianMonitorService::class.java).setAction(GuardianMonitorService.ACTION_START)
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(start) else context.startService(start)
         } catch (_: Exception) {
-            store.event("Android no permitió reiniciar el monitoreo. Abre TzindaApp para activarlo.")
+            store.event("Android no permitió reiniciar el monitoreo. Abre AxTarget Care para activarlo.")
         }
     }
 }

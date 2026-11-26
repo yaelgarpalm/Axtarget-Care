@@ -625,7 +625,7 @@ class MainActivity : ComponentActivity() {
                 gravity = Gravity.CENTER; background = rounded(mint, 20); setPadding(dp(12), dp(8), dp(12), dp(8))
             })
             addView(text(title, 21, true).apply { gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(4)) })
-            addView(text("La otra persona puede escanear este QR desde TzindaApp, aunque esté en otra red Wi-Fi o use datos móviles.", 14, color = muted).apply { gravity = Gravity.CENTER })
+            addView(text("La otra persona puede escanear este QR desde AxTarget Care, aunque esté en otra red Wi-Fi o use datos móviles.", 14, color = muted).apply { gravity = Gravity.CENTER })
             if (image != null) addView(ImageView(this@MainActivity).apply {
                 setImageBitmap(image); contentDescription = "Código QR para $title"
                 background = rounded(Color.WHITE, 24).apply { setStroke(dp(2), accent) }
@@ -1335,7 +1335,7 @@ class MainActivity : ComponentActivity() {
     private fun renderStartupPermissions(setup: StartupPermissionSetup) {
         startupPermissionsVisible = true
         val body = entrySurface()
-        v5.header(body, "Permisos de Tzinda", "Configura el acceso para las funciones de este modo.", gapBelow = 20)
+        v5.header(body, "Permisos de AxTarget Care", "Configura el acceso para las funciones de este modo.", gapBelow = 20)
         if (setup.attempted.isEmpty()) {
             val panel = v5.panel(body, padding = 17, margin = 16)
             setup.remaining.forEach { group ->
@@ -1467,8 +1467,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showPrivacyNotice() {
-        AlertDialog.Builder(this).setTitle("Privacidad y uso de TzindaApp")
-            .setMessage("Al iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador vinculado puede registrar tomas compartidas; no puede editar el medicamento ni sus horarios. Puedes retirar el permiso de compartir editando el registro. TzindaApp no recomienda ni modifica dosis. Al escanear una caja o receta puedes elegir procesar la foto en el teléfono sin enviarla. Si eliges la lectura en la nube con sesión iniciada, la foto pasa por Supabase y NVIDIA para extraer texto; TzindaApp no la almacena y vuelve a la lectura local si falla la nube.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. TzindaApp es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
+        AlertDialog.Builder(this).setTitle("Privacidad y uso de AxTarget Care")
+            .setMessage("Al iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador vinculado puede registrar tomas compartidas; no puede editar el medicamento ni sus horarios. Puedes retirar el permiso de compartir editando el registro. AxTarget Care no recomienda ni modifica dosis. Al escanear una caja o receta puedes elegir procesar la foto en el teléfono sin enviarla. Si eliges la lectura en la nube con sesión iniciada, la foto pasa por Supabase y NVIDIA para extraer texto; AxTarget Care no la almacena y vuelve a la lectura local si falla la nube.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. AxTarget Care es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
             .setPositiveButton("Entendido", null).show()
     }
 
@@ -1642,7 +1642,7 @@ class MainActivity : ComponentActivity() {
         }
         val connect = card(body)
         connect.addView(text("Conexión con la persona protegida", 20, true))
-        connect.addView(text("No necesitan estar en la misma red. Funciona con Wi-Fi o datos móviles si ambos teléfonos llegan a TzindaApp.", 14, color = muted))
+        connect.addView(text("No necesitan estar en la misma red. Funciona con Wi-Fi o datos móviles si ambos teléfonos llegan a AxTarget Care.", 14, color = muted))
         connect.addView(button("Escanear QR") { scanPairingQr("camera") })
         val code = field(connect, "Código de vinculación", "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS, "camera_pairing_code")
         code.filters = arrayOf(android.text.InputFilter.LengthFilter(9))
@@ -1693,7 +1693,7 @@ class MainActivity : ComponentActivity() {
 
     private fun showCreateCameraInviteDialog() {
         val content = column().apply { setPadding(dp(2), dp(4), dp(2), dp(4)) }
-        content.addView(text("Ponle un nombre fácil de reconocer. Después comparte el QR; la cámara puede estar en cualquier red con conexión a TzindaApp.", 14, color = muted))
+        content.addView(text("Ponle un nombre fácil de reconocer. Después comparte el QR; la cámara puede estar en cualquier red con conexión a AxTarget Care.", 14, color = muted))
         val name = field(content, "Nombre de la cámara", "Cámara", tag = "camera_name", hintText = "Ej. Cámara de sala")
             .apply { setSingleLine(true) }
         AlertDialog.Builder(this).setTitle("Vincular cámara independiente")
@@ -1819,7 +1819,7 @@ class MainActivity : ComponentActivity() {
 
     private fun healthScreen(body: LinearLayout) {
         if (isCaregiver) { caregiverHealth(body); return }
-        v5.header(body, "Salud", "Tu bienestar y tus cuidados, en un lugar.", "TZINDA / SALUD",
+        v5.header(body, "Salud", "Tu bienestar y tus cuidados, en un lugar.", "AXTARGET CARE / SALUD",
             gapBelow = 39, eyebrowGap = 27, settings = ::openSettings)
         val hero = v5.panel(body, tz.primaryFill, radius = 28, padding = 19, margin = 18).apply {
             minimumHeight = dp(163)
@@ -2035,7 +2035,7 @@ class MainActivity : ComponentActivity() {
     private fun caregiverHeader(body: LinearLayout, title: String, detail: String) {
         val heading = FrameLayout(this)
         val labels = column()
-        labels.addView(v5.label("TZINDA / CUIDADOR").apply { setPadding(dp(2), dp(7), 0, 0) })
+        labels.addView(v5.label("AXTARGET CARE / CUIDADOR").apply { setPadding(dp(2), dp(7), 0, 0) })
         gap(labels, 25)
         labels.addView(v5.title(title, 33))
         gap(labels, 7)
@@ -2753,7 +2753,7 @@ class MainActivity : ComponentActivity() {
     private fun createRoutine() {
         val formOwner = careFeatures.currentOwner() ?: return
         val panel = column().apply { setPadding(dp(2), dp(4), dp(2), dp(4)) }
-        panel.addView(text("Una rutina es un recordatorio descriptivo. TzindaApp no marca actividades como realizadas automáticamente.", 14, color = muted))
+        panel.addView(text("Una rutina es un recordatorio descriptivo. AxTarget Care no marca actividades como realizadas automáticamente.", 14, color = muted))
         val name = field(panel, "Nombre de la rutina", "", tag = "routine_name", hintText = "Ej. Caminata matutina")
         val description = field(panel, "Descripción (opcional)", "", hintText = "Ej. Caminar 20 minutos en el parque")
         val time = field(
@@ -3329,7 +3329,7 @@ class MainActivity : ComponentActivity() {
         }
         v5.section(body, "¿Dónde encuentro el código?", titleSize = 19)
         val instructions = v5.panel(body, padding = 17, margin = 30).apply { minimumHeight = dp(124) }
-        listOf("Abre Tzinda en el otro teléfono.", "En Dispositivos, genera un código.").forEachIndexed { index, description ->
+        listOf("Abre AxTarget Care en el otro teléfono.", "En Dispositivos, genera un código.").forEachIndexed { index, description ->
             val step = v5.horizontal().apply { minimumHeight = dp(42) }
             step.addView(v5.text((index + 1).toString(), 12, accent, bold = true).apply {
                 background = rounded(tz.brandSoft, 99)
@@ -3612,7 +3612,7 @@ class MainActivity : ComponentActivity() {
 
     private fun circleScreen(body: LinearLayout) {
         if (!isCaregiver) refreshWearerLinkedData()
-        v5.header(body, "Tu círculo", "Cuidar se siente más cerca.", "TZINDA / CUIDADOS",
+        v5.header(body, "Tu círculo", "Cuidar se siente más cerca.", "AXTARGET CARE / CUIDADOS",
             gapBelow = 37, eyebrowGap = 29, settings = ::openSettings)
         val panel = v5.panel(body, v5.darkHero, radius = 28, padding = 16, margin = 27).apply {
             setPadding(paddingLeft, paddingTop, paddingRight, tz.space(5))
@@ -3693,7 +3693,7 @@ class MainActivity : ComponentActivity() {
             v5.row(steps, "Revisa la configuración", "Comprueba la dirección de tu dispositivo.", R.drawable.v5_settings, minHeight = 80,
                 round = true, action = ::openDeviceLinkScreen)
         }
-        v5.row(steps, "Conecta desde Tzinda", "Busca la pulsera y consulta su estado.", R.drawable.v5_link, minHeight = 80, round = true)
+        v5.row(steps, "Conecta desde AxTarget Care", "Busca la pulsera y consulta su estado.", R.drawable.v5_link, minHeight = 80, round = true)
         v5.action(body, "Buscar pulsera", R.drawable.v5_bluetooth) {
             selectTab(TzindaTabs.BRACELET_DIAGNOSTIC)
             requestBraceletService(GuardianMonitorService.ACTION_BRACELET_CONNECT)
@@ -3881,7 +3881,7 @@ class MainActivity : ComponentActivity() {
         val note = card(body)
         note.addView(text("Cómo funciona la vinculación", 18, true))
         note.addView(text("El cuidador/a puede estar en otra red con Internet. El código es de un solo uso y vence pronto. La persona protegida decide qué comparte y puede desvincularse.", 14, color = muted))
-        body.addView(text("La pulsera y las cámaras pueden estar sin conexión. TzindaApp mostrará “sin datos recientes” en lugar de asumir que están activas.", 13, color = muted).apply {
+        body.addView(text("La pulsera y las cámaras pueden estar sin conexión. AxTarget Care mostrará “sin datos recientes” en lugar de asumir que están activas.", 13, color = muted).apply {
             setPadding(dp(4), dp(12), dp(4), dp(4))
         })
     }
@@ -4284,7 +4284,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun eventTitle(event: JSONObject): String {
-        val message = event.optString("message", "Evento de Tzinda")
+        val message = event.optString("message", "Evento de AxTarget Care")
         return when {
             disconnectedEvent(event) -> "Pulsera desconectada"
             message.startsWith("Posible caída") || message.startsWith("Detección con cámara IA señaló") -> "Posible caída"
@@ -4627,7 +4627,7 @@ class MainActivity : ComponentActivity() {
         val protocol = card(body)
         protocol.addView(statusPill(TzindaCopy("Protocolo de 20 segundos", "Puedes cancelar con “Estoy bien” antes de que se avise a tu red.", TzindaTone.INFO)))
         protocol.addView(text("Si se confirma una posible caída, tienes 20 segundos para cancelar. Después se solicitan los SMS y comienzan las llamadas a tu red de apoyo.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
-        protocol.addView(text("Los avisos dependen de la SIM, permisos, cobertura y disponibilidad del teléfono. TzindaApp no puede confirmar que otra persona los haya leído.", 13, color = muted))
+        protocol.addView(text("Los avisos dependen de la SIM, permisos, cobertura y disponibilidad del teléfono. AxTarget Care no puede confirmar que otra persona los haya leído.", 13, color = muted))
 
         if (recipients.isEmpty()) {
             tz.emptyState(
@@ -4680,7 +4680,7 @@ class MainActivity : ComponentActivity() {
         test.addView(text("La prueba inicia una cuenta regresiva real. Si no la cancelas, puede solicitar SMS y realizar llamadas a tus contactos.", 14, color = muted))
         test.addView(button("Iniciar prueba de cuenta regresiva", false) {
             AlertDialog.Builder(this).setTitle("Iniciar prueba")
-                .setMessage("La prueba usa tu SIM real: si no pulsas Estoy bien antes de que termine, TzindaApp solicitará SMS y llamadas a tus contactos.")
+                .setMessage("La prueba usa tu SIM real: si no pulsas Estoy bien antes de que termine, AxTarget Care solicitará SMS y llamadas a tus contactos.")
                 .setNegativeButton("Cancelar", null)
                 .setPositiveButton("Continuar") { _, _ -> prepareAlert(GuardianMonitorService.ACTION_TEST) }.show()
         })
@@ -4869,7 +4869,7 @@ class MainActivity : ComponentActivity() {
                 .setNegativeButton("Volver", null)
                 .setPositiveButton("Compartir") { _, _ ->
                     val share = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, preview)
-                    startActivity(Intent.createChooser(share, "Compartir reporte de Tzinda"))
+                    startActivity(Intent.createChooser(share, "Compartir reporte de AxTarget Care"))
                 }.show()
         }
     }
@@ -4879,7 +4879,7 @@ class MainActivity : ComponentActivity() {
         val start = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -days) }.timeInMillis
         val format = SimpleDateFormat("d MMM yyyy · HH:mm", Locale("es", "MX"))
         return buildString {
-            appendLine("Tzinda · Reporte")
+            appendLine("AxTarget Care · Reporte")
             appendLine(format.format(Date(start)) + " — " + format.format(Date(end)))
             if (readings) {
                 appendLine("\nLecturas disponibles")
@@ -5111,7 +5111,7 @@ class MainActivity : ComponentActivity() {
 
             val sms = card(body)
             tz.cardHeader(sms, R.drawable.ic_phone, "SMS y llamadas", null, TzindaDesign.Tone.DANGER)
-            sms.addView(text("Los SMS se envían por la SIM configurada. Las llamadas se realizan en orden de prioridad. TzindaApp no puede confirmar que el mensaje se haya leído.", 14, color = muted))
+            sms.addView(text("Los SMS se envían por la SIM configurada. Las llamadas se realizan en orden de prioridad. AxTarget Care no puede confirmar que el mensaje se haya leído.", 14, color = muted))
             sms.addView(button("Configurar SIM para SMS", false) { configureSim() })
             sms.addView(button("Permisos de Android", false) { openAppSettings() })
             if (Build.VERSION.SDK_INT >= 34) sms.addView(button("Permitir alertas a pantalla completa", false) {
@@ -5125,8 +5125,8 @@ class MainActivity : ComponentActivity() {
         tz.cardHeader(dataPrivacy, R.drawable.ic_lock, "Qué se guarda y qué se comparte", null, TzindaDesign.Tone.NEUTRAL)
         dataPrivacy.addView(text("Contactos, eventos, lecturas válidas y ubicación autorizada se sincronizan si inicias sesión. El domicilio, la fecha de nacimiento y el video no se sincronizan. Los medicamentos son privados hasta que los compartes. Los datos de salud son informativos y no constituyen diagnóstico.", 14, color = muted))
         dataPrivacy.addView(button("Leer aviso de privacidad y uso", false) {
-            AlertDialog.Builder(this).setTitle("Privacidad y uso de TzindaApp")
-                .setMessage("Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nLos medicamentos se guardan en este teléfono y se sincronizan si inicias sesión. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo y registrar sus tomas, sin editar medicamentos ni horarios. TzindaApp no recomienda ni modifica dosis. Si escaneas la caja o la receta, la foto se lee en este teléfono y no se guarda ni se envía.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. TzindaApp es experimental y no sustituye servicios de emergencia ni atención médica.\n\nPuedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
+            AlertDialog.Builder(this).setTitle("Privacidad y uso de AxTarget Care")
+                .setMessage("Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nLos medicamentos se guardan en este teléfono y se sincronizan si inicias sesión. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo y registrar sus tomas, sin editar medicamentos ni horarios. AxTarget Care no recomienda ni modifica dosis. Si escaneas la caja o la receta, la foto se lee en este teléfono y no se guarda ni se envía.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. AxTarget Care es experimental y no sustituye servicios de emergencia ni atención médica.\n\nPuedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
                 .setPositiveButton("Entendido", null).show()
         })
 
@@ -5134,7 +5134,7 @@ class MainActivity : ComponentActivity() {
         tz.cardHeader(profile, R.drawable.ic_profile, "Mis datos", null, TzindaDesign.Tone.BRAND)
         profile.addView(text("Consulta o actualiza tu información personal y tu contacto de emergencia.", 14, color = muted))
         profile.addView(button("Abrir mi perfil", false) { openProfile() })
-        body.addView(text("TzindaApp 2.1.7 · Android nativo", 13, color = muted).apply { setPadding(dp(4), dp(18), dp(4), dp(4)) })
+        body.addView(text("AxTarget Care ${BuildConfig.VERSION_NAME} · Android", 13, color = muted).apply { setPadding(dp(4), dp(18), dp(4), dp(4)) })
     }
     /**
      * The camera opens as a full-screen viewfinder: the live image fills the window and the
@@ -5295,7 +5295,7 @@ class MainActivity : ComponentActivity() {
                 cameraRequested = false
                 cameraActionButton?.text = "Iniciar cámara"
                 cameraStatusTitle?.text = "No se pudo solicitar el permiso"
-                cameraStatusDetail?.text = "Abre Ajustes de Android > Aplicaciones > TzindaApp > Permisos > Cámara."
+                cameraStatusDetail?.text = "Abre Ajustes de Android > Aplicaciones > AxTarget Care > Permisos > Cámara."
             }
             return
         }
@@ -5930,14 +5930,14 @@ class MainActivity : ComponentActivity() {
         val message = when (smsPermissionState()) {
             SmsPermissionPolicy.State.UNSUPPORTED -> "El dispositivo no admite SMS por SIM. Puedes revisar la interfaz, pero las alertas por SMS necesitan un teléfono compatible con servicio móvil."
             SmsPermissionPolicy.State.POLICY_BLOCKED -> "La administración del dispositivo bloquea SMS. La app no puede cambiar esa política; debes consultarlo con quien administra el teléfono."
-            SmsPermissionPolicy.State.SETTINGS_REQUIRED -> "Android no permite mostrar otra solicitud. En los ajustes de TzindaApp abre Permisos > SMS y selecciona Permitir. Si SMS no aparece o está bloqueado, el instalador del dispositivo puede estar restringiéndolo. Para tus dispositivos de prueba puedes usar la instalación por USB incluida con esta versión."
+            SmsPermissionPolicy.State.SETTINGS_REQUIRED -> "Android no permite mostrar otra solicitud. En los ajustes de AxTarget Care abre Permisos > SMS y selecciona Permitir. Si SMS no aparece o está bloqueado, el instalador del dispositivo puede estar restringiéndolo. Para tus dispositivos de prueba puedes usar la instalación por USB incluida con esta versión."
             else -> "Para activar el envío automático necesitas autorizar SMS. Pulsa Permitir SMS en Inicio y elige Permitir en la solicitud de Android."
         }
         smsHelpDialog = AlertDialog.Builder(this).setTitle("Habilitar SMS").setMessage(message)
             .setNegativeButton("Cerrar", null).setPositiveButton("Abrir ajustes") { _, _ -> openAppSettings() }
             .setNeutralButton("Pruebas por USB") { _, _ ->
                 AlertDialog.Builder(this).setTitle("Instalación en dispositivos de prueba")
-                    .setMessage("En tu computadora, extrae el paquete Pruebas USB de TzindaApp. Conecta el teléfono, habilita Depuración USB y autoriza la conexión. Ejecuta Instalar-TzindaApp-Pruebas.ps1: instala el APK y autoriza únicamente SMS mediante las herramientas de Android. No se envían mensajes durante la instalación. Esto no elimina políticas de administración ni agrega telefonía a un dispositivo que no la tiene.")
+                    .setMessage("En tu computadora, extrae el paquete Pruebas USB de AxTarget Care. Conecta el teléfono, habilita Depuración USB y autoriza la conexión. Ejecuta Instalar-TzindaApp-Pruebas.ps1: instala el APK y autoriza únicamente SMS mediante las herramientas de Android. No se envían mensajes durante la instalación. Esto no elimina políticas de administración ni agrega telefonía a un dispositivo que no la tiene.")
                     .setPositiveButton("Entendido", null).show()
             }.show()
     }
@@ -5948,7 +5948,7 @@ class MainActivity : ComponentActivity() {
     }
     private fun openAppSettings() {
         try { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) }
-        catch (_: RuntimeException) { toast("Abre Ajustes de Android > Aplicaciones > TzindaApp > Permisos.", true) }
+        catch (_: RuntimeException) { toast("Abre Ajustes de Android > Aplicaciones > AxTarget Care > Permisos.", true) }
     }
     private fun has(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     private fun hasLocation() = has(Manifest.permission.ACCESS_FINE_LOCATION) || has(Manifest.permission.ACCESS_COARSE_LOCATION)
