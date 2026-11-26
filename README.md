@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="app/src/main/res/drawable-nodpi/axtarget_care_logo.png" alt="Logotipo de AxTarget Care" width="128">
+  <img src="docs/assets/axtarget-care.svg" alt="Logotipo de AxTarget Care" width="128">
 </p>
 
 <h1 align="center">AxTarget Care</h1>
