@@ -6,6 +6,59 @@ import org.junit.Test
 
 class MedicationLabelParserTest {
     @Test
+    fun readsAllPrescriptionEntriesWithoutMovingDosesOrNotesBetweenThem() {
+        val result = MedicationLabelParser.readDocument(
+            listOf(
+                "RECETA MÉDICA",
+                "Paciente: Persona de prueba",
+                "1. Metformina 850 mg",
+                "Tomar 1 tableta por vía oral cada 12 horas durante 10 días",
+                "Primera toma a las 8:30 p.m.",
+                "2. Losartán 50 mg",
+                "Tomar 1 tableta diariamente",
+                "3. Vitamed 10 mg",
+                "Administrar 2 gotas cada 8 horas",
+                "Notas: Llevar un registro para la próxima consulta.",
+                "Observaciones: Revisar las instrucciones impresas.",
+                "Firma del médico",
+            ).map { OcrLine(it) },
+            MedicationDocument.PRESCRIPTION,
+        )
+        assertEquals(listOf("Metformina", "Losartán", "Vitamed"), result.entries.map { it.name })
+        assertEquals(listOf("1 tableta", "1 tableta", "2 gotas"), result.entries.map { it.dose })
+        assertEquals(listOf("850 mg", "50 mg", "10 mg"), result.entries.map { it.presentation })
+        assertEquals(listOf("Cada 12 horas", "Diaria", "Cada 8 horas"), result.entries.map { it.frequency })
+        assertEquals(listOf("20:30", "", ""), result.entries.map { it.anchorTime })
+        assertTrue(result.entries.first().instructions.contains("durante 10 días"))
+        assertTrue(result.entries.none { it.instructions.contains("próxima consulta") })
+        assertTrue(result.notes.contains("próxima consulta"))
+        assertTrue(result.notes.contains("instrucciones impresas"))
+        assertTrue(!result.notes.contains("Firma"))
+    }
+
+    @Test
+    fun labelReportsTheMedicationAndNeverCreatesDirectionsFromTheBox() {
+        val result = MedicationLabelParser.readDocument(
+            listOf(OcrLine("LOSARTÁN 50 mg", 44), OcrLine("Caja con 30 tabletas"), OcrLine("Podría tomarse cada 8 horas")),
+            MedicationDocument.LABEL,
+        )
+        assertEquals(listOf(MedicationLabelGuess(name = "Losartán", dose = "50 mg", presentation = "Caja con 30 tabletas")), result.entries)
+        assertEquals("", result.notes)
+        assertEquals("", result.recognizedText)
+    }
+
+    @Test
+    fun prescriptionWithOnlyUnmatchedTextCanStillBeReviewed() {
+        val result = MedicationLabelParser.readDocument(
+            listOf(OcrLine("Receta médica"), OcrLine("Texto parcialmente legible"), OcrLine("Notas: volver a revisión")),
+            MedicationDocument.PRESCRIPTION,
+        )
+        assertTrue(result.entries.isEmpty())
+        assertTrue(result.recognizedText.contains("Texto parcialmente legible"))
+        assertEquals("Notas: volver a revisión", result.notes)
+    }
+
+    @Test
     fun readsTheLargestTextAsNameAndTheBoxSizeAsPresentation() {
         val guess = MedicationLabelParser.parse(
             listOf(

@@ -85,6 +85,15 @@ class SupabaseBackend(
         return parseAndSaveSession(response) ?: throw BackendFailure(BackendFailure.Category.UNKNOWN)
     }
 
+    internal fun signInWithGoogle(idToken: String, nonce: String): AuthSession {
+        val response = request(
+            "POST", "/auth/v1/token?grant_type=id_token",
+            JSONObject().put("provider", "google").put("id_token", idToken).put("nonce", nonce),
+            needsSession = false, followRedirects = false,
+        )
+        return parseAndSaveSession(response) ?: throw BackendFailure(BackendFailure.Category.UNKNOWN)
+    }
+
     fun requestPasswordRecovery(email: String) {
         val state = sessions.recovery.begin(email)
         try {
@@ -146,11 +155,14 @@ class SupabaseBackend(
         finally { sessions.clearIfUser(owner) }
     }
 
-    fun readMedicationLabel(imageBase64: String): JSONObject {
+    internal fun readMedicationLabel(imageBase64: String, document: MedicationDocument): JSONObject {
         if (imageBase64.isBlank() || imageBase64.length > 4 * 1024 * 1024)
             throw BackendFailure(BackendFailure.Category.VALIDATION)
-        return request("POST", "/functions/v1/medication-label", JSONObject().put("image_base64", imageBase64),
-            needsSession = true, readTimeoutMs = 135_000, responseByteLimit = 16 * 1024, followRedirects = false)
+        return request(
+            "POST", "/functions/v1/medication-label",
+            JSONObject().put("image_base64", imageBase64).put("document", document.name.lowercase(Locale.ROOT)),
+            needsSession = true, readTimeoutMs = 135_000, responseByteLimit = 64 * 1024, followRedirects = false,
+        )
     }
 
     fun deleteAccount() {

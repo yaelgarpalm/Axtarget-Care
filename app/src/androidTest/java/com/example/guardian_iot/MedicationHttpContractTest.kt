@@ -95,13 +95,30 @@ class MedicationHttpContractTest {
 
     private data class CapturedRequest(val line: String, val body: String, val headers: Map<String, String>)
 
-    @Test fun cloudScanUsesAuthenticatedFunctionAndOnlyTheImageField() {
-        withServer(200, """{"result":{"name":"Tempra"}}""") { backend, request ->
-            assertEquals("Tempra", backend.readMedicationLabel("test-base64").getJSONObject("result").getString("name"))
+    @Test fun cloudScanUsesAuthenticatedFunctionAndSendsTheImageAndDocumentKind() {
+        withServer(200, """{"scan":{"medications":[{"name":"Tempra"},{"name":"Losartán"}]}}""") { backend, request ->
+            val result = backend.readMedicationLabel("test-base64", MedicationDocument.PRESCRIPTION).getJSONObject("scan")
+            assertEquals(2, result.getJSONArray("medications").length())
             val sent = request.get(5, TimeUnit.SECONDS)
             assertTrue(sent.line.startsWith("POST /functions/v1/medication-label "))
             assertEquals("Bearer fake-access", sent.headers["authorization"])
-            assertEquals(setOf("image_base64"), JSONObject(sent.body).keys().asSequence().toSet())
+            val body = JSONObject(sent.body)
+            assertEquals(setOf("image_base64", "document"), body.keys().asSequence().toSet())
+            assertEquals("prescription", body.getString("document"))
+        }
+    }
+
+    @Test fun googleSignInSendsTheIdTokenAndNonceAndUsesTheNormalSessionStore() {
+        withServer(200, """{"access_token":"google-session","refresh_token":"google-refresh","expires_in":3600,"user":{"id":"$actor","email":"person@example.test"}}""") { backend, request ->
+            val session = backend.signInWithGoogle("test-id-token", "test-original-nonce")
+            assertEquals("google-session", session.accessToken)
+            assertEquals(session, sessions.read())
+            val sent = request.get(5, TimeUnit.SECONDS)
+            assertTrue(sent.line.startsWith("POST /auth/v1/token?grant_type=id_token "))
+            val body = JSONObject(sent.body)
+            assertEquals("google", body.getString("provider"))
+            assertEquals("test-id-token", body.getString("id_token"))
+            assertEquals("test-original-nonce", body.getString("nonce"))
         }
     }
 
@@ -118,8 +135,8 @@ class MedicationHttpContractTest {
     }
 
     @Test fun cloudScanBoundsTheResponseBeforeParsing() {
-        withServer(200, "x".repeat(16 * 1024 + 1)) { backend, _ ->
-            assertThrows(BackendFailure::class.java) { backend.readMedicationLabel("test-base64") }
+        withServer(200, "x".repeat(64 * 1024 + 1)) { backend, _ ->
+            assertThrows(BackendFailure::class.java) { backend.readMedicationLabel("test-base64", MedicationDocument.LABEL) }
         }
     }
 
@@ -127,7 +144,7 @@ class MedicationHttpContractTest {
         sessions.clear()
         val backend = SupabaseBackend(sessions, "http://127.0.0.1:1", "sb_publishable_audit_fake", "")
         assertEquals(BackendFailure.Category.SESSION,
-            assertThrows(BackendFailure::class.java) { backend.readMedicationLabel("test-base64") }.category)
+            assertThrows(BackendFailure::class.java) { backend.readMedicationLabel("test-base64", MedicationDocument.LABEL) }.category)
     }
 
     @Test fun zeroDeletedCareRowsDoesNotAcknowledgeAnUnconfirmedDeletion() {

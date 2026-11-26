@@ -9,13 +9,15 @@ const image = readFileSync(new URL("./tiny-test.jpg", import.meta.url)).toString
 const provider = { choices: [{ message: { content: '```json\n{"name":"Tempra","dose":"50 mg"}\n```' } }] };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
-function fixture(options: { auth?: () => Response; quota?: () => Response; provider?: (init: RequestInit) => Promise<Response> | Response; env?: typeof env; timeout?: number } = {}) {
+function fixture(options: { auth?: () => Response; quota?: () => Response; ocr?: (init: RequestInit) => Response; provider?: (init: RequestInit) => Promise<Response> | Response; env?: typeof env; timeout?: number } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const handler = createMedicationLabelHandler({ env: options.env ?? env, providerTimeoutMs: options.timeout,
     fetch: (async (url, init = {}) => {
       calls.push({ url: String(url), init });
       if (String(url).endsWith("/auth/v1/user")) return options.auth?.() ?? json({ id: userId });
       if (String(url).endsWith("/rpc/reserve_medication_scan")) return options.quota?.() ?? json(true);
+      if (String(url) === "https://ai.api.nvidia.com/v1/retrieval/nvidia/nemotron-3.5-parse/parse")
+        return options.ocr?.(init) ?? json({}, 503);
       assert.equal(String(url), "https://integrate.api.nvidia.com/v1/chat/completions");
       return options.provider ? options.provider(init) : json(provider);
     }) as typeof fetch,
@@ -141,4 +143,79 @@ test("provider extra fields never reach the medication form", async () => {
   const { handler } = fixture({ provider: () => json({ choices: [{ message: { content: '{"name":"Tempra","secret":"discard","url":"https://attacker.invalid"}' } }] }) });
   const response = await handler(request()); const body = await response.json();
   assert.equal(response.status, 200); assert.deepEqual(Object.keys(body.result).sort(), ["anchor_time", "dose", "frequency", "name", "presentation"]);
+});
+
+const scanOutput = (medications: unknown[], notes = "", finish_reason = "stop") =>
+  json({ choices: [{ finish_reason, message: { content: JSON.stringify({ medications, notes }) } }] });
+
+test("prescriptions use document OCR and return each medicine plus separate notes", async () => {
+  const { handler, calls } = fixture({
+    ocr: init => {
+      assert.equal((init.headers as Record<string, string>).Authorization, "Bearer provider-test");
+      const form = init.body as FormData;
+      const imagePart = form.get("document") as File;
+      assert.equal(imagePart.type, "image/jpeg");
+      assert.equal(imagePart.name, "prescription.jpg");
+      return json({ content: "<x_0.10><y_0.20>Dos líneas de la receta<class_Text>\n<x_0.10>Notas de seguimiento" });
+    },
+    provider: init => {
+      const body = JSON.parse(init.body as string);
+      assert.equal(body.model, env.model);
+      assert.ok(body.max_tokens > 1200);
+      assert.match(body.messages[0].content[0].text, /Dos líneas de la receta/);
+      assert.doesNotMatch(body.messages[0].content[0].text, /class_Text/);
+      return scanOutput([
+        { name: "Medicamento A", dose: "1 tableta", presentation: "500 mg", instructions: "Instrucción A" },
+        { name: "Medicamento B", dose: "2 gotas", instructions: "Instrucción B", privateField: "discard" },
+      ], "Nota general");
+    },
+  });
+  const response = await handler(request({ image_base64: image, document: "prescription" }));
+  assert.equal(response.status, 200);
+  const { scan } = await response.json();
+  assert.deepEqual(scan.medications.map((entry: Record<string, string>) =>
+    [entry.name, entry.dose, entry.instructions]), [
+    ["Medicamento A", "1 tableta", "Instrucción A"],
+    ["Medicamento B", "2 gotas", "Instrucción B"],
+  ]);
+  assert.equal(scan.notes, "Nota general");
+  assert.equal("privateField" in scan.medications[1], false);
+  assert.equal(calls.length, 4);
+  assert.ok(calls.every(call => call.init.redirect === "error"));
+});
+
+test("box and bottle scans skip document OCR and strip directions and general notes", async () => {
+  const { handler, calls } = fixture({
+    provider: () => scanOutput([{ name: "Medicamento A", dose: "500 mg + 125 mg", frequency: "Diaria", anchor_time: "08:00", instructions: "Publicidad" }], "Datos fuera del envase"),
+  });
+  const response = await handler(request({ image_base64: image, document: "label" }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    scan: { medications: [
+      { name: "Medicamento A", dose: "500 mg + 125 mg", presentation: "", frequency: "", anchor_time: "", instructions: "" },
+    ], notes: "" },
+  });
+  assert.equal(calls.length, 3);
+});
+
+test("prescription vision remains available when the auxiliary OCR fails", async () => {
+  const { handler, calls } = fixture({ provider: () => scanOutput([{ name: "Medicamento A" }, { name: "Medicamento B" }]) });
+  const response = await handler(request({ image_base64: image, document: "prescription" }));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).scan.medications.length, 2);
+  assert.equal(calls.length, 4);
+});
+
+test("rejects unknown document kinds and partial or oversized extraction results", async () => {
+  const invalid = fixture();
+  assert.equal((await invalid.handler(request({ image_base64: image, document: "other" }))).status, 400);
+  assert.equal(invalid.calls.length, 1);
+  for (const response of [
+    () => scanOutput([{ name: "Med A" }, { name: "Med B" }]),
+    () => scanOutput([{ name: "Med A" }], "", "length"),
+    () => scanOutput([{ name: "Med A", dose: "x".repeat(257) }]),
+  ]) {
+    const { handler } = fixture({ provider: response });
+    assert.equal((await handler(request({ image_base64: image, document: "label" }))).status, 502);
+  }
 });

@@ -21,8 +21,8 @@ import kotlin.math.max
  * Lee la caja o receta con un modelo de visión de NVIDIA NIM. La foto se envía a NVIDIA solo
  * cuando la persona elige esa opción; si falla, el formulario vuelve a la lectura en el teléfono.
  */
-object NvidiaMedicationLabelReader {
-    private const val MAX_EDGE = 1600
+internal object NvidiaMedicationLabelReader {
+    private const val MAX_EDGE = 2400
     private const val MAX_IMAGE_BYTES = 3 * 1024 * 1024
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -33,7 +33,7 @@ object NvidiaMedicationLabelReader {
         return SupabaseBackend(sessions).isConfigured && sessions.read() != null
     }
 
-    fun read(context: Context, uri: Uri, onResult: (MedicationLabelGuess?, String?) -> Unit) {
+    fun read(context: Context, uri: Uri, document: MedicationDocument, onResult: (MedicationScanResult?, String?) -> Unit) {
         val backend = SupabaseBackend(EncryptedSessionStore(context))
         if (!isAvailable(context)) {
             onResult(null, "Inicia sesión para leer en la nube. Puedes leer la foto en este teléfono.")
@@ -41,7 +41,7 @@ object NvidiaMedicationLabelReader {
         }
         val appContext = context.applicationContext
         executor.execute {
-            val outcome = runCatching { fetch(appContext, uri, backend) }
+            val outcome = runCatching { fetch(appContext, uri, document, backend) }
             main.post {
                 outcome.fold(
                     onSuccess = { guess -> onResult(guess, null) },
@@ -51,32 +51,41 @@ object NvidiaMedicationLabelReader {
         }
     }
 
-    internal fun parseResponse(raw: String): MedicationLabelGuess? {
-        val content = runCatching {
-            JSONObject(raw).optJSONArray("choices")
-                ?.optJSONObject(0)
-                ?.optJSONObject("message")
-                ?.text("content")
-                .orEmpty()
-        }.getOrNull().orEmpty()
-        val payload = runCatching { JSONObject(raw).optJSONObject("result") }.getOrNull()
-            ?: extractObject(content) ?: return null
+    internal fun parseResponse(raw: String, document: MedicationDocument): MedicationScanResult? {
+        val payload = runCatching { JSONObject(raw).optJSONObject("scan") }.getOrNull() ?: return null
+        val medications = payload.optJSONArray("medications") ?: return null
+        val prescription = document == MedicationDocument.PRESCRIPTION
+        if (medications.length() > if (prescription) 20 else 1) return null
+        val notes = payload.opt("notes") ?: ""
+        if (notes !is String || notes.length > 2_000) return null
+        val entries = (0 until medications.length()).map { index ->
+            parseMedication(medications.optJSONObject(index) ?: return null, prescription) ?: return null
+        }
+        return MedicationScanResult(entries.distinct(), if (prescription) notes.trim() else "")
+    }
+
+    private fun parseMedication(payload: JSONObject, prescription: Boolean): MedicationLabelGuess? {
         val fields = listOf("name", "dose", "presentation", "frequency", "anchor_time")
         if (fields.any { key -> payload.has(key) && (payload.opt(key) !is String || payload.optString(key).length > 256) }) return null
+        val instructions = payload.opt("instructions") ?: ""
+        if (instructions !is String || instructions.length > 1_024) return null
         val guess = MedicationLabelGuess(
             name = payload.text("name"),
             presentation = payload.text("presentation"),
             dose = payload.text("dose"),
-            frequency = payload.text("frequency"),
-            anchorTime = payload.text("anchor_time"),
+            frequency = if (prescription) payload.text("frequency") else "",
+            anchorTime = if (prescription) payload.text("anchor_time") else "",
+            instructions = if (prescription) instructions.trim() else "",
         )
-        return MedicationLabelParser.refine(guess).takeUnless { it.isEmpty }
+        if (guess.name.isBlank()) return null
+        // Preserve the name and strength exactly as transcribed. Normalize only the scheduling format.
+        return MedicationLabelParser.refine(guess).copy(name = guess.name, dose = guess.dose, presentation = guess.presentation)
     }
 
-    private fun fetch(context: Context, uri: Uri, backend: SupabaseBackend): MedicationLabelGuess {
+    private fun fetch(context: Context, uri: Uri, document: MedicationDocument, backend: SupabaseBackend): MedicationScanResult {
         val encoded = encodeImage(context, uri) ?: error("No se pudo abrir la foto.")
-        val response = backend.readMedicationLabel(encoded)
-        return parseResponse(response.toString()) ?: error("La respuesta no trajo datos legibles.")
+        val response = backend.readMedicationLabel(encoded, document)
+        return parseResponse(response.toString(), document) ?: error("La respuesta no trajo datos legibles.")
     }
 
     private fun encodeImage(context: Context, uri: Uri): String? {
@@ -107,17 +116,14 @@ object NvidiaMedicationLabelReader {
             bitmap = rotated
         }
         val out = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+        if (out.size() > MAX_IMAGE_BYTES) {
+            out.reset()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 82, out)
+        }
         bitmap.recycle()
         if (out.size() > MAX_IMAGE_BYTES) error("La foto es demasiado grande para leerla en la nube.")
         return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-    }
-
-    private fun extractObject(content: String): JSONObject? {
-        val start = content.indexOf('{')
-        val end = content.lastIndexOf('}')
-        if (start < 0 || end <= start) return null
-        return runCatching { JSONObject(content.substring(start, end + 1)) }.getOrNull()
     }
 
     private fun JSONObject.text(key: String): String {

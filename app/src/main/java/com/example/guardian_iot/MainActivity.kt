@@ -31,6 +31,11 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
 import androidx.core.content.FileProvider
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -64,6 +69,7 @@ class MainActivity : ComponentActivity() {
     private var authConfirmation: EditText? = null
     private var authPrivacy: CheckBox? = null
     private var authSubmit: Button? = null
+    private var authGoogle: Button? = null
     private var authEmailDraft = ""
     private var authSubmitting = false
     private var startupPermissionsVisible = false
@@ -196,9 +202,13 @@ class MainActivity : ComponentActivity() {
     private val qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
         result.contents?.let(::processPairingCodeOrLink)
     }
-    private var medicationScanCallback: ((MedicationLabelGuess?, String?) -> Unit)? = null
-    private var medicationScanFile: File? = null
-    private var medicationScanCloud = false
+    private class MedicationScan(
+        val document: MedicationDocument,
+        val mode: MedicationScanMode,
+        val onResult: (MedicationScanResult?, String?) -> Unit,
+        var photo: File? = null,
+    )
+    private var medicationScan: MedicationScan? = null
     private val medicationCameraLauncher = registerForActivityResult(
         // La app de cámara escribe en el archivo temporal: sin estos permisos el envío falla en
         // varios fabricantes aunque el FileProvider ya esté configurado.
@@ -206,46 +216,46 @@ class MainActivity : ComponentActivity() {
             override fun createIntent(context: Context, input: Uri): Intent =
                 super.createIntent(context, input)
                     .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    .apply { clipData = android.content.ClipData.newRawUri("Foto para escanear", input) }
         },
     ) { saved ->
-        val callback = medicationScanCallback
-        medicationScanCallback = null
-        val file = medicationScanFile
-        when {
-            !saved || file == null -> {
-                file?.delete()
-                medicationScanFile = null
-                callback?.invoke(null, "No se tomó la foto. Puedes intentarlo de nuevo o escribir los datos a mano.")
+        val scan = medicationScan
+        if (scan != null) {
+            val file = scan.photo
+            when {
+                !saved -> finishMedicationScan(scan, null, null)
+                file == null || file.length() == 0L -> finishMedicationScan(
+                    scan, null, "La cámara no guardó la imagen. Toma otra foto o elígela de la galería.",
+                )
+                else -> readMedicationLabel(scan, Uri.fromFile(file))
             }
-            else -> readMedicationLabel(file, callback)
         }
     }
     private val medicationGalleryLauncher = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        val callback = medicationScanCallback
-        medicationScanCallback = null
-        if (uri == null) callback?.invoke(null, null) else readMedicationLabel(uri, callback)
+        val scan = medicationScan
+        if (scan != null) {
+            if (uri == null) finishMedicationScan(scan, null, null) else readMedicationLabel(scan, uri)
+        }
     }
     private val medicationLabelScanner = object : MedicationLabelScanner {
         override val cloudAvailable: Boolean get() = NvidiaMedicationLabelReader.isAvailable(this@MainActivity)
 
-        override fun takePhoto(mode: MedicationScanMode, onResult: (MedicationLabelGuess?, String?) -> Unit) {
-            medicationScanCloud = mode == MedicationScanMode.CLOUD
+        override fun takePhoto(document: MedicationDocument, mode: MedicationScanMode, onResult: (MedicationScanResult?, String?) -> Unit) {
+            val scan = startMedicationScan(document, mode, onResult) ?: return
             if (!has(Manifest.permission.CAMERA)) {
-                medicationScanCallback = onResult
-                requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_MEDICATION_SCAN)
+                runCatching { requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_MEDICATION_SCAN) }
+                    .onFailure { finishMedicationScan(scan, null, "Autoriza la cámara desde Ajustes o elige una imagen de la galería.") }
                 return
             }
-            launchMedicationCamera(onResult)
+            launchMedicationCamera(scan)
         }
 
-        override fun pickFromGallery(mode: MedicationScanMode, onResult: (MedicationLabelGuess?, String?) -> Unit) {
-            medicationScanCloud = mode == MedicationScanMode.CLOUD
-            medicationScanCallback = onResult
+        override fun pickFromGallery(document: MedicationDocument, mode: MedicationScanMode, onResult: (MedicationScanResult?, String?) -> Unit) {
+            val scan = startMedicationScan(document, mode, onResult) ?: return
             runCatching {
                 medicationGalleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             }.onFailure {
-                medicationScanCallback = null
-                onResult(null, "No se pudo abrir la galería en este teléfono.")
+                finishMedicationScan(scan, null, "No se pudo abrir la galería en este teléfono.")
             }
         }
     }
@@ -1455,7 +1465,7 @@ class MainActivity : ComponentActivity() {
 
     private fun renderAuth(mode: AuthMode) {
         val fields = v9.access(entrySurface(), mode, authEmailDraft, ::backFromAccess, ::openAccess,
-            ::showPrivacyNotice, ::useLocally) { submitAuth(mode) }
+            ::showPrivacyNotice, ::useLocally, ::startGoogleSignIn) { submitAuth(mode) }
         authEmail = fields.email
         authName = fields.name
         authPassword = fields.password
@@ -1463,7 +1473,8 @@ class MainActivity : ComponentActivity() {
         authPrivacy = fields.privacy
         authStatus = fields.status
         authSubmit = fields.submit
-        fields.submit.isEnabled = !authSubmitting
+        authGoogle = fields.google
+        updateAuthButtons(authSubmitting)
     }
 
     private fun showPrivacyNotice() {
@@ -1477,6 +1488,104 @@ class MainActivity : ComponentActivity() {
             text = message
             setTextColor(if (error) tz.onCriticalSurface else muted)
             visibility = View.VISIBLE
+        }
+    }
+
+    private fun updateAuthButtons(busy: Boolean) {
+        authSubmitting = busy
+        authSubmit?.isEnabled = !busy
+        authGoogle?.isEnabled = !busy
+    }
+
+    private fun startGoogleSignIn() {
+        if (authSubmitting || (authMode != AuthMode.LOGIN && authMode != AuthMode.REGISTER)) return
+        if (!backend.isConfigured || !GoogleSignIn.isConfigured) {
+            setAuthStatus("Google todavía no está configurado en esta versión. Puedes iniciar sesión con correo.", true)
+            return
+        }
+        if (authMode == AuthMode.REGISTER) {
+            if (authPrivacy?.isChecked != true) {
+                setAuthStatus("Acepta el aviso de privacidad para continuar con Google.", true)
+                return
+            }
+            signInWithGoogle()
+        } else if (store.prefs.getLong("privacy_consent_at", 0L) > 0L) {
+            signInWithGoogle()
+        } else {
+            AlertDialog.Builder(this).setTitle("Continuar con Google")
+                .setMessage("Si es tu primera vez, se creará una cuenta de AxTarget Care con tu correo de Google. Revisa el aviso de privacidad antes de continuar.")
+                .setNeutralButton("Ver aviso") { _, _ -> showPrivacyNotice() }
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Aceptar y continuar") { _, _ -> signInWithGoogle() }
+                .show()
+        }
+    }
+
+    private fun signInWithGoogle() {
+        if (authSubmitting) return
+        updateAuthButtons(true)
+        setAuthStatus("Conectando con Google…")
+        lifecycleScope.launch {
+            try {
+                val session = GoogleSignIn.signIn(this@MainActivity, backend)
+                updateAuthButtons(false)
+                completeSignIn(session, consented = true)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: GetCredentialCancellationException) {
+                setAuthStatus("Inicio de sesión con Google cancelado.")
+            } catch (_: GetCredentialException) {
+                setAuthStatus("Google no pudo abrir el selector de cuentas. Verifica que Google Play esté disponible o entra con correo.", true)
+            } catch (failure: BackendFailure) {
+                val message = if (failure.category == BackendFailure.Category.NETWORK) failure.message
+                    else "Supabase no pudo validar el inicio de sesión con Google."
+                setAuthStatus(message.orEmpty(), true)
+            } catch (_: Exception) {
+                setAuthStatus("No se recibió una credencial válida de Google. Intenta otra vez.", true)
+            } finally {
+                updateAuthButtons(false)
+            }
+        }
+    }
+
+    private fun completeSignIn(session: AuthSession, consented: Boolean) {
+        if (store.bindLocalDataToUser(session.userId)) {
+            disposeCameraController()
+            stopService(Intent(this, GuardianMonitorService::class.java))
+            caregiverLocationRealtime?.stop(); caregiverLocationRealtime = null; caregiverLocationRealtimeDevice = ""
+            caregiverHealthRealtime?.stop(); caregiverHealthRealtime = null; caregiverHealthRealtimeKey = ""
+            MedicationReminderReceiver.dismissAccountNotifications(this)
+            store = AppStore(this)
+            medicationRepository = MedicationRepository(this, backend, store)
+            careFeatures = CareFeatureStore(this)
+            contactDraft = null; profileDraft = null; contactEdits.clear(); profileEdits.clear()
+            navigationHistory.clear()
+            tab = if (store.role().isBlank()) ROLE_TAB else 0
+            toast("Cuenta cambiada. Los datos anteriores siguen guardados por separado.")
+        }
+        store.prefs.edit().putBoolean("local_only_mode", false).apply()
+        if (consented) {
+            store.prefs.edit().putString("privacy_notice_version", "2026-10-21-v1")
+                .putLong("privacy_consent_at", System.currentTimeMillis()).apply()
+        }
+        store.prepareContactsForUser(session.userId)
+        finishWelcome()
+        authMode = null
+        authEmailDraft = ""
+        authPassword = null
+        authConfirmation = null
+        val pendingType = store.prefs.getString("pending_pairing_type", "").orEmpty()
+        val pendingCode = store.prefs.getString("pending_pairing_code", "").orEmpty()
+        store.prefs.edit().remove("pending_pairing_type").remove("pending_pairing_code").apply()
+        if (pendingType in setOf("caregiver", "camera") && pendingCode.isNotBlank()) {
+            store.saveRole(if (pendingType == "camera") AppStore.ROLE_CAMERA else AppStore.ROLE_CAREGIVER)
+            navigationHistory.clear()
+            tab = 0
+            SyncScheduler.enqueue(applicationContext)
+            render()
+            processPairingCodeOrLink("tzinda://pair?type=$pendingType&code=$pendingCode")
+        } else {
+            SyncScheduler.enqueue(applicationContext); render()
         }
     }
 
@@ -1495,8 +1604,7 @@ class MainActivity : ComponentActivity() {
             if (password != confirmation) { setAuthStatus("Las contraseñas no coinciden.", true); return }
         }
         if (!backend.isConfigured) { setAuthStatus("Supabase aún no está configurado. Puedes seguir en modo local.", true); return }
-        authSubmitting = true
-        authSubmit?.isEnabled = false
+        updateAuthButtons(true)
         setAuthStatus("Conectando de forma segura…")
         io.execute {
             val result = runCatching {
@@ -1514,52 +1622,12 @@ class MainActivity : ComponentActivity() {
             }
             runOnUiThread {
                 if (isDestroyed || isFinishing) return@runOnUiThread
-                authSubmitting = false
-                authSubmit?.isEnabled = true
+                updateAuthButtons(false)
                 result.onSuccess { message ->
                     setAuthStatus(message)
                     if (mode == AuthMode.RESET) { authMode = AuthMode.LOGIN; render(); setAuthStatus(message) }
-                    if (mode in setOf(AuthMode.LOGIN, AuthMode.REGISTER) && sessions.read() != null) {
-                        sessions.read()?.let { session ->
-                            if (store.bindLocalDataToUser(session.userId)) {
-                                disposeCameraController()
-                                stopService(Intent(this, GuardianMonitorService::class.java))
-                                caregiverLocationRealtime?.stop(); caregiverLocationRealtime = null; caregiverLocationRealtimeDevice = ""
-                                caregiverHealthRealtime?.stop(); caregiverHealthRealtime = null; caregiverHealthRealtimeKey = ""
-                                MedicationReminderReceiver.dismissAccountNotifications(this)
-                                store = AppStore(this)
-                                medicationRepository = MedicationRepository(this, backend, store)
-                                careFeatures = CareFeatureStore(this)
-                                contactDraft = null; profileDraft = null; contactEdits.clear(); profileEdits.clear()
-                                navigationHistory.clear()
-                                tab = if (store.role().isBlank()) ROLE_TAB else 0
-                                toast("Cuenta cambiada. Los datos anteriores siguen guardados por separado.")
-                            }
-                            store.prefs.edit().putBoolean("local_only_mode", false).apply()
-                            if (mode == AuthMode.REGISTER && consented) {
-                                store.prefs.edit().putString("privacy_notice_version", "2026-10-21-v1")
-                                    .putLong("privacy_consent_at", System.currentTimeMillis()).apply()
-                            }
-                            store.prepareContactsForUser(session.userId)
-                            finishWelcome()
-                            authMode = null
-                            authEmailDraft = ""
-                            authPassword = null
-                            authConfirmation = null
-                            val pendingType = store.prefs.getString("pending_pairing_type", "").orEmpty()
-                            val pendingCode = store.prefs.getString("pending_pairing_code", "").orEmpty()
-                            store.prefs.edit().remove("pending_pairing_type").remove("pending_pairing_code").apply()
-                            if (pendingType in setOf("caregiver", "camera") && pendingCode.isNotBlank()) {
-                                store.saveRole(if (pendingType == "camera") AppStore.ROLE_CAMERA else AppStore.ROLE_CAREGIVER)
-                                navigationHistory.clear()
-                                tab = 0
-                                SyncScheduler.enqueue(applicationContext)
-                                render()
-                                processPairingCodeOrLink("tzinda://pair?type=$pendingType&code=$pendingCode")
-                            } else {
-                                SyncScheduler.enqueue(applicationContext); render()
-                            }
-                        }
+                    if (mode == AuthMode.LOGIN || mode == AuthMode.REGISTER) {
+                        sessions.read()?.let { session -> completeSignIn(session, mode == AuthMode.REGISTER && consented) }
                     }
                 }.onFailure { setAuthStatus(it.message ?: "No se pudo completar la operación.", true) }
             }
@@ -5034,6 +5102,7 @@ class MainActivity : ComponentActivity() {
                         io.execute {
                             runCatching { backend.signOut() }
                             runOnUiThread {
+                                lifecycleScope.launch { runCatching { GoogleSignIn.clear(this@MainActivity) } }
                                 caregiverLocationRealtime?.stop(); caregiverLocationRealtime = null; caregiverLocationRealtimeDevice = ""
                                 caregiverHealthRealtime?.stop(); caregiverHealthRealtime = null; caregiverHealthRealtimeKey = ""
                                 store.clearRemoteDerivedCaches()
@@ -5710,56 +5779,61 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun stopLocation() { handler.removeCallbacks(locationTimeout); locationListener?.let { runCatching { (getSystemService(LOCATION_SERVICE) as LocationManager).removeUpdates(it) } }; locationListener = null }
-    private fun launchMedicationCamera(onResult: (MedicationLabelGuess?, String?) -> Unit) {
+    private fun startMedicationScan(
+        document: MedicationDocument,
+        mode: MedicationScanMode,
+        onResult: (MedicationScanResult?, String?) -> Unit,
+    ): MedicationScan? {
+        if (medicationScan != null) {
+            toast("Espera a que termine la lectura de la imagen.")
+            return null
+        }
+        return MedicationScan(document, mode, onResult).also { medicationScan = it }
+    }
+
+    private fun launchMedicationCamera(scan: MedicationScan) {
         val directory = File(cacheDir, "medication_scan").apply { mkdirs() }
         directory.listFiles()?.forEach { stale ->
             if (System.currentTimeMillis() - stale.lastModified() > 10 * 60_000L) stale.delete()
         }
-        val file = File(directory, "scan-${System.currentTimeMillis()}.jpg")
-        val uri = runCatching { FileProvider.getUriForFile(this, "$packageName.fileprovider", file) }.getOrNull()
-        if (uri == null) {
-            onResult(null, "No se pudo preparar la cámara. Elige una imagen de la galería.")
+        val uri = runCatching {
+            val file = File.createTempFile("scan-", ".jpg", directory)
+            scan.photo = file
+            FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        }.getOrElse {
+            finishMedicationScan(scan, null, "No se pudo preparar la cámara. Elige una imagen de la galería.")
             return
         }
-        medicationScanFile = file
-        medicationScanCallback = onResult
         runCatching { medicationCameraLauncher.launch(uri) }.onFailure {
-            medicationScanCallback = null
-            medicationScanFile = null
-            file.delete()
-            onResult(null, "No hay una app de cámara disponible. Elige una imagen de la galería.")
+            finishMedicationScan(scan, null, "No se pudo abrir la cámara. Elige una imagen de la galería.")
         }
     }
 
-    private fun readMedicationLabel(file: File, callback: ((MedicationLabelGuess?, String?) -> Unit)?) =
-        readMedicationLabel(Uri.fromFile(file), callback)
+    private fun finishMedicationScan(scan: MedicationScan, result: MedicationScanResult?, error: String?) {
+        scan.photo?.delete()
+        if (medicationScan !== scan) return
+        medicationScan = null
+        if (!isFinishing && !isDestroyed) scan.onResult(result, error)
+    }
 
-    private fun readMedicationLabel(uri: Uri, callback: ((MedicationLabelGuess?, String?) -> Unit)?) {
-        if (callback == null) return
-        val useCloud = medicationScanCloud && NvidiaMedicationLabelReader.isAvailable(this@MainActivity)
-        medicationScanCloud = false
-        val finish: (MedicationLabelGuess?, String?) -> Unit = { guess, error ->
-            medicationScanFile?.delete()
-            medicationScanFile = null
-            callback(guess, error)
-        }
-        val readOnDevice = {
+    private fun readMedicationLabel(scan: MedicationScan, uri: Uri) {
+        fun readOnDevice(previousError: String? = null) {
             toast("Leyendo la imagen…")
-            MedicationLabelReader.read(this, uri) { guess, error -> finish(guess, error) }
+            MedicationLabelReader.read(this, uri, scan.document) { result, error ->
+                finishMedicationScan(scan, result, error ?: previousError.takeIf { result == null })
+            }
         }
-        if (!useCloud) {
+        if (scan.mode == MedicationScanMode.DEVICE) {
             readOnDevice()
             return
         }
-        toast("Leyendo con NVIDIA…")
-        NvidiaMedicationLabelReader.read(this, uri) { guess, error ->
-            if (guess != null) {
-                finish(guess, null)
+        toast("Leyendo la imagen en la nube…")
+        NvidiaMedicationLabelReader.read(this, uri, scan.document) { result, error ->
+            if (result != null && result.entries.isNotEmpty()) {
+                finishMedicationScan(scan, result, null)
             } else {
-                toast(error ?: "NVIDIA no respondió. Se leerá en el teléfono.", true)
-                MedicationLabelReader.read(this, uri) { localGuess, localError ->
-                    finish(localGuess, if (localGuess == null) localError ?: error else null)
-                }
+                toast(error ?: "La nube no identificó medicamentos. Se leerá la imagen en el teléfono.", true)
+                readOnDevice(error)
             }
         }
     }
@@ -5793,11 +5867,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
             REQUEST_MEDICATION_SCAN -> {
-                val callback = medicationScanCallback
-                medicationScanCallback = null
-                if (callback != null) {
-                    if (has(Manifest.permission.CAMERA)) launchMedicationCamera(callback)
-                    else callback(null, "Sin permiso de cámara. Puedes elegir una imagen de la galería o escribir los datos a mano.")
+                medicationScan?.let { scan ->
+                    if (has(Manifest.permission.CAMERA)) launchMedicationCamera(scan)
+                    else finishMedicationScan(scan, null, "Sin permiso de cámara. Puedes elegir una imagen de la galería o escribir los datos a mano.")
                 }
             }
             REQUEST_BRACELET_BLE -> {

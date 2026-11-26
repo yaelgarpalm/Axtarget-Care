@@ -1,6 +1,11 @@
 # Lectura de medicamentos en la nube
 
-La lectura remota requiere una sesión autenticada de Supabase y la función Edge `medication-label`. El APK no contiene la clave NVIDIA ni decide el modelo o las instrucciones del proveedor. La función valida la sesión consultando Auth, limita la imagen a JPEG de 3 MiB, reserva una cuota en PostgreSQL antes de llamar al proveedor y devuelve solo cinco campos de texto acotados.
+La lectura remota requiere una sesión autenticada de Supabase y la función Edge `medication-label`. La función valida la sesión, acepta JPEG de hasta 3 MiB y reserva una cuota por imagen antes de llamar a NVIDIA. La lectura en el teléfono es la opción inicial. Para probar la nube, usa fotografías de ejemplo sin datos personales identificables.
+
+- **Caja o frasco.** Super VL devuelve el nombre, la concentración y la presentación del medicamento visible.
+- **Receta.** Nemotron 3.5 Parse lee el texto y el orden de la página. Super VL consulta esa transcripción y la imagen para separar los medicamentos, dosis, indicaciones y notas generales. El usuario revisa cada registro antes de guardarlo. Si Parse falla, Super VL puede leer directamente la imagen. [API de Nemotron 3.5 Parse](https://build.nvidia.com/nvidia/nemotron-3.5-parse/apireference)
+
+El cliente envía `image_base64` y `document` (`label` o `prescription`). Los clientes anteriores que solo envían la imagen siguen recibiendo la respuesta de un medicamento. Una receta de varias páginas se escanea una hoja a la vez.
 
 ## Preparar un proyecto Supabase
 
@@ -12,10 +17,10 @@ La lectura remota requiere una sesión autenticada de Supabase y la función Edg
 
 La cuota persistente permite hasta 10 solicitudes por usuario y hora, 30 por usuario y día y 1.000 globales por día UTC. La reserva global serializa las solicitudes entre instancias Edge. Una llamada que supera el límite recibe HTTP 429. Fallas en Auth, PostgreSQL o NVIDIA no se registran como una respuesta válida y la app vuelve al lector local.
 
-## Verificación local realizada
+## Verificar cambios
 
-`node --test supabase/functions/medication-label/handler.test.ts`: 15 casos aprobados, incluyendo token inválido, cuerpo transmitido por partes demasiado grande, JPEG inválido, campos de control añadidos, cuotas, respuesta excedida, redirección y tiempo de espera del proveedor. Supabase local ejecutó cuatro llamadas al runtime Edge: sin sesión y token falsificado rechazados; sesión local alcanzó validación JPEG; campo `model` del cliente rechazado. No hubo llamada NVIDIA.
+Ejecuta `node --test supabase/functions/medication-label/handler.test.ts` para verificar autenticación, cuotas, límites, respuestas de un envase y de una receta, y fallback ante errores de OCR. Las pruebas simulan las respuestas de NVIDIA. Para verificar la inferencia remota se necesita una cuenta de prueba, el secreto del proveedor y una imagen sin datos personales.
 
 `supabase test db --local supabase/tests/medication_authorization.test.sql supabase/tests/phone_motion_ownership.test.sql supabase/tests/medication_scan_quota.test.sql`: 66 pruebas pgTAP aprobadas. Una prueba concurrente local lanzó 20 reservas para el mismo usuario: 10 aceptadas, 10 rechazadas, contador persistido en 10. Gradle audit pasó 106 unitarias, compilación y APK; 70 instrumentadas aprobaron en `emulator-5580`. Revisa `docs/auditoria/evidencia/lote-13-*`.
 
-Estas comprobaciones usaron usuarios ficticios locales y un valor NVIDIA de marcador. No acreditan el secreto configurado en el proyecto hospedado, la entrega del proveedor, una inferencia real, la política de consumo/coste de NVIDIA ni el flujo de galería/cámara en teléfonos físicos. En Lote 27 se aplicaron al remoto solo migraciones de seguridad de perfiles, tomas y propiedad de movimiento; `medication_scan_quota` y `medication-label` siguen pendientes de autorización/despliegue. Consulta [el registro remoto](auditoria/README.md#lote-28-disponibilidad-remota-de-lectura-de-etiquetas) y su [evidencia](auditoria/evidencia/lote-28-medication-label-remote.md).
+La auditoría anterior documenta el despliegue inicial de la cuota y la función. [Evidencia del despliegue](auditoria/evidencia/lote-28-medication-label-remote.md)

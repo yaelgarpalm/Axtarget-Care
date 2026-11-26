@@ -31,7 +31,7 @@ De izquierda a derecha, bienvenida, resumen y zonas seguras. Capturas de Android
 - **Alertas de caída.** Ante una posible caída, una cuenta regresiva de 20 segundos permite cancelar el aviso. Si vence o se solicita ayuda, la app intenta contactar por SMS y llamada según los permisos, la SIM y la cobertura disponibles.
 - **Ubicación y zonas seguras.** Al abrir el mapa, la app busca la ubicación del teléfono si cuenta con permiso. La cartografía es de OpenStreetMap y las rutas dentro de la app usan OSRM. Desde las indicaciones se puede abrir Google Maps para iniciar la navegación allí.
 - **Pulsera y salud.** La app recibe lecturas válidas de pulso y SpO₂ de la pulsera Arduino UNO Q vinculada por Bluetooth LE. El nombre que anuncia la pulsera al emparejarse es `Tzinda`.
-- **Medicamentos.** Permite registrar horarios y tomas, recibir recordatorios locales y leer etiquetas o recetas con OCR. La lectura en el teléfono está disponible sin conexión. La lectura en la nube es opcional y requiere una sesión activa.
+- **Medicamentos.** Escanea una caja o frasco para leer el medicamento. En una receta, revisa cada medicamento detectado con su dosis e indicaciones y consulta las notas generales por separado. La lectura en el teléfono está disponible sin conexión.
 - **Primer ingreso.** La bienvenida y el tutorial se adaptan al modo seleccionado. Al iniciar sesión, Android solicita los permisos correspondientes a ese modo.
 
 ## Compilar y probar
@@ -52,7 +52,9 @@ El APK de depuración queda en `app/build/outputs/apk/debug/app-debug.apk`. Este
 
 Para activar el inicio de sesión, la sincronización y los vínculos entre teléfonos, copia [`.env.example`](.env.example) a `.env.local` y configura `TZINDA_SUPABASE_URL`, `TZINDA_SUPABASE_PUBLISHABLE_KEY` y `TZINDA_SUPABASE_REDIRECT_URL`. La aplicación Android utiliza la clave publicable. Las claves privadas, incluida `service_role`, se configuran en el servidor. [Guía de Supabase](docs/supabase-backend.md) · [Migraciones](supabase/migrations)
 
-La lectura de medicamentos en la nube usa la función autenticada `medication-label`, que envía la foto a NVIDIA para extraer texto. Si la función falla, la app vuelve a la lectura en el teléfono. [Configuración del OCR en la nube](docs/medication-label-proxy.md)
+**Continuar con Google** usa Credential Manager y Supabase Auth. El proveedor requiere un cliente OAuth Web y uno Android registrados en Google Auth Platform. [Configurar Google](docs/supabase-backend.md#inicio-de-sesión-con-google-en-android)
+
+La lectura en la nube es opcional. La función autenticada `medication-label` usa NVIDIA Nemotron 3.5 Parse para la página de la receta y Super VL para organizar la lectura. Si la nube falla, la app vuelve a leer la imagen en el teléfono. [Configuración del OCR en la nube](docs/medication-label-proxy.md)
 
 ### Pulsera Arduino UNO Q
 

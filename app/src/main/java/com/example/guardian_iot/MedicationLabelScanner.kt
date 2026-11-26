@@ -2,12 +2,15 @@ package com.example.guardian_iot
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.text.Normalizer
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -21,19 +24,28 @@ data class MedicationLabelGuess(
     val dose: String = "",
     val frequency: String = "",
     val anchorTime: String = "",
+    val instructions: String = "",
 ) {
     val isEmpty: Boolean
-        get() = name.isBlank() && presentation.isBlank() && dose.isBlank() && frequency.isBlank()
+        get() = name.isBlank() && presentation.isBlank() && dose.isBlank() && frequency.isBlank() && instructions.isBlank()
 }
+
+internal data class MedicationScanResult(
+    val entries: List<MedicationLabelGuess>,
+    val notes: String = "",
+    val recognizedText: String = "",
+)
 
 /** De dónde se lee la foto: en el propio teléfono o con un modelo en la nube. */
 enum class MedicationScanMode { DEVICE, CLOUD }
 
+internal enum class MedicationDocument { LABEL, PRESCRIPTION }
+
 /** Punto de entrada desde el formulario hacia la cámara o la galería del teléfono. */
-interface MedicationLabelScanner {
+internal interface MedicationLabelScanner {
     val cloudAvailable: Boolean
-    fun takePhoto(mode: MedicationScanMode, onResult: (MedicationLabelGuess?, String?) -> Unit)
-    fun pickFromGallery(mode: MedicationScanMode, onResult: (MedicationLabelGuess?, String?) -> Unit)
+    fun takePhoto(document: MedicationDocument, mode: MedicationScanMode, onResult: (MedicationScanResult?, String?) -> Unit)
+    fun pickFromGallery(document: MedicationDocument, mode: MedicationScanMode, onResult: (MedicationScanResult?, String?) -> Unit)
 }
 
 /**
@@ -67,7 +79,7 @@ object MedicationLabelParser {
     private val compactInterval = Regex("(?i)\\bc\\s*/\\s*(\\d{1,2})\\s*(?:horas?|hrs?|h)\\b")
     private val qInterval = Regex("(?i)\\bq\\.?\\s*(\\d{1,2})\\s*(?:hs?|hrs?)\\b")
     private val intervalDays = Regex("(?i)\\bcada\\s+(\\d{1,2}|dos|tres)\\s*d[ií]as?\\b")
-    private val dailyText = Regex("(?i)\\b(?:diaria|diario|una vez al d[ií]a|1 vez al d[ií]a|cada d[ií]a)\\b")
+    private val dailyText = Regex("(?i)\\b(?:diaria|diario|diariamente|al d[ií]a|cada d[ií]a)\\b")
     private val weeklyText = Regex("(?i)\\b(?:semanal|una vez a la semana|cada semana)\\b")
     private val amPmTime = Regex("(?i)\\b(\\d{1,2})(?::(\\d{2}))?\\s*(a\\.?m\\.?|p\\.?m\\.?)\\b")
     private val atTime = Regex(
@@ -76,6 +88,19 @@ object MedicationLabelParser {
     private val clockTime = Regex("\\b(?:[01]?\\d|2[0-3]):[0-5]\\d\\b")
     private val enumeration = Regex("^(?:\\d{1,2}[.)]|[-*•·])\\s*")
     private val whitespace = Regex("\\s+")
+    private val instructionStart = Regex(
+        "^(?:tomar|tome|administrar|aplicar|inyectar|usar|via|cada|por|durante|primera|dosis|indicaciones?|a las|con|antes|despues)\\b",
+    )
+    private val inlineInstruction = Regex(
+        "(?iu)\\b(?:(?:tomar|tome|administrar|aplicar|inyectar|usar|v[ií]a\\s+oral)\\b|dosis\\s*:)",
+    )
+    private val prescribedAmount = Regex(
+        "(?iu)\\b(?:tomar|tome|administrar|aplicar|inyectar|usar|dosis\\s*:)\\s+(\\d+(?:[.,/]\\d+)?\\s*(?:tabletas?|c[aá]psulas?|comprimidos?|gotas?|ampolletas?|sobres?|pulsaciones?|mg|mcg|ml|ui))\\b",
+    )
+    private val notesStart = Regex("^(?:notas?|observaciones|recomendaciones|indicaciones generales|proxima cita)\\b")
+    private val documentField = Regex(
+        "^(?:receta|paciente|fecha|diagnostico|firma|sello|cedula|medico|doctor|dra?\\.?|clinica|hospital|consultorio|telefono|edad|peso)\\b",
+    )
 
     private val numberWords = mapOf(
         "dos" to 2, "tres" to 3, "cuatro" to 4, "seis" to 6, "ocho" to 8,
@@ -171,8 +196,93 @@ object MedicationLabelParser {
         .filter { it.key.isNotEmpty() }
         .sortedWith(compareByDescending<CatalogEntry> { it.key.size }.thenByDescending { it.display.length })
 
-    fun parse(lines: List<OcrLine>): MedicationLabelGuess {
-        val cleaned = lines.mapNotNull { line ->
+    fun parse(lines: List<OcrLine>): MedicationLabelGuess = parseEntry(clean(lines))
+
+    internal fun readDocument(lines: List<OcrLine>, document: MedicationDocument): MedicationScanResult {
+        if (document == MedicationDocument.LABEL) {
+            val label = parse(lines).copy(frequency = "", anchorTime = "")
+            return MedicationScanResult(listOfNotNull(label.takeIf { it.name.isNotBlank() }))
+        }
+        val entries = mutableListOf<MedicationLabelGuess>()
+        val notes = mutableListOf<String>()
+        val currentLines = mutableListOf<OcrLine>()
+        var currentName: String? = null
+        var readingNotes = false
+
+        fun finishMedication() {
+            currentName?.let { name ->
+                val parsed = parseEntry(currentLines, name)
+                val instructions = currentLines.mapIndexedNotNull { index, line ->
+                    if (index > 0) {
+                        line.text.takeUnless {
+                            explicitPresentation.matches(it) || containerWords.containsMatchIn(normalize(it)) ||
+                                strength.matchEntire(it) != null
+                        }
+                    } else inlineInstruction.find(line.text)?.range?.first?.let(line.text::substring)
+                }.joinToString("\n")
+                val amount = prescribedAmount.find(instructions)?.groupValues?.get(1).orEmpty()
+                val concentration = pickDose(currentLines.filterNot { instructionStart.containsMatchIn(normalize(it.text)) }, name)
+                val presentation = listOf(parsed.presentation, concentration.takeIf { amount.isNotBlank() && it != amount }.orEmpty())
+                    .filter(String::isNotBlank).joinToString(" · ")
+                entries += parsed.copy(
+                    dose = amount.ifBlank { parsed.dose },
+                    presentation = presentation,
+                    instructions = instructions.take(1_024),
+                )
+            }
+            currentName = null
+            currentLines.clear()
+        }
+
+        lines.forEach { raw ->
+            val line = clean(listOf(raw)).singleOrNull() ?: return@forEach
+            val normalized = normalize(line.text)
+            val name = prescriptionName(line.text, enumeration.containsMatchIn(raw.text.trim()))
+            when {
+                notesStart.containsMatchIn(normalized) -> {
+                    finishMedication()
+                    readingNotes = true
+                    notes += line.text
+                }
+                documentField.containsMatchIn(normalized) -> {
+                    finishMedication()
+                    readingNotes = false
+                }
+                name != null -> {
+                    finishMedication()
+                    readingNotes = false
+                    currentName = name
+                    currentLines += line
+                }
+                readingNotes -> notes += line.text
+                currentName != null -> currentLines += line
+            }
+        }
+        finishMedication()
+        return MedicationScanResult(
+            entries.distinct(),
+            notes.joinToString("\n").take(2_000),
+            lines.joinToString("\n") { it.text }.take(8_000),
+        )
+    }
+
+    private fun prescriptionName(line: String, enumerated: Boolean): String? {
+        val normalized = normalize(line)
+        if (notesStart.containsMatchIn(normalized) || documentField.containsMatchIn(normalized) ||
+            instructionStart.containsMatchIn(normalized) || explicitPresentation.matches(line)) return null
+        val explicit = explicitName.matchEntire(line)?.groupValues?.get(1)
+        val content = explicit ?: line
+        val concentration = strength.find(content)
+        if (concentration == null && containerWords.containsMatchIn(normalize(content))) return null
+        val prefix = (concentration?.let { content.substring(0, it.range.first) } ?: content)
+            .trim().trimEnd('–', '—', ':', '-', '·', '(').trimEnd()
+        val candidate = nameCandidate(prefix)
+        val catalogMatch = catalogName(prefix, allowFuzzy = false)
+        if (explicit != null || concentration != null || enumerated) return catalogMatch ?: candidate
+        return catalogMatch?.takeIf { tokenize(it).size == tokenize(prefix).size }
+    }
+
+    private fun clean(lines: List<OcrLine>): List<OcrLine> = lines.mapNotNull { line ->
             val text = line.text
                 .replace(whitespace, " ")
                 .trim()
@@ -180,10 +290,12 @@ object MedicationLabelParser {
                 .replace(enumeration, "")
                 .trim()
             if (text.length < 2) null else OcrLine(text, line.heightPx, line.topPx)
-        }
+    }
+
+    private fun parseEntry(cleaned: List<OcrLine>, detectedName: String? = null): MedicationLabelGuess {
         if (cleaned.isEmpty()) return MedicationLabelGuess()
         val joined = cleaned.joinToString("\n") { it.text }
-        val name = pickName(cleaned)
+        val name = detectedName ?: pickName(cleaned)
         return MedicationLabelGuess(
             name = name,
             presentation = pickPresentation(cleaned),
@@ -253,7 +365,7 @@ object MedicationLabelParser {
         return tidyName(withoutForm)
     }
 
-    private fun catalogName(raw: String): String? {
+    private fun catalogName(raw: String, allowFuzzy: Boolean = true): String? {
         val rawTokens = raw.split(Regex("[^\\p{L}\\p{N}]+")).filter(String::isNotBlank)
         if (rawTokens.isEmpty()) return null
         val tokens = rawTokens.map { foldOcr(normalize(it)) }
@@ -265,7 +377,7 @@ object MedicationLabelParser {
             for (start in 0..tokens.size - size) {
                 val slice = tokens.subList(start, start + size)
                 val exact = slice == entry.folded
-                val fuzzy = !exact && slice.indices.all { i -> closeEnough(slice[i], entry.folded[i]) }
+                val fuzzy = allowFuzzy && !exact && slice.indices.all { i -> closeEnough(slice[i], entry.folded[i]) }
                 if (!exact && !fuzzy) continue
                 val score = size * 100 + entry.display.length * 2 + if (exact) 60 else 0
                 if (score > bestScore) {
@@ -491,30 +603,38 @@ object MedicationLabelParser {
 }
 
 /** Ejecuta el reconocimiento de texto en el teléfono: la imagen no se sube ni se conserva. */
-object MedicationLabelReader {
-    fun read(context: Context, uri: Uri, onResult: (MedicationLabelGuess?, String?) -> Unit) {
-        val image = try {
-            InputImage.fromFilePath(context, uri)
-        } catch (_: Exception) {
-            onResult(null, "No se pudo abrir la imagen. Intenta de nuevo.")
-            return
-        }
-        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).process(image)
-            .addOnSuccessListener { text ->
-                val guess = MedicationLabelParser.parse(text.toOcrLines())
-                if (guess.isEmpty) {
-                    onResult(null, "No se detectó texto legible. Acerca la cámara al nombre y la presentación.")
-                } else {
-                    onResult(guess, null)
+internal object MedicationLabelReader {
+    private val executor = Executors.newSingleThreadExecutor()
+    private val main by lazy { Handler(Looper.getMainLooper()) }
+
+    fun read(context: Context, uri: Uri, document: MedicationDocument, onResult: (MedicationScanResult?, String?) -> Unit) {
+        val appContext = context.applicationContext
+        executor.execute {
+            val image = runCatching { InputImage.fromFilePath(appContext, uri) }.getOrElse {
+                main.post { onResult(null, "No se pudo abrir la imagen. Intenta con otra foto o con una imagen de la galería.") }
+                return@execute
+            }
+            fun complete(result: MedicationScanResult?) {
+                main.post {
+                    onResult(result, if (result == null) "No se pudo leer la imagen. Revisa que tenga buena luz e intenta otra vez." else null)
                 }
             }
-            .addOnFailureListener {
-                onResult(null, "No se pudo leer la imagen. Revisa que tenga buena luz e intenta otra vez.")
+            val recognizer = runCatching { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+                .getOrElse { complete(null); return@execute }
+            val recognition = runCatching { recognizer.process(image) }
+                .getOrElse { recognizer.close(); complete(null); return@execute }
+            recognition.addOnCompleteListener(executor) { task ->
+                val result = runCatching {
+                    if (task.isSuccessful) MedicationLabelParser.readDocument(task.result.toOcrLines(), document) else null
+                }.getOrNull()
+                recognizer.close()
+                complete(result)
             }
+        }
     }
 
     private fun Text.toOcrLines(): List<OcrLine> = textBlocks.flatMap { block -> block.lines }.map { line ->
         val box = line.boundingBox
         OcrLine(line.text, box?.height() ?: 0, box?.top ?: 0)
-    }
+    }.sortedBy { it.topPx }
 }

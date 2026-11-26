@@ -100,15 +100,21 @@ internal class CameraFallController(
                     if (thisSession == session && loading && !activity.isFinishing) bindCamera(thisSession)
                 }
             } catch (error: Exception) {
-                Log.e(TAG, "No se pudieron iniciar los modelos de cámara", error)
-                activity.runOnUiThread {
-                    if (thisSession != session) return@runOnUiThread
-                    loading = false
-                    active = false
-                    overlay.clear()
-                    publishStatus("No se pudo iniciar", "No se pudieron cargar los modelos locales. Intenta de nuevo.", true)
-                }
+                reportModelFailure(thisSession, error)
+            } catch (error: LinkageError) {
+                reportModelFailure(thisSession, error)
             }
+        }
+    }
+
+    private fun reportModelFailure(thisSession: Int, error: Throwable) {
+        Log.e(TAG, "No se pudieron iniciar los modelos de cámara", error)
+        activity.runOnUiThread {
+            if (thisSession != session) return@runOnUiThread
+            loading = false
+            active = false
+            overlay.clear()
+            publishStatus("No se pudo iniciar", "No se pudieron cargar los modelos locales. Intenta de nuevo.", true)
         }
     }
 

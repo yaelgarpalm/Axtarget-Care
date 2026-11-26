@@ -48,6 +48,15 @@ También se puede configurar Gradle con las variables de entorno de los mismos n
 - Las solicitudes de SMS/llamada se guardan como estados técnicos y no se confunden con entrega o respuesta confirmada.
 - Medicamentos y tomas usan SQLite independiente como fuente inmediata; recordatorios locales no esperan red. El JobScheduler sube primero los medicamentos y luego las tomas con UUID estable; un fallo conserva la cola para reintento. Los conflictos usan `updated_at`: las ediciones locales pendientes prevalecen y, cuando no hay edición local pendiente, se adopta el registro remoto más reciente.
 
+## Inicio de sesión con Google en Android
+
+1. Configura la audiencia y el nombre de la app en Google Auth Platform. Crea un cliente OAuth de tipo **Web** y registra como URI de redirección el callback que muestra Supabase en **Authentication → Sign In / Providers → Google**.
+2. Crea un cliente OAuth de tipo **Android** para `com.guardian.tzindaapp.v2` y el SHA-1 del certificado con que se firma el APK. Obtén el certificado de cada variante con `gradlew :app:signingReport` o `apksigner verify --print-certs`. Si distribuyes por Google Play, registra el certificado de firma de Google Play.
+3. Activa Google en Supabase, configura el Client ID Web y su secreto, y registra también los IDs de los clientes Android autorizados según la guía de Supabase. Mantén habilitada la validación de nonce. [Google en Supabase Auth](https://supabase.com/docs/guides/auth/social-sign-in/auth-google)
+4. En el `.env.local` que consume Gradle, establece `TZINDA_GOOGLE_WEB_CLIENT_ID` al Client ID Web público y compila el APK. El secreto queda en Supabase.
+
+En Android, **Continuar con Google** abre el selector de cuentas de Credential Manager. Supabase valida el ID token y la app guarda la sesión con el mismo almacén cifrado del acceso por correo. [Credential Manager](https://developer.android.com/identity/sign-in/credential-manager-siwg)
+
 ## Pruebas
 
 `supabase/tests/rls_isolation.sql` contiene aserciones SQL transaccionales de aislamiento general. `supabase/tests/medication_rls.sql` verifica que el cuidador solo ve registros explícitamente compartidos y no puede editarlos, y que una cuenta no vinculada no los ve. En local, ejecuta `supabase start`, `supabase db reset` y luego `psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -f supabase/tests/medication_rls.sql`. Android: `gradlew.bat testDebugUnitTest` y `gradlew.bat assembleDebug`.

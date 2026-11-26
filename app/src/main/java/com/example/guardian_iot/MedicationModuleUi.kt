@@ -39,7 +39,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 
 /** Small view/controller module kept outside MainActivity to avoid growing the main screen logic. */
-class MedicationModuleUi(
+internal class MedicationModuleUi(
     private val activity: Activity,
     private val repository: MedicationRepository,
     private val ownerId: String,
@@ -481,13 +481,20 @@ class MedicationModuleUi(
         }
     }
 
-    private fun showMedicationForm(existing: Medication?) {
+    private data class PrescriptionReview(val scan: MedicationScanResult, val index: Int = 0) {
+        val medication get() = scan.entries[index]
+        val hasNext get() = index + 1 < scan.entries.size
+    }
+
+    private fun showMedicationForm(existing: Medication?, review: PrescriptionReview? = null) {
         if (readOnly) return
         var selectedStart = existing?.startDate ?: LocalDate.now().toString()
         var selectedEnd = existing?.endDate
         val selectedTimes = (existing?.scheduleTimes ?: emptyList()).toMutableList()
 
         var frequency = existing?.frequency ?: "Diaria"
+        var waitingForFirstTime = false
+        var waitingForFrequency = false
         var anchor = existing?.let { MedicationSchedulePolicy.intervalAnchor(it.scheduleTimes) }
             ?: selectedTimes.minOrNull() ?: "08:00"
         val dialog = Dialog(activity, if (dark) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
@@ -504,7 +511,8 @@ class MedicationModuleUi(
             LinearLayout.LayoutParams(dp(44), dp(44)))
         v5.gap(content, 13)
         v5.header(content, if (existing == null) "Nuevo medicamento" else "Editar medicamento",
-            "Revisa la información de tu receta.", gapBelow = 34)
+            review?.let { "Medicamento ${it.index + 1} de ${it.scan.entries.size} · Revisa los datos con tu receta." }
+                ?: "Revisa la información de tu receta.", gapBelow = 34)
         val scanSlot = v5.column()
         content.addView(scanSlot)
         val name = v5.field(content, "Nombre del medicamento", existing?.name.orEmpty(), "Escribe el nombre", marginBelow = 12)
@@ -564,11 +572,11 @@ class MedicationModuleUi(
         val frequencies = listOf("Diaria", "Cada 8 horas", "Cada 12 horas", "Cada 24 horas")
         fun refreshSchedule() {
             val interval = MedicationSchedulePolicy.intervalHours(frequency)
-            val first = if (interval == null) selectedTimes.minOrNull() else anchor
+            val first = if (interval == null) selectedTimes.minOrNull() else anchor.takeUnless { waitingForFirstTime }
             firstDose.text = if (first == null) "Elige fecha y hora" else formatLocalDate(selectedStart) + " · " + first
             firstDose.contentDescription = "Primera toma. " + firstDose.text
-            currentFrequency.text = frequency
-            currentFrequency.contentDescription = "Frecuencia. " + frequency
+            currentFrequency.text = if (waitingForFrequency) "Elegir frecuencia" else frequency
+            currentFrequency.contentDescription = "Frecuencia. " + currentFrequency.text
             timeList.removeAllViews()
             if (interval == null) {
                 selectedTimes.sorted().forEach { time ->
@@ -580,18 +588,20 @@ class MedicationModuleUi(
                 v5.action(timeList, "Añadir horario", R.drawable.ic_plus, cardColor, accent) {
                     pickTime(selectedTimes.lastOrNull() ?: anchor) { time ->
                         if (time in selectedTimes) toast("Ese horario ya está agregado.")
-                        else { selectedTimes.add(time); refreshSchedule() }
+                        else { selectedTimes.add(time); waitingForFirstTime = false; refreshSchedule() }
                     }
                 }
-            } else {
+            } else if (!waitingForFirstTime) {
                 timeList.addView(v5.text(MedicationSchedulePolicy.intervalTimes(anchor, interval).orEmpty().joinToString(" · "),
                     14, muted))
             }
             frequencySlot.removeAllViews()
-            val mode = frequencies.indexOf(frequency).let { i -> if (i < 0 && interval == null) 0 else i }
+            val mode = if (waitingForFrequency) -1 else frequencies.indexOf(frequency)
+                .let { i -> if (i < 0 && interval == null) 0 else i }
             v5.segments(frequencySlot, labels, mode) { i ->
                 if (interval == null) anchor = selectedTimes.minOrNull() ?: anchor
                 frequency = frequencies[i]
+                waitingForFrequency = false
                 refreshSchedule()
             }
         }
@@ -609,6 +619,7 @@ class MedicationModuleUi(
                             selectedTimes.add(time)
                         }
                         anchor = time
+                        waitingForFirstTime = false
                         refreshSchedule()
                     }
                 }
@@ -619,6 +630,7 @@ class MedicationModuleUi(
             AlertDialog.Builder(activity).setTitle("Frecuencia").setItems(options.toTypedArray()) { _, i ->
                 if (MedicationSchedulePolicy.intervalHours(frequency) == null) anchor = selectedTimes.minOrNull() ?: anchor
                 frequency = options[i]
+                waitingForFrequency = false
                 refreshSchedule()
             }.show()
         }
@@ -629,38 +641,101 @@ class MedicationModuleUi(
             if (guess.name.isNotBlank()) name.setText(guess.name)
             if (guess.presentation.isNotBlank()) presentation.setText(guess.presentation)
             if (guess.dose.isNotBlank()) dose.setText(guess.dose)
+            if (guess.instructions.isNotBlank()) instructions.setText(guess.instructions)
+            if (guess.presentation.isNotBlank() || guess.instructions.isNotBlank()) extraOptions.visibility = View.VISIBLE
             if (guess.frequency in MedicationSchedulePolicy.frequencyOptions) {
                 frequency = guess.frequency
-                guess.anchorTime.takeIf { it.isNotBlank() }?.let { anchor = it }
-                refreshSchedule()
+                waitingForFrequency = false
+            } else if (existing == null) {
+                waitingForFrequency = true
+            }
+            if (guess.anchorTime.isNotBlank()) {
+                anchor = guess.anchorTime
+                if (MedicationSchedulePolicy.intervalHours(frequency) == null) {
+                    val previousFirst = selectedTimes.minOrNull()
+                    if (previousFirst != null) selectedTimes.remove(previousFirst)
+                    if (anchor !in selectedTimes) selectedTimes.add(anchor)
+                }
+                waitingForFirstTime = false
+            } else if (existing == null && selectedTimes.isEmpty()) {
+                waitingForFirstTime = true
+            }
+            refreshSchedule()
+        }
+
+        fun fillReview() {
+            if (review == null) return
+            applyGuess(review.medication)
+            if (review.scan.notes.isNotBlank()) {
+                val notes = v5.panel(scanSlot, tz.brandSoft, radius = 22, padding = 12, margin = 18)
+                notes.addView(v5.text("Notas generales de la receta", 15, ink, bold = true))
+                notes.addView(v5.text(review.scan.notes, 14, muted))
             }
         }
 
+        fun details(guess: MedicationLabelGuess) = buildString {
+            if (guess.name.isNotBlank()) appendLine(guess.name)
+            if (guess.dose.isNotBlank()) appendLine("Dosis o concentración: ${guess.dose}")
+            if (guess.presentation.isNotBlank()) appendLine("Presentación: ${guess.presentation}")
+            if (guess.frequency.isNotBlank()) appendLine("Frecuencia: ${guess.frequency}")
+            if (guess.anchorTime.isNotBlank()) appendLine("Hora: ${guess.anchorTime}")
+            if (guess.instructions.isNotBlank()) append(guess.instructions)
+        }.trim()
+
         var scanAgain: () -> Unit = {}
         fun showGuessReview(guess: MedicationLabelGuess) {
-            val details = buildString {
-                if (guess.name.isNotBlank()) appendLine("Nombre: ${guess.name}")
-                if (guess.presentation.isNotBlank()) appendLine("Presentación: ${guess.presentation}")
-                if (guess.dose.isNotBlank()) appendLine("Dosis leída: ${guess.dose}")
-                if (guess.frequency.isNotBlank()) appendLine("Frecuencia leída: ${guess.frequency}")
-                if (guess.anchorTime.isNotBlank()) appendLine("Hora leída: ${guess.anchorTime}")
-            }.trim()
             AlertDialog.Builder(activity)
                 .setTitle("Datos detectados")
-                .setMessage("$details\n\nLa lectura automática puede confundir nombres parecidos. Compara con la caja o la receta: todo se puede editar antes de guardar y AxTarget Care no interpreta ni cambia la indicación médica.")
-                .setNegativeButton("No usar", null)
+                .setMessage(details(guess) + "\n\nCompara cada campo con el envase o la receta antes de guardarlo.")
+                .setNegativeButton("Cancelar", null)
                 .setNeutralButton("Escanear otra vez") { _, _ -> scanAgain() }
                 .setPositiveButton("Usar estos datos") { _, _ -> applyGuess(guess) }
                 .show()
         }
 
-        fun handleScanResult(guess: MedicationLabelGuess?, error: String?) {
-            if (guess != null) {
-                showGuessReview(guess)
-            } else {
-                AlertDialog.Builder(activity)
+        fun showPrescriptionReview(scan: MedicationScanResult) {
+            val count = scan.entries.size
+            val summary = scan.entries.joinToString("\n\n", transform = ::details)
+            val message = buildString {
+                if (count == 0) append("No se identificaron medicamentos. Puedes consultar el texto o intentar con otra imagen de la receta.")
+                else append(summary)
+                if (scan.notes.isNotBlank()) append("\n\nNotas generales\n${scan.notes}")
+                if (count > 0) append("\n\nCompara los resultados con la receta antes de guardarlos.")
+            }
+            val builder = AlertDialog.Builder(activity)
+                .setTitle(if (count == 0) "Revisar lectura" else TzindaText.count(count, "medicamento") + " en la receta")
+                .setMessage(message)
+                .setNegativeButton("Cancelar", null)
+            if (scan.recognizedText.isNotBlank()) {
+                builder.setNeutralButton("Ver texto") { _, _ ->
+                    AlertDialog.Builder(activity).setTitle("Texto reconocido").setMessage(scan.recognizedText)
+                        .setPositiveButton("Volver") { _, _ -> showPrescriptionReview(scan) }.show()
+                }
+            }
+            builder.setPositiveButton(if (count > 0) "Revisar registros" else "Intentar otra vez") { _, _ ->
+                when {
+                    count == 0 -> scanAgain()
+                    existing != null -> AlertDialog.Builder(activity).setTitle("Elige el medicamento de este registro")
+                        .setItems(scan.entries.map { it.name }.toTypedArray()) { _, index -> showGuessReview(scan.entries[index]) }
+                        .setNegativeButton("Cancelar", null).show()
+                    else -> {
+                        dialog.dismiss()
+                        showMedicationForm(null, PrescriptionReview(scan))
+                    }
+                }
+            }.show()
+        }
+
+        fun handleScanResult(document: MedicationDocument, result: MedicationScanResult?, error: String?) {
+            if (!dialog.isShowing || (result == null && error == null)) return
+            when {
+                result != null && document == MedicationDocument.PRESCRIPTION &&
+                    (result.entries.isNotEmpty() || result.notes.isNotBlank() || result.recognizedText.isNotBlank()) ->
+                    showPrescriptionReview(result)
+                result?.entries?.size == 1 -> showGuessReview(result.entries.single())
+                else -> AlertDialog.Builder(activity)
                     .setTitle("No se pudo leer la imagen")
-                    .setMessage(error ?: "No se detectó texto. Escribe el nombre y la presentación a mano.")
+                    .setMessage(error ?: "Usa una foto nítida y bien iluminada en la que se vea el texto completo.")
                     .setNegativeButton("Escribir a mano", null)
                     .setPositiveButton("Intentar otra vez") { _, _ -> scanAgain() }
                     .show()
@@ -669,84 +744,90 @@ class MedicationModuleUi(
 
         fun showScanOptions() {
             val labelScannerValue = labelScanner ?: return
-            if (labelScannerValue.cloudAvailable) {
-                val dialog = Dialog(activity)
-                val panel = LinearLayout(activity).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(dp(18), dp(14), dp(18), dp(14))
-                    background = GradientDrawable().apply { setColor(cardColor); cornerRadius = dp(24).toFloat(); setStroke(dp(1), outline) }
-                }
-                val header = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                header.addView(label("Escanear caja o receta", ink, 22, true), LinearLayout.LayoutParams(0, -2, 1f))
-                header.addView(
-                    tz.iconOnlyButton(R.drawable.ic_close, "Cerrar", size = 48) { dialog.dismiss() },
-                    LinearLayout.LayoutParams(dp(48), dp(48)),
-                )
-                panel.addView(header)
-                panel.addView(
-                    label(
-                        "Al elegir la nube, la foto pasa por Supabase y NVIDIA para leer nombre, dosis y presentación; AxTarget Care no la guarda. Revisa siempre lo detectado.",
-                        muted,
-                        13,
-                    ).apply { setPadding(0, dp(4), 0, 0) },
-                )
-                val deviceOnly = tz.switchRow(
-                    panel,
-                    "Leer en este teléfono",
-                    "No envía la foto, pero puede confundir letras.",
-                    value = false,
-                    action = { },
-                )
-                gap(panel, 8)
-                panel.addView(
-                    button("Tomar foto", true, R.drawable.ic_camera) {
-                        val mode = if (deviceOnly.isChecked) MedicationScanMode.DEVICE else MedicationScanMode.CLOUD
-                        dialog.dismiss()
-                        labelScannerValue.takePhoto(mode, ::handleScanResult)
-                    },
-                )
-                gap(panel, 8)
-                panel.addView(
-                    button("Elegir imagen", false) {
-                        val mode = if (deviceOnly.isChecked) MedicationScanMode.DEVICE else MedicationScanMode.CLOUD
-                        dialog.dismiss()
-                        labelScannerValue.pickFromGallery(mode, ::handleScanResult)
-                    },
-                )
-                gap(panel, 6)
-                panel.addView(button("Cancelar", false) { dialog.dismiss() })
-                dialog.setContentView(panel)
-                dialog.show()
-                dialog.window?.apply {
-                    setBackgroundDrawableResource(android.R.color.transparent)
-                    setLayout((activity.resources.displayMetrics.widthPixels - dp(28)).coerceAtLeast(dp(280)), -2)
-                }
-                return
+            val chooser = Dialog(activity)
+            val panel = v5.column().apply {
+                setPadding(dp(18), dp(14), dp(18), dp(14))
+                background = GradientDrawable().apply { setColor(cardColor); cornerRadius = dp(24).toFloat(); setStroke(dp(1), outline) }
             }
-            AlertDialog.Builder(activity)
-                .setTitle("Escanear caja o receta")
-                .setMessage("Toma una foto donde se vean el nombre y la presentación, o elige una imagen. El texto se lee en este teléfono y la foto no se guarda ni se envía.")
-                .setNegativeButton("Cancelar", null)
-                .setNeutralButton("Elegir imagen") { _, _ -> labelScannerValue.pickFromGallery(MedicationScanMode.DEVICE, ::handleScanResult) }
-                .setPositiveButton("Tomar foto") { _, _ -> labelScannerValue.takePhoto(MedicationScanMode.DEVICE, ::handleScanResult) }
-                .show()
+            panel.addView(label("Escanear medicamento", ink, 22, true))
+            gap(panel, 8)
+            var document = MedicationDocument.LABEL
+            val documentOptions = v5.column()
+            panel.addView(documentOptions)
+            fun updateDocumentOptions() {
+                documentOptions.removeAllViews()
+                v5.segments(documentOptions, listOf("Caja o frasco", "Receta completa"), document.ordinal) { index ->
+                    document = MedicationDocument.entries[index]
+                    updateDocumentOptions()
+                }
+            }
+            updateDocumentOptions()
+            gap(panel, 8)
+            val tips = label("Encuadra el texto completo con buena luz. Si la receta tiene varias hojas, escanea una por vez.", muted, 13)
+            panel.addView(tips)
+            val cloud = if (labelScannerValue.cloudAvailable) {
+                tz.switchRow(
+                    panel, "Leer en la nube", "La imagen se envía a NVIDIA mediante Supabase. Elige una foto sin datos personales identificables.",
+                    value = false, action = { },
+                )
+            } else null
+            gap(panel, 8)
+            panel.addView(button("Tomar foto", true, R.drawable.ic_camera) {
+                val mode = if (cloud?.isChecked == true) MedicationScanMode.CLOUD else MedicationScanMode.DEVICE
+                chooser.dismiss()
+                labelScannerValue.takePhoto(document, mode) { result, error -> handleScanResult(document, result, error) }
+            })
+            gap(panel, 8)
+            panel.addView(button("Elegir imagen", false) {
+                val mode = if (cloud?.isChecked == true) MedicationScanMode.CLOUD else MedicationScanMode.DEVICE
+                chooser.dismiss()
+                labelScannerValue.pickFromGallery(document, mode) { result, error -> handleScanResult(document, result, error) }
+            })
+            gap(panel, 6)
+            panel.addView(button("Cancelar", false) { chooser.dismiss() })
+            chooser.setContentView(ScrollView(activity).apply { addView(panel) })
+            chooser.show()
+            chooser.window?.apply {
+                setBackgroundDrawableResource(android.R.color.transparent)
+                setLayout((activity.resources.displayMetrics.widthPixels - dp(28)).coerceAtLeast(dp(280)), -2)
+            }
         }
-        scanAgain = { showScanOptions() }
+        scanAgain = ::showScanOptions
 
-
-        if (labelScanner != null) {
+        fillReview()
+        if (review == null && labelScanner != null) {
             val scan = v5.panel(scanSlot, tz.brandSoft, radius = 22, padding = 0, margin = 27)
-            v5.row(scan, "Escanear caja o receta", "Completa los datos con la cámara", R.drawable.v5_camera,
+            v5.row(scan, "Escanear caja o receta", "Lee el envase o los medicamentos de una receta", R.drawable.v5_camera,
                 minHeight = 77, emphasis = true, titleColor = accent, action = ::showScanOptions)
         }
+        val saveLabel = when {
+            existing != null -> "Guardar cambios"
+            review?.hasNext == true -> "Guardar y continuar"
+            else -> "Guardar medicamento"
+        }
+        fun reviewNext() {
+            if (review?.hasNext == true) showMedicationForm(null, review.copy(index = review.index + 1))
+        }
+        if (review != null) {
+            v5.action(footer, "Omitir medicamento", fill = cardColor, fg = accent) {
+                dialog.dismiss()
+                reviewNext()
+            }
+        }
         lateinit var saveButton: Button
-        saveButton = v5.action(footer, if (existing == null) "Guardar medicamento" else "Guardar cambios", R.drawable.v5_check) {
+        saveButton = v5.action(footer, saveLabel, R.drawable.v5_check) {
             val buttonView = saveButton
             val chosenFrequency = frequency
             val interval = MedicationSchedulePolicy.intervalHours(chosenFrequency)
             val schedule = if (interval != null) MedicationSchedulePolicy.intervalTimes(anchor, interval).orEmpty()
                 else selectedTimes.distinct().sorted()
-            val validation = MedicationSchedulePolicy.validate(name.text.toString(), dose.text.toString(), chosenFrequency, schedule, selectedStart, selectedEnd)
+            val validation = when {
+                waitingForFrequency -> "Selecciona la frecuencia indicada para este medicamento."
+                waitingForFirstTime -> "Elige la fecha y hora de la primera toma."
+                instructions.text.toString().trim().length > 500 -> "Las indicaciones superan los 500 caracteres. Revisa el texto antes de guardarlo."
+                presentation.text.toString().trim().length > 80 -> "La presentación supera los 80 caracteres. Revisa el texto antes de guardarlo."
+                else -> MedicationSchedulePolicy.validate(name.text.toString(), dose.text.toString(), chosenFrequency, schedule, selectedStart, selectedEnd)
+            }
             if (validation != null) {
                 formError.text = validation
                 formError.visibility = View.VISIBLE
@@ -764,7 +845,7 @@ class MedicationModuleUi(
             }
             saved.onFailure {
                 buttonView.isEnabled = true
-                buttonView.text = if (existing == null) "Guardar medicamento" else "Guardar cambios"
+                buttonView.text = saveLabel
                 val message = it.message ?: "No se pudo guardar el medicamento."
                 formError.text = message
                 formError.visibility = View.VISIBLE
@@ -777,10 +858,11 @@ class MedicationModuleUi(
                 SyncScheduler.enqueue(activity)
                 dialog.dismiss()
                 toast(if (ownerId.startsWith("local:")) "Medicamento guardado en este teléfono." else "Medicamento guardado. Se sincronizará con la cuenta.")
-                rerender()
+                if (review == null) rerender() else reviewNext()
             }
         }
 
+        if (review != null) dialog.setOnDismissListener { rerender() }
         v5.showFullScreen(dialog, root)
     }
 

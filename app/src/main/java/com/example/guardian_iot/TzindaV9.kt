@@ -42,6 +42,7 @@ internal class TzindaV9(private val activity: Activity, private val v5: TzindaV5
         val privacy: CheckBox?,
         val status: TextView,
         val submit: Button,
+        val google: Button?,
     )
 
     fun welcome(body: LinearLayout, step: Int, next: () -> Unit, skip: () -> Unit, login: () -> Unit) {
@@ -154,6 +155,7 @@ internal class TzindaV9(private val activity: Activity, private val v5: TzindaV5
         openMode: (AuthMode) -> Unit,
         showPrivacy: () -> Unit,
         useLocally: () -> Unit,
+        useGoogle: () -> Unit,
         submit: () -> Unit,
     ): AccessFields {
         val recover = mode == AuthMode.RECOVER
@@ -216,6 +218,9 @@ internal class TzindaV9(private val activity: Activity, private val v5: TzindaV5
         val button = v5.action(body, label, if (recover) R.drawable.v9_mail else R.drawable.ic_chevron,
             margin = when (mode) { AuthMode.LOGIN -> 14; AuthMode.REGISTER -> 17; AuthMode.RECOVER -> 35; AuthMode.RESET -> 16 },
             action = submit)
+        val google = if (login || register) {
+            v5.action(body, "Continuar con Google", fill = theme.cardColor, fg = theme.ink, margin = 17, action = useGoogle)
+        } else null
         when (mode) {
             AuthMode.LOGIN -> {
                 textAction(body, "¿Es tu primera vez? Crea una cuenta") { openMode(AuthMode.REGISTER) }
@@ -231,7 +236,7 @@ internal class TzindaV9(private val activity: Activity, private val v5: TzindaV5
             }
             AuthMode.RESET -> textAction(body, "Cancelar recuperación", action = back)
         }
-        return AccessFields(email, name, password, confirmation, privacy, status, button)
+        return AccessFields(email, name, password, confirmation, privacy, status, button, google)
     }
 
     private fun brandBar(parent: LinearLayout, skip: (() -> Unit)? = null) {
