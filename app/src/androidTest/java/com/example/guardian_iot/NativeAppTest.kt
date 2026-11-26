@@ -470,7 +470,7 @@ class NativeAppTest {
         assertEquals(0, actions.get())
     }
     @Test @SdkSuppress(minSdkVersion = 29)
-    fun smsPermissionCardShowsActualAndroidGrantAndDoesNotAskAgain() {
+    fun settingsKeepRoleAndAdvancedPermissionControlsOutOfTheMainSettingsScreen() {
         instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.SEND_SMS)
         val store = AppStore(context)
         store.prefs.edit().putBoolean("contacts_offered", true).putBoolean("sms_permission_requested", false).commit()
@@ -478,13 +478,12 @@ class NativeAppTest {
         activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         instrumentation.runOnMainSync {
             clickByDescription("Ajustes")
-            clickByDescription("Ajustes avanzados. Cuenta, permisos y dispositivos")
             val settingsRoot = activity!!.findViewById<android.view.View>(R.id.root)
-            val status = settingsRoot.findViewWithTag<android.widget.TextView>("sms_permission_status")
-            val enable = settingsRoot.findViewWithTag<Button>("enable_sms")
-            assertTrue(status.text.toString().startsWith("SMS habilitado"))
-            assertFalse(enable.isEnabled)
-            assertEquals("SMS habilitado", enable.text.toString())
+            assertNull(settingsRoot.findViewWithTag<android.widget.TextView>("sms_permission_status"))
+            assertNull(settingsRoot.findViewWithTag<Button>("enable_sms"))
+            val labels = ArrayList<android.view.View>()
+            settingsRoot.findViewsWithText(labels, "Cambiar modo de este teléfono", android.view.View.FIND_VIEWS_WITH_TEXT)
+            assertTrue(labels.isEmpty())
         }
         assertFalse("Grant status must come from Android, not a preference", store.prefs.getBoolean("sms_permission_requested", false))
     }

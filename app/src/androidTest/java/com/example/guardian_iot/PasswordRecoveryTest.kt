@@ -30,10 +30,10 @@ class PasswordRecoveryTest {
 
     @Before fun prepare() {
         check(context.packageName.endsWith(".audit"))
-        sessions.recovery.clear()
+        sessions.authFlow.clear()
         sessions.write(active)
     }
-    @After fun clean() { sessions.recovery.clear(); sessions.clear() }
+    @After fun clean() { sessions.authFlow.clear(); sessions.clear() }
 
     @Test fun unsolicitedAndImplicitCallbacksNeverReplaceAnExistingSession() {
         val backend = SupabaseBackend(sessions)
@@ -58,7 +58,7 @@ class PasswordRecoveryTest {
             assertEquals("recovered-owner", recovered.userId)
             assertTrue(exchange.line.startsWith("POST /auth/v1/token?grant_type=pkce "))
             assertEquals("one-use-code", exchange.body.getString("auth_code"))
-            assertEquals(sent.body.getString("code_challenge"), PasswordRecoveryStore.challenge(exchange.body.getString("code_verifier")))
+            assertEquals(sent.body.getString("code_challenge"), AuthFlowStore.challenge(exchange.body.getString("code_verifier")))
             assertEquals(43, exchange.body.getString("code_verifier").length)
             assertEquals(active, sessions.read())
             assertTrue(http.backend().hasPasswordRecovery)
@@ -84,32 +84,32 @@ class PasswordRecoveryTest {
             assertThrows(BackendFailure::class.java) { backend.acceptPasswordRecovery(callback) }
             assertEquals(active, sessions.read())
             assertFalse(backend.hasPasswordRecovery)
-            assertNull(sessions.recovery.claim())
+            assertNull(sessions.authFlow.claim(AuthFlowStore.Purpose.RECOVERY))
         }
     }
 
     @Test fun expiredAndConsumedFlowsCannotBeReusedAfterProcessRecreation() {
         var clock = System.currentTimeMillis()
-        val store = PasswordRecoveryStore(context) { clock }
-        store.begin(email)
+        val store = AuthFlowStore(context) { clock }
+        store.begin(AuthFlowStore.Purpose.RECOVERY, email)
         clock += 60 * 60 * 1000 + 1
-        assertNull(store.claim())
-        store.begin(email)
-        assertNotNull(store.claim())
-        assertNull(PasswordRecoveryStore(context) { clock }.claim())
+        assertNull(store.claim(AuthFlowStore.Purpose.RECOVERY))
+        store.begin(AuthFlowStore.Purpose.RECOVERY, email)
+        assertNotNull(store.claim(AuthFlowStore.Purpose.RECOVERY))
+        assertNull(AuthFlowStore(context) { clock }.claim(AuthFlowStore.Purpose.RECOVERY))
         assertEquals(active, sessions.read())
     }
 
     @Test fun laterRequestOrCancellationRejectsTheOldExchangeResult() {
-        val store = sessions.recovery
-        val old = store.begin(email)
-        assertNotNull(store.claim())
-        val next = store.begin("next@example.invalid")
-        assertFalse(store.complete(old.getString("id"), active))
+        val store = sessions.authFlow
+        val old = store.begin(AuthFlowStore.Purpose.RECOVERY, email)
+        assertNotNull(store.claim(AuthFlowStore.Purpose.RECOVERY))
+        val next = store.begin(AuthFlowStore.Purpose.RECOVERY, "next@example.invalid")
+        assertFalse(store.completeRecovery(old.getString("id"), active))
         store.clear(old.getString("id"))
-        assertEquals(next.getString("id"), store.claim()?.getString("id"))
+        assertEquals(next.getString("id"), store.claim(AuthFlowStore.Purpose.RECOVERY)?.getString("id"))
         store.clear()
-        assertFalse(store.complete(next.getString("id"), active))
+        assertFalse(store.completeRecovery(next.getString("id"), active))
         assertEquals(active, sessions.read())
     }
 
@@ -119,7 +119,7 @@ class PasswordRecoveryTest {
             backend.requestPasswordRecovery(email)
             val failure = assertThrows(BackendFailure::class.java) { backend.acceptPasswordRecovery(callback) }
             assertEquals(BackendFailure.Category.RECOVERY, failure.category)
-            assertNull(sessions.recovery.claim())
+            assertNull(sessions.authFlow.claim(AuthFlowStore.Purpose.RECOVERY))
             assertEquals(active, sessions.read())
         }
     }
@@ -129,7 +129,7 @@ class PasswordRecoveryTest {
             val backend = http.backend()
             val failure = assertThrows(BackendFailure::class.java) { backend.requestPasswordRecovery(email) }
             assertEquals(BackendFailure.Category.EMAIL_RATE_LIMIT, failure.category)
-            assertNull(sessions.recovery.claim())
+            assertNull(sessions.authFlow.claim(AuthFlowStore.Purpose.RECOVERY))
             assertEquals(active, sessions.read())
         }
     }
@@ -151,7 +151,7 @@ class PasswordRecoveryTest {
             val backend = http.backend()
             backend.requestPasswordRecovery(email)
             backend.signIn(email, "fictional-pass-123")
-            assertNull(sessions.recovery.claim())
+            assertNull(sessions.authFlow.claim(AuthFlowStore.Purpose.RECOVERY))
             assertThrows(BackendFailure::class.java) { backend.acceptPasswordRecovery(callback) }
             assertEquals("recovered-owner", sessions.read()?.userId)
         }
@@ -159,7 +159,7 @@ class PasswordRecoveryTest {
 
     @Test fun delayedExchangeShowsResetInTheRecreatedActivity() {
         val released = CountDownLatch(1)
-        sessions.recovery.begin(email)
+        sessions.authFlow.begin(AuthFlowStore.Purpose.RECOVERY, email)
         val app = AppStore(context)
         app.bindLocalDataToUser(active.userId)
         AppStore(context).prefs.edit().putBoolean("monitor_enabled", false).commit()

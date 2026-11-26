@@ -32,7 +32,6 @@ object TzindaTabs {
     const val ADD_CONTACT = 22
     const val EMERGENCY_CARD = 23
     const val REPORT = 24
-    const val ADVANCED_SETTINGS = 25
     const val CARE_SETTINGS = 26
 }
 
@@ -134,7 +133,6 @@ object TzindaNavigationPolicy {
         TzindaTabs.ADD_CONTACT -> "Añadir contacto"
         TzindaTabs.EMERGENCY_CARD -> "Ficha de emergencia"
         TzindaTabs.REPORT -> "Preparar reporte"
-        TzindaTabs.ADVANCED_SETTINGS -> "Ajustes avanzados"
         TzindaTabs.CARE_SETTINGS -> "Ajustes de cuidados"
         else -> "Inicio"
     }

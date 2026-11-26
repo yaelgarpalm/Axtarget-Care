@@ -76,7 +76,7 @@ internal class TzindaV9(private val activity: Activity, private val v5: TzindaV5
         body.addView(v5.text("Protección y cuidados, a tu ritmo.", 11, theme.muted).apply { gravity = Gravity.CENTER })
     }
 
-    fun chooseMode(body: LinearLayout, select: (String) -> Unit, back: (() -> Unit)?) {
+    fun chooseMode(body: LinearLayout, select: (String) -> Unit) {
         brandBar(body)
         v5.gap(body, 33)
         body.addView(v5.label("PRIMER INGRESO", theme.accent))
@@ -100,11 +100,7 @@ internal class TzindaV9(private val activity: Activity, private val v5: TzindaV5
                 .contentDescription = "Elegir modo: $title"
         }
         v5.gap(body, 26)
-        tip(body, "Puedes cambiarlo en Ajustes.", "Los vínculos y permisos se autorizan por separado.", R.drawable.v5_settings)
-        back?.let {
-            v5.gap(body, 48)
-            textAction(body, "Volver a Ajustes", action = it)
-        }
+        tip(body, "Elige el modo que usarás en este teléfono.", "Los vínculos y permisos se autorizan por separado.", R.drawable.v5_info)
     }
 
     fun tutorial(body: LinearLayout, role: TzindaRole, step: Int, previous: () -> Unit, next: () -> Unit, skip: () -> Unit) {

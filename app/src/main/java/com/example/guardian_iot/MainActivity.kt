@@ -31,11 +31,6 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
 import androidx.core.content.FileProvider
-import androidx.credentials.exceptions.GetCredentialCancellationException
-import androidx.credentials.exceptions.GetCredentialException
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.launch
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -49,6 +44,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
     private lateinit var store: AppStore
@@ -72,6 +68,7 @@ class MainActivity : ComponentActivity() {
     private var authGoogle: Button? = null
     private var authEmailDraft = ""
     private var authSubmitting = false
+    private var finishingGoogleSignIn = false
     private var startupPermissionsVisible = false
     private var startupPermissionInFlight = false
     private var welcomeStep: Int? = null
@@ -286,6 +283,8 @@ class MainActivity : ComponentActivity() {
         backend = SupabaseBackend(sessions)
         medicationRepository = MedicationRepository(this, backend, store)
         careFeatures = CareFeatureStore(this)
+        finishingGoogleSignIn = restoredState?.getBoolean("finishing_google_sign_in", false) == true
+        authSubmitting = finishingGoogleSignIn
         authMode = restoredState?.getString("auth_mode")?.let { runCatching { AuthMode.valueOf(it) }.getOrNull() }
             ?: if (backend.isConfigured && sessions.read() == null && !store.prefs.getBoolean("local_only_mode", false)) AuthMode.LOGIN else null
         if (backend.hasPasswordRecovery) authMode = AuthMode.RESET
@@ -297,14 +296,18 @@ class MainActivity : ComponentActivity() {
             authMode = null
         }
         tutorialReturnTab = restoredState?.getInt("v9_tutorial_return", -1)?.takeIf { it >= 0 }
+            ?.let { if (it == RETIRED_ADVANCED_SETTINGS) TzindaTabs.SETTINGS else it }
         val restoredTutorial = restoredState?.getInt("v9_tutorial_page", -1)?.takeIf { it in 0..2 }
-        val choosingTutorialRole = restoredState?.getInt("tab", -1) == ROLE_TAB && restoredTutorial == null
-        tutorialStep = if (store.role().isBlank()) null else restoredTutorial
-            ?: firstTutorialStep().takeUnless { choosingTutorialRole }
+        tutorialStep = if (store.role().isBlank()) null else restoredTutorial ?: firstTutorialStep()
         if (dark) setTheme(R.style.AppTheme_Dark)
         super.onCreate(restoredState)
-        tab = restoredState?.getInt("tab") ?: if (store.role().isBlank()) ROLE_TAB else 0
-        navigationHistory.restore(restoredState?.getIntArray("navigation_back_stack"))
+        tab = when (val restoredTab = restoredState?.getInt("tab")) {
+            RETIRED_ADVANCED_SETTINGS -> TzindaTabs.SETTINGS
+            null, ROLE_TAB -> if (store.role().isBlank()) ROLE_TAB else TzindaTabs.HOME
+            else -> restoredTab
+        }
+        navigationHistory.restore(restoredState?.getIntArray("navigation_back_stack")
+            ?.filter { it != RETIRED_ADVANCED_SETTINGS && it != ROLE_TAB }?.toIntArray())
         pendingAction = restoredState?.getString("action")
         profileReturnTab = restoredState?.getInt("profile_return_tab", 0) ?: 0
         cameraReturnTab = restoredState?.getInt("camera_return_tab", 0) ?: 0
@@ -346,10 +349,8 @@ class MainActivity : ComponentActivity() {
                     finishStartupPermissions()
                 } else if (tutorialStep != null) {
                     previousTutorialStep()
-                } else if (tab == ROLE_TAB && firstTutorialStep() != null) {
-                    finishTutorial()
-                } else if (isSecondaryScreen(tab) || tab == ROLE_TAB && store.role().isNotBlank()) {
-                    if (tab == ROLE_TAB) resetNavigation(0) else navigateBack()
+                } else if (isSecondaryScreen(tab)) {
+                    navigateBack()
                 } else {
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -412,6 +413,7 @@ class MainActivity : ComponentActivity() {
         out.putBoolean("resume_alert_setup", resumeAlertSetup)
         out.putBoolean("startup_permission_pending", startupPermissionInFlight)
         authMode?.let { out.putString("auth_mode", it.name) }
+        out.putBoolean("finishing_google_sign_in", finishingGoogleSignIn)
         tutorialStep?.let { out.putInt("v9_tutorial_page", it) }
         tutorialReturnTab?.let { out.putInt("v9_tutorial_return", it) }
         contactDraft?.let { rows -> out.putString("contact_draft", JSONArray().apply { rows.forEach { put(JSONObject().put("name", it.name).put("phone", it.phone)) } }.toString()) }
@@ -473,13 +475,58 @@ class MainActivity : ComponentActivity() {
     }
     private fun processAuthCallback(intent: Intent) {
         val callback = intent.data ?: return
-        if (callback.scheme == "com.guardian.tzindaapp.v2" && callback.host == "auth-callback") {
-            intent.data = null // Do not replay the one-use callback after Activity recreation.
-            passwordRecoveryIo.execute {
-                runCatching { backend.acceptPasswordRecovery(callback) }
-                    .onSuccess { runOnUiThread { if (!isDestroyed && !isFinishing) refreshPasswordRecovery() } }
-                    .onFailure { failure -> runOnUiThread { if (!isDestroyed && !isFinishing) { authMode = AuthMode.RECOVER; render(); toast(failure.message ?: "No se pudo abrir el enlace.", true) } } }
+        if (!backend.matchesAuthRedirect(callback)) return
+        intent.data = null // The code can be exchanged once.
+        if (authSubmitting) return
+        if (backend.hasGoogleSignIn) {
+            processGoogleCallback(callback)
+            return
+        }
+        authCallbackIo.execute {
+            val result = runCatching { backend.acceptPasswordRecovery(callback) }
+            runOnUiThread {
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                result.onSuccess { refreshPasswordRecovery() }.onFailure { failure ->
+                    if (sessions.read() == null) {
+                        authMode = AuthMode.RECOVER
+                        render()
+                    }
+                    toast(failure.message ?: "No se pudo abrir el enlace.", true)
+                }
             }
+        }
+    }
+
+    private fun processGoogleCallback(callback: Uri) {
+        if (!googleExchangeRunning.compareAndSet(false, true)) return
+        finishingGoogleSignIn = true
+        finishWelcome()
+        authMode = AuthMode.LOGIN
+        updateAuthButtons(true)
+        render()
+        val callbackBackend = backend
+        authCallbackIo.execute {
+            val result = runCatching { callbackBackend.acceptGoogleCallback(callback) }
+            runOnUiThread {
+                googleExchangeRunning.set(false)
+                if (!isDestroyed && !isFinishing) finishGoogleSignIn(result.getOrNull(), result.exceptionOrNull())
+            }
+        }
+    }
+
+    private fun finishGoogleSignIn(session: AuthSession?, failure: Throwable? = null) {
+        finishingGoogleSignIn = false
+        updateAuthButtons(false)
+        if (session != null) {
+            completeSignIn(session, consented = true)
+        } else {
+            backend.cancelGoogleSignIn()
+            val message = when ((failure as? BackendFailure)?.category) {
+                BackendFailure.Category.NETWORK -> "Sin conexión. Conéctate a Internet y vuelve a intentar el acceso con Google."
+                BackendFailure.Category.AUTH_RATE_LIMIT -> failure?.message
+                else -> null
+            } ?: BackendFailure(BackendFailure.Category.GOOGLE_SIGN_IN).message.orEmpty()
+            setAuthStatus(message, true)
         }
     }
     private fun processPairingLink(uri: Uri?) {
@@ -506,6 +553,12 @@ class MainActivity : ComponentActivity() {
     private fun showPairingConfirmation(type: String, code: String) {
         if (type !in setOf("camera", "caregiver") || code.filter(Char::isLetterOrDigit).length != 8) return
         val camera = type == "camera"
+        val requiredRole = if (camera) AppStore.ROLE_CAMERA else AppStore.ROLE_CAREGIVER
+        if (sessions.read() != null && store.role().isNotBlank() && store.role() != requiredRole) {
+            val roleName = TzindaNavigationPolicy.roleLabel(TzindaNavigationPolicy.role(requiredRole))
+            toast("Para usar este código, entra con una cuenta en modo $roleName.", true)
+            return
+        }
         val deviceName = if (camera) "Cámara independiente" else "Teléfono de la persona protegida"
         val content = column().apply {
             gravity = Gravity.CENTER_HORIZONTAL
@@ -539,7 +592,11 @@ class MainActivity : ComponentActivity() {
                     toast("Inicia sesión para terminar la vinculación.")
                     authMode = AuthMode.LOGIN; render()
                 } else {
-                    store.saveRole(if (camera) AppStore.ROLE_CAMERA else AppStore.ROLE_CAREGIVER)
+                    if (store.role().isBlank()) {
+                        store.saveRole(requiredRole, beginTutorial = true)
+                        tutorialStep = 0
+                        resetNavigation(TzindaTabs.HOME)
+                    }
                     if (camera) acceptCameraPairing(code) else acceptCaregiverPairing(code)
                 }
             }.show()
@@ -740,7 +797,12 @@ class MainActivity : ComponentActivity() {
         }
     }
     private val live = object : Runnable {
-        override fun run() { refreshPasswordRecovery(); refreshLive(); handler.postDelayed(this, 1_000) }
+        override fun run() {
+            if (finishingGoogleSignIn && !googleExchangeRunning.get()) finishGoogleSignIn(sessions.read())
+            refreshPasswordRecovery()
+            refreshLive()
+            handler.postDelayed(this, 1_000)
+        }
     }
     private fun refreshLive() {
         locationMap?.checkAccess()
@@ -992,26 +1054,12 @@ class MainActivity : ComponentActivity() {
         showTab(index)
     }
     private fun chooseRole(role: String) {
-        val guided = store.role().isBlank() || firstTutorialStep() != null
-        if (role == store.role()) {
-            if (guided) setTutorialStep(0) else resetNavigation(TzindaTabs.HOME)
-            return
-        }
-        val applyRole = {
-            if (GuardianMonitorService.monitoring || store.prefs.getBoolean("monitor_enabled", false))
-                service(GuardianMonitorService.ACTION_STOP)
-            // Leaving the camera role must release the lens instead of keeping a hidden session.
-            disposeCameraController()
-            store.saveRole(role, beginTutorial = guided)
-            if (guided) tutorialStep = 0
-            resetNavigation(TzindaTabs.HOME)
-        }
-        if (store.role().isNotBlank() && (GuardianMonitorService.monitoring || store.prefs.getBoolean("monitor_enabled", false))) {
-            AlertDialog.Builder(this).setTitle("Cambiar modo de este teléfono")
-                .setMessage("Al cambiar de rol se detendrá el monitoreo de caídas en este teléfono.")
-                .setNegativeButton("Cancelar", null)
-                .setPositiveButton("Cambiar") { _, _ -> applyRole() }.show()
-        } else applyRole()
+        if (store.role().isNotBlank()) return
+        if (GuardianMonitorService.monitoring || store.prefs.getBoolean("monitor_enabled", false))
+            service(GuardianMonitorService.ACTION_STOP)
+        store.saveRole(role, beginTutorial = true)
+        tutorialStep = 0
+        resetNavigation(TzindaTabs.HOME)
     }
     private fun openCameraScreen() {
         if (tab != CAMERA_TAB) cameraReturnTab = if (isPrimaryTab(tab)) tab else 0
@@ -1083,7 +1131,7 @@ class MainActivity : ComponentActivity() {
         TzindaTabs.MEDICATION_RECORDS -> medicationReturnTab
         TzindaTabs.PULSE, TzindaTabs.OXYGEN -> MEDICATIONS_TAB
         TzindaTabs.ALERT_HISTORY, TzindaTabs.ALERT_DETAILS, TzindaTabs.BRACELET_ALERT, TzindaTabs.HELP_REQUEST -> TzindaTabs.ACTIVITY
-        TzindaTabs.ALERT_PRACTICE, TzindaTabs.EMERGENCY_CARD, TzindaTabs.ADVANCED_SETTINGS -> TzindaTabs.SETTINGS
+        TzindaTabs.ALERT_PRACTICE, TzindaTabs.EMERGENCY_CARD -> TzindaTabs.SETTINGS
         TzindaTabs.BRACELET_PAIR, TzindaTabs.BRACELET_DIAGNOSTIC, TzindaTabs.SAFE_ZONES -> SUPERVISION_TAB
         TzindaTabs.ADD_CONTACT -> TzindaTabs.CONTACTS
         TzindaTabs.CARE_SETTINGS -> CARE_TAB
@@ -1241,8 +1289,7 @@ class MainActivity : ComponentActivity() {
         if (renderKey == lastRenderKey) scroll.post { scroll.scrollTo(0, scrollBefore) }
         lastRenderKey = renderKey
         when (tab) {
-            ROLE_TAB -> v9.chooseMode(body, ::chooseRole,
-                back = if (store.role().isNotBlank() && firstTutorialStep() == null) ::openSettings else null)
+            ROLE_TAB -> v9.chooseMode(body, ::chooseRole)
             0 -> home(body)
             1 -> activity(body)
             2 -> if (isCameraRole) cameraPairingScreen(body) else contacts(body)
@@ -1274,7 +1321,6 @@ class MainActivity : ComponentActivity() {
             TzindaTabs.ADD_CONTACT -> addContactScreen(body)
             TzindaTabs.EMERGENCY_CARD -> emergencyCard(body)
             TzindaTabs.REPORT -> prepareReport(body)
-            TzindaTabs.ADVANCED_SETTINGS -> advancedSettings(body)
             TzindaTabs.CARE_SETTINGS -> careSettings(body)
             else -> profile(body)
         }
@@ -1407,14 +1453,7 @@ class MainActivity : ComponentActivity() {
 
     private fun previousTutorialStep() {
         val step = tutorialStep ?: return
-        if (step > 0) {
-            setTutorialStep(step - 1)
-        } else if (tutorialReturnTab != null) {
-            finishTutorial()
-        } else {
-            tutorialStep = null
-            resetNavigation(ROLE_TAB)
-        }
+        if (step > 0) setTutorialStep(step - 1) else finishTutorial()
     }
 
     private fun finishTutorial() {
@@ -1427,6 +1466,7 @@ class MainActivity : ComponentActivity() {
 
     private fun useLocally() {
         if (authSubmitting) return
+        backend.cancelGoogleSignIn()
         finishWelcome()
         authMode = null
         authEmailDraft = ""
@@ -1436,6 +1476,7 @@ class MainActivity : ComponentActivity() {
 
     private fun openAccess(mode: AuthMode) {
         if (authSubmitting) return
+        if (authMode != mode) backend.cancelGoogleSignIn()
         if (authMode != null) authEmailDraft = authEmail?.text?.toString()?.trim() ?: authEmailDraft
         finishWelcome()
         authMode = mode
@@ -1452,12 +1493,17 @@ class MainActivity : ComponentActivity() {
             }
             AuthMode.REGISTER, AuthMode.RECOVER -> openAccess(AuthMode.LOGIN)
             AuthMode.LOGIN -> {
-                authMode = null
+                backend.cancelGoogleSignIn()
                 authEmailDraft = ""
-                if (store.role().isBlank() && !store.prefs.getBoolean("local_only_mode", false)) {
-                    store.prefs.edit().remove("v9_intro_seen").apply()
-                    showWelcomeStep(0)
-                } else render()
+                when {
+                    store.prefs.getBoolean("local_only_mode", false) -> { authMode = null; render() }
+                    store.role().isBlank() -> {
+                        authMode = null
+                        store.prefs.edit().remove("v9_intro_seen").apply()
+                        showWelcomeStep(0)
+                    }
+                    else -> moveTaskToBack(true)
+                }
             }
             null -> Unit
         }
@@ -1465,7 +1511,7 @@ class MainActivity : ComponentActivity() {
 
     private fun renderAuth(mode: AuthMode) {
         val fields = v9.access(entrySurface(), mode, authEmailDraft, ::backFromAccess, ::openAccess,
-            ::showPrivacyNotice, ::useLocally, ::startGoogleSignIn) { submitAuth(mode) }
+            { showPrivacyNotice() }, ::useLocally, ::startGoogleSignIn) { submitAuth(mode) }
         authEmail = fields.email
         authName = fields.name
         authPassword = fields.password
@@ -1475,12 +1521,17 @@ class MainActivity : ComponentActivity() {
         authSubmit = fields.submit
         authGoogle = fields.google
         updateAuthButtons(authSubmitting)
+        if (finishingGoogleSignIn) setAuthStatus("Comprobando tu cuenta de Google…")
     }
 
-    private fun showPrivacyNotice() {
-        AlertDialog.Builder(this).setTitle("Privacidad y uso de AxTarget Care")
+    private fun showPrivacyNotice(manageAccount: Boolean = false) {
+        val dialog = AlertDialog.Builder(this).setTitle("Privacidad y uso de AxTarget Care")
             .setMessage("Al iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador vinculado puede registrar tomas compartidas; no puede editar el medicamento ni sus horarios. Puedes retirar el permiso de compartir editando el registro. AxTarget Care no recomienda ni modifica dosis. Al escanear una caja o receta puedes elegir procesar la foto en el teléfono sin enviarla. Si eliges la lectura en la nube con sesión iniciada, la foto pasa por Supabase y NVIDIA para extraer texto; AxTarget Care no la almacena y vuelve a la lectura local si falla la nube.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. AxTarget Care es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
-            .setPositiveButton("Entendido", null).show()
+            .setPositiveButton("Entendido", null)
+        if (manageAccount && sessions.read() != null) {
+            dialog.setNeutralButton("Eliminar cuenta") { _, _ -> confirmAccountDeletion() }
+        }
+        dialog.show()
     }
 
     private fun setAuthStatus(message: String, error: Boolean = false) {
@@ -1499,7 +1550,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startGoogleSignIn() {
         if (authSubmitting || (authMode != AuthMode.LOGIN && authMode != AuthMode.REGISTER)) return
-        if (!backend.isConfigured || !GoogleSignIn.isConfigured) {
+        if (!backend.isConfigured) {
             setAuthStatus("Google todavía no está configurado en esta versión. Puedes iniciar sesión con correo.", true)
             return
         }
@@ -1523,32 +1574,24 @@ class MainActivity : ComponentActivity() {
 
     private fun signInWithGoogle() {
         if (authSubmitting) return
-        updateAuthButtons(true)
-        setAuthStatus("Conectando con Google…")
-        lifecycleScope.launch {
-            try {
-                val session = GoogleSignIn.signIn(this@MainActivity, backend)
-                updateAuthButtons(false)
-                completeSignIn(session, consented = true)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: GetCredentialCancellationException) {
-                setAuthStatus("Inicio de sesión con Google cancelado.")
-            } catch (_: GetCredentialException) {
-                setAuthStatus("Google no pudo abrir el selector de cuentas. Verifica que Google Play esté disponible o entra con correo.", true)
-            } catch (failure: BackendFailure) {
-                val message = if (failure.category == BackendFailure.Category.NETWORK) failure.message
-                    else "Supabase no pudo validar el inicio de sesión con Google."
-                setAuthStatus(message.orEmpty(), true)
-            } catch (_: Exception) {
-                setAuthStatus("No se recibió una credencial válida de Google. Intenta otra vez.", true)
-            } finally {
-                updateAuthButtons(false)
-            }
+        try {
+            val url = backend.googleSignInUrl()
+            hideKeyboard()
+            startActivity(Intent(Intent.ACTION_VIEW, url).addCategory(Intent.CATEGORY_BROWSABLE))
+            setAuthStatus("Completa el acceso en tu navegador para volver a la app.")
+        } catch (_: ActivityNotFoundException) {
+            backend.cancelGoogleSignIn()
+            setAuthStatus("No hay un navegador disponible. Puedes iniciar sesión con correo.", true)
+        } catch (_: Exception) {
+            backend.cancelGoogleSignIn()
+            setAuthStatus("No se pudo abrir Google. Inténtalo de nuevo o entra con correo.", true)
         }
     }
 
     private fun completeSignIn(session: AuthSession, consented: Boolean) {
+        val pendingType = store.prefs.getString("pending_pairing_type", "").orEmpty()
+        val pendingCode = store.prefs.getString("pending_pairing_code", "").orEmpty()
+        store.prefs.edit().remove("pending_pairing_type").remove("pending_pairing_code").apply()
         if (store.bindLocalDataToUser(session.userId)) {
             disposeCameraController()
             stopService(Intent(this, GuardianMonitorService::class.java))
@@ -1574,18 +1617,10 @@ class MainActivity : ComponentActivity() {
         authEmailDraft = ""
         authPassword = null
         authConfirmation = null
-        val pendingType = store.prefs.getString("pending_pairing_type", "").orEmpty()
-        val pendingCode = store.prefs.getString("pending_pairing_code", "").orEmpty()
-        store.prefs.edit().remove("pending_pairing_type").remove("pending_pairing_code").apply()
+        SyncScheduler.enqueue(applicationContext)
+        render()
         if (pendingType in setOf("caregiver", "camera") && pendingCode.isNotBlank()) {
-            store.saveRole(if (pendingType == "camera") AppStore.ROLE_CAMERA else AppStore.ROLE_CAREGIVER)
-            navigationHistory.clear()
-            tab = 0
-            SyncScheduler.enqueue(applicationContext)
-            render()
             processPairingCodeOrLink("tzinda://pair?type=$pendingType&code=$pendingCode")
-        } else {
-            SyncScheduler.enqueue(applicationContext); render()
         }
     }
 
@@ -1604,6 +1639,7 @@ class MainActivity : ComponentActivity() {
             if (password != confirmation) { setAuthStatus("Las contraseñas no coinciden.", true); return }
         }
         if (!backend.isConfigured) { setAuthStatus("Supabase aún no está configurado. Puedes seguir en modo local.", true); return }
+        backend.cancelGoogleSignIn()
         updateAuthButtons(true)
         setAuthStatus("Conectando de forma segura…")
         io.execute {
@@ -1724,7 +1760,6 @@ class MainActivity : ComponentActivity() {
         val privacy = card(body)
         privacy.addView(text("Privacidad de la cámara", 18, true))
         privacy.addView(text("El video se procesa localmente y no se guarda. Solo se comparte el evento técnico autorizado. La cámara no funciona en segundo plano.", 13, color = muted))
-        body.addView(button("Cambiar modo de este teléfono", false) { resetNavigation(ROLE_TAB) })
     }
     private fun formatPairingCode(code: EditText, maxChars: Int = 8) {
         var formatting = false
@@ -2390,7 +2425,8 @@ class MainActivity : ComponentActivity() {
         }
 
     private fun careFeaturesScreen(body: LinearLayout) {
-        v5.header(body, "Bitácora de cuidados", "Un lugar para tu seguimiento diario.", gapBelow = 30)
+        v5.header(body, "Bitácora de cuidados", "Un lugar para tu seguimiento diario.",
+            settings = { selectTab(TzindaTabs.CARE_SETTINGS) }, gapBelow = 30)
         v5.segments(body, listOf("Bitácora", "Rutinas", "Tareas"), careSection) {
             careSection = it
             lastRenderKey = null
@@ -2629,7 +2665,7 @@ class MainActivity : ComponentActivity() {
             if (!isCaregiver && !isCameraRole && !actor.isNullOrBlank() && actor == store.ownerUserId()) {
                 sync.addView(button("Revisar registros antiguos", false) { showUnassignedCareRecovery() })
             } else {
-                sync.addView(text("Para revisarlos, inicia sesión con la cuenta propietaria y cambia este teléfono al modo Persona protegida.", 13, color = muted))
+                sync.addView(text("Para revisarlos, inicia sesión con la cuenta propietaria en modo Persona protegida.", 13, color = muted))
             }
         }
         if (!isCaregiver) {
@@ -3443,7 +3479,6 @@ class MainActivity : ComponentActivity() {
         }
         addSharedPhoneMotionCard(body)
         addCaregiverSyncControls(body)
-        body.addView(button("Cambiar modo de este teléfono", false) { resetNavigation(ROLE_TAB) })
     }
     private fun vitalsUnavailableCard(parent: LinearLayout, caregiver: Boolean) {
         val shared = if (caregiver) runCatching { JSONArray(store.prefs.getString("caregiver_shared_measurements", "[]")) }.getOrDefault(JSONArray()) else JSONArray()
@@ -4781,11 +4816,6 @@ class MainActivity : ComponentActivity() {
 
     private fun settings(body: LinearLayout) {
         v5.header(body, "Ajustes", gapBelow = 10)
-        val role = TzindaNavigationPolicy.roleLabel(TzindaNavigationPolicy.role(store.role()))
-        val account = v5.panel(body, padding = 0, margin = 16)
-        v5.row(account, role, "Modo de este teléfono", R.drawable.v5_shield,
-            tz.primaryFill, Color.WHITE, minHeight = 91, round = true, inset = 18, emphasis = true, badgeSize = 48,
-            trailing = v5.badge(R.drawable.ic_chevron, tz.brandSoft, accent, 32, 14, 99)) { selectTab(ROLE_TAB) }
 
         v5.section(body, "Tu experiencia")
         val experience = v5.panel(body, padding = 15, margin = 16).apply {
@@ -4823,6 +4853,12 @@ class MainActivity : ComponentActivity() {
             modes.addView(control, LinearLayout.LayoutParams(0, -2, 1f).apply { if (index == 0) marginEnd = dp(11) })
         }
         experience.addView(modes)
+        gap(experience, 12)
+        v5.row(experience, "Volver a ver el tutorial", "", R.drawable.v5_info, inset = 0) {
+            tutorialReturnTab = tab
+            tutorialStep = 0
+            render()
+        }
 
         v5.section(body, "Cuidado y protección")
         val protection = v5.panel(body, padding = 0, margin = 18)
@@ -4833,8 +4869,8 @@ class MainActivity : ComponentActivity() {
             selectTab(TzindaTabs.ALERT_PRACTICE)
         }
 
-        v5.section(body, "Tus datos")
         if (!isCaregiver && !isCameraRole) {
+            v5.section(body, "Tus datos")
             val data = v5.panel(body, padding = 0)
             v5.row(data, "Ficha de emergencia", "Propuesta visual", R.drawable.v5_lock, minHeight = 59, divider = true) {
                 selectTab(TzindaTabs.EMERGENCY_CARD)
@@ -4843,11 +4879,61 @@ class MainActivity : ComponentActivity() {
                 fill = tz.softSurface, fg = tz.warning, minHeight = 59) { selectTab(TzindaTabs.REPORT) }
         }
         gap(body, 24)
-        val advanced = v5.panel(body, padding = 0)
-        v5.row(advanced, "Mi perfil", "Tu información", R.drawable.v5_people, divider = true, action = ::openProfile)
-        v5.row(advanced, "Ajustes avanzados", "Cuenta, permisos y dispositivos", R.drawable.v5_settings) {
-            selectTab(TzindaTabs.ADVANCED_SETTINGS)
+        val accountLinks = v5.panel(body, padding = 0)
+        v5.row(accountLinks, "Mi perfil", "Tu información", R.drawable.v5_people, divider = true, action = ::openProfile)
+        v5.row(accountLinks, "Privacidad", "Aviso de privacidad", R.drawable.v5_lock, divider = true) {
+            showPrivacyNotice(manageAccount = true)
         }
+        if (sessions.read() == null) {
+            v5.row(accountLinks, "Iniciar sesión o crear cuenta", "", R.drawable.v5_people) { openAccess(AuthMode.LOGIN) }
+        } else {
+            v5.row(accountLinks, "Cerrar sesión", "", R.drawable.v5_lock) { confirmSignOut() }
+        }
+        body.addView(text("AxTarget Care ${BuildConfig.VERSION_NAME} · Android", 13, color = muted)
+            .apply { setPadding(dp(4), dp(18), dp(4), dp(4)) })
+    }
+
+    private fun confirmSignOut() {
+        AlertDialog.Builder(this).setTitle("Cerrar sesión")
+            .setMessage("Volverás a la pantalla de acceso para iniciar sesión o crear una cuenta.")
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Cerrar sesión") { _, _ ->
+                val signingOutBackend = backend
+                val session = signingOutBackend.clearLocalSession()
+                discardSharedAccountData()
+                store.prefs.edit().putBoolean("local_only_mode", false).putBoolean("v9_intro_seen", true).apply()
+                authEmailDraft = ""
+                authMode = AuthMode.LOGIN
+                resetNavigation(if (store.role().isBlank()) ROLE_TAB else TzindaTabs.HOME)
+                setAuthStatus("Sesión cerrada.")
+                if (session != null) io.execute { runCatching { signingOutBackend.revokeSession(session) } }
+            }.show()
+    }
+
+    private fun confirmAccountDeletion() {
+        AlertDialog.Builder(this).setTitle("Eliminar cuenta")
+            .setMessage("Se eliminarán la cuenta y sus datos remotos. Los contactos y registros de este teléfono se conservarán. Esta acción es irreversible.")
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Eliminar cuenta") { _, _ ->
+                io.execute {
+                    val result = runCatching { backend.deleteAccount() }
+                    runOnUiThread {
+                        if (isDestroyed || isFinishing) return@runOnUiThread
+                        result.onSuccess {
+                            discardSharedAccountData()
+                            store.prefs.edit().putBoolean("local_only_mode", true).apply()
+                            toast("Cuenta eliminada. La app sigue en modo local.")
+                            render()
+                        }.onFailure { toast(it.message ?: "No se pudo eliminar la cuenta.", true) }
+                    }
+                }
+            }.show()
+    }
+
+    private fun discardSharedAccountData() {
+        caregiverLocationRealtime?.stop(); caregiverLocationRealtime = null; caregiverLocationRealtimeDevice = ""
+        caregiverHealthRealtime?.stop(); caregiverHealthRealtime = null; caregiverHealthRealtimeKey = ""
+        store.clearRemoteDerivedCaches()
     }
 
 
@@ -4982,229 +5068,6 @@ class MainActivity : ComponentActivity() {
         }.trimEnd()
     }
 
-    private fun advancedSettings(body: LinearLayout) {
-        heading(
-            body,
-            when { isCaregiver -> "CUIDADOR O FAMILIAR"; isCameraRole -> "DISPOSITIVO DE CÁMARA"; else -> "PERSONA PROTEGIDA" },
-            "Ajustes avanzados",
-            "Gestiona tu cuenta, los permisos y las conexiones.",
-        )
-        val accountProfile = store.profile()
-        val accountName = accountProfile.text("fullName").trim()
-        val accountRole = TzindaNavigationPolicy.roleLabel(TzindaNavigationPolicy.role(store.role()))
-        val profileSummary = card(body)
-        tz.actionRow(
-            profileSummary,
-            accountName.ifBlank { "Mi perfil" },
-            accountRole,
-            leadingText = initials(accountName.ifBlank { "Tz" }),
-            showDivider = false,
-        ) { openProfile() }
-        v5.action(body, "Volver a ver el tutorial", R.drawable.v5_info, tz.cardColor, accent) {
-            tutorialReturnTab = tab
-            tutorialStep = 0
-            render()
-        }
-        if (!isCameraRole) {
-            val care = v5.panel(body, padding = 0)
-            v5.row(care, "Zonas seguras", "Tus lugares de confianza", R.drawable.v5_pin, divider = true) {
-                selectTab(TzindaTabs.SAFE_ZONES)
-            }
-            v5.row(care, "Ajustes de cuidados", "Ubicación y permisos", R.drawable.v5_settings) {
-                selectTab(TzindaTabs.CARE_SETTINGS)
-            }
-        }
-        val accessibility = card(body)
-        tz.cardHeader(accessibility, R.drawable.ic_profile, "Accesibilidad", "Texto, controles y densidad", TzindaDesign.Tone.INFO)
-        accessibility.addView(text("Aumenta texto y controles, y reduce la densidad de las pantallas. Se guarda en este teléfono.", 14, color = muted))
-        tz.switchRow(
-            accessibility,
-            "Modo de asistencia simplificada",
-            "Texto y botones más grandes; menos elementos por pantalla.",
-            simpleMode,
-            action = { value ->
-                store.prefs.edit().putBoolean("simple_accessibility", value).apply()
-                render()
-            },
-        )
-        accessibility.addView(statusPill(TzindaCopy(
-            if (simpleMode) "Modo simplificado activo" else "Tamaño estándar",
-            if (simpleMode) "Se mantiene al cerrar y volver a abrir la app." else "Puedes activarlo cuando lo necesites.",
-            if (simpleMode) TzindaTone.POSITIVE else TzindaTone.NEUTRAL,
-        )))
-
-        val roleCard = card(body)
-        tz.cardHeader(roleCard, R.drawable.ic_shield, "Rol de esta app", "Navegación adaptada al rol", TzindaDesign.Tone.BRAND)
-        roleCard.addView(statusPill(TzindaCopy(
-            when { isCaregiver -> "Cuidador o familiar"; isCameraRole -> "Cámara independiente"; else -> "Persona protegida" },
-            "La navegación y las funciones visibles dependen de este rol.",
-            TzindaTone.POSITIVE,
-        )))
-        roleCard.addView(button("Cambiar modo de este teléfono", false) {
-            AlertDialog.Builder(this).setTitle("Cambiar rol")
-                .setMessage("¿Deseas cambiar el rol de este dispositivo? La navegación y las funciones de la pantalla principal se ajustarán al nuevo rol.")
-                .setNegativeButton("Cancelar", null)
-                .setPositiveButton("Cambiar rol") { _, _ -> resetNavigation(ROLE_TAB) }.show()
-        })
-
-        if (isCaregiver) {
-            val linked = store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank()
-            val linkCard = card(body)
-            tz.cardHeader(linkCard, R.drawable.ic_supervision, "Persona vinculada", "Solo lectura y datos autorizados", TzindaDesign.Tone.SUCCESS)
-            linkCard.addView(statusPill(TzindaStatusCopy.link(
-                linked,
-                store.prefs.getString("caregiver_shared_name", "").orEmpty(),
-                store.prefs.getLong("caregiver_shared_fetched_at", 0L),
-            )))
-            linkCard.addView(text("Puedes consultar lo que la persona comparta y registrar sus tomas. Los medicamentos y horarios solo los edita su propietario.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
-            linkCard.addView(button(if (linked) "Administrar vínculo" else "Vincular persona", false) { selectTab(2) })
-            linkCard.addView(button("Abrir centro de supervisión", false) { openSupervisionCenter() })
-        } else if (isCameraRole) {
-            val linked = store.prefs.getString("paired_camera_device_id", "").orEmpty().isNotBlank()
-            val cameraCard = card(body)
-            tz.cardHeader(cameraCard, R.drawable.ic_camera, "Cámara de este teléfono", "Activación bajo demanda", TzindaDesign.Tone.BRAND)
-            cameraCard.addView(statusPill(TzindaStatusCopy.cameraLink(linked, store.prefs.getString("paired_camera_name", "").orEmpty())))
-            cameraCard.addView(button(if (linked) "Abrir cámara" else "Vincular cámara", false) { if (linked) openCameraScreen() else selectTab(2) })
-            cameraCard.addView(button("Ver eventos de cámara", false) { selectTab(1) })
-        }
-
-        val deviceAccess = card(body)
-        tz.cardHeader(deviceAccess, R.drawable.ic_bluetooth, "Dispositivos y vinculaciones", "Pulsera, cámara y vínculos", TzindaDesign.Tone.BRAND)
-        deviceAccess.addView(text(if (isCaregiver) "Consulta los equipos de la persona vinculada. No puedes emparejar su pulsera." else "Administra conexiones, permisos y vínculos en un solo lugar.", 14, color = muted))
-        deviceAccess.addView(button("Abrir conexiones", false) { openDeviceLinkScreen() })
-
-        val account = card(body)
-        val session = sessions.read()
-        val syncState = store.syncState()
-        val syncCopy = TzindaStatusCopy.sync(syncState.pending, syncState.failed, hasValidatedInternet(), session != null)
-        tz.cardHeader(account, R.drawable.ic_lock, "Cuenta y sincronización", null, TzindaDesign.Tone.INFO)
-        account.addView(statusPill(syncCopy))
-        account.addView(text(syncCopy.detail, 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
-        if (session != null) {
-            account.addView(text("Sesión: ${session.email}", 14, color = muted))
-            account.addView(text("Modo de este teléfono: ${TzindaNavigationPolicy.roleLabel(TzindaNavigationPolicy.role(store.role()))}", 14, color = muted))
-            account.addView(text("El acceso a otra persona depende de un vínculo activo y de lo que comparta, no del modo elegido.", 13, color = muted))
-            val synced = store.prefs.getLong("last_sync_success_at", 0L).takeIf { it > 0L }
-                ?.let { SimpleDateFormat("d MMM, HH:mm", Locale("es", "MX")).format(Date(it)) } ?: "Aún no sincronizado"
-            account.addView(text("Última sincronización correcta: $synced", 13, color = muted))
-            account.addView(button("Sincronizar ahora", false) {
-                store.retryFailedSyncItems()
-                MedicationDatabase.getInstance(applicationContext).retryFailed()
-                store.prefs.edit().putInt("sync_global_failures", 0).apply()
-                SyncScheduler.enqueue(applicationContext, immediate = true); render()
-            })
-            if (!isCaregiver && !isCameraRole) account.addView(button("Crear QR o código para cuidador/a") { showCreateCaregiverInvite(account) })
-            account.addView(button("Cerrar sesión", false) {
-                AlertDialog.Builder(this).setTitle("Cerrar sesión")
-                    .setMessage("¿Deseas cerrar la sesión activa? La app continuará funcionando en modo local en este teléfono.")
-                    .setNegativeButton("Cancelar", null)
-                    .setPositiveButton("Cerrar sesión") { _, _ ->
-                        io.execute {
-                            runCatching { backend.signOut() }
-                            runOnUiThread {
-                                lifecycleScope.launch { runCatching { GoogleSignIn.clear(this@MainActivity) } }
-                                caregiverLocationRealtime?.stop(); caregiverLocationRealtime = null; caregiverLocationRealtimeDevice = ""
-                                caregiverHealthRealtime?.stop(); caregiverHealthRealtime = null; caregiverHealthRealtimeKey = ""
-                                store.clearRemoteDerivedCaches()
-                                store.prefs.edit().putBoolean("local_only_mode", true).apply(); render()
-                            }
-                        }
-                    }.show()
-            })
-            account.addView(button("Eliminar mi cuenta y datos remotos", false) {
-                AlertDialog.Builder(this).setTitle("Eliminar cuenta de Supabase")
-                    .setMessage("Se eliminará la cuenta y los datos remotos asociados. Los contactos y registros locales de este teléfono se conservarán para que las alertas locales sigan disponibles. Esta acción no se puede deshacer.")
-                    .setNegativeButton("Cancelar", null).setPositiveButton("Eliminar cuenta") { _, _ ->
-                        io.execute {
-                            val result = runCatching { backend.deleteAccount() }
-                            runOnUiThread {
-                                result.onSuccess {
-                                    caregiverLocationRealtime?.stop(); caregiverLocationRealtime = null; caregiverLocationRealtimeDevice = ""
-                                    caregiverHealthRealtime?.stop(); caregiverHealthRealtime = null; caregiverHealthRealtimeKey = ""
-                                    store.clearRemoteDerivedCaches()
-                                    store.prefs.edit().putBoolean("local_only_mode", true).apply()
-                                    toast("Cuenta eliminada. La app sigue en modo local."); render()
-                                }.onFailure { toast(it.message ?: "No se pudo eliminar la cuenta.", true) }
-                            }
-                        }
-                    }.show()
-            })
-        } else {
-            account.addView(text(if (store.prefs.getBoolean("local_only_mode", false)) "Modo local. Los datos permanecen en este teléfono hasta que inicies sesión." else "Sin sesión. Inicia sesión para sincronizar con Supabase.", 14, color = muted))
-            account.addView(button("Iniciar sesión o crear cuenta") { authMode = AuthMode.LOGIN; render() })
-        }
-
-        val preferences = card(body)
-        tz.cardHeader(preferences, R.drawable.ic_settings, "Apariencia y privacidad", null, TzindaDesign.Tone.NEUTRAL)
-        tz.switchRow(preferences, "Modo oscuro", "Paleta oscura con contraste legible.", dark, action = { value ->
-            // A tap can be delivered twice around Activity.recreate() (the window is rebuilt
-            // while the gesture is still being processed). Ignore echoes and defer the
-            // relaunch so the preference always ends up matching what the user chose.
-            val now = android.os.SystemClock.elapsedRealtime()
-            if (now < themeToggleGuardUntil) return@switchRow
-            if (value == store.prefs.getBoolean("dark_mode", false)) return@switchRow
-            themeToggleGuardUntil = now + 800L
-            store.prefs.edit().putBoolean("dark_mode", value).commit(); saveDrafts()
-            handler.postDelayed({ if (!isFinishing && !isDestroyed) recreate() }, 250L)
-        })
-        preferences.addView(text("El modo oscuro y el modo simplificado pueden usarse al mismo tiempo.", 13, color = muted))
-        preferences.addView(statusPill(TzindaCopy("Tipografía del sistema escalable", "Controles de al menos 48 dp y contraste alto.", TzindaTone.INFO)))
-
-        if (!isCaregiver && !isCameraRole) {
-            val location = card(body)
-            tz.cardHeader(location, R.drawable.ic_location, "Ubicación en tiempo real", null, TzindaDesign.Tone.BRAND)
-            location.addView(text("Con tu autorización, el teléfono actualiza la posición mientras el monitoreo está activo. La ubicación se adjunta a los avisos y solo se comparte con el vínculo autorizado.", 14, color = muted))
-            tz.switchRow(
-                location,
-                "Compartir ubicación durante el monitoreo",
-                "Puedes desactivarlo cuando quieras.",
-                store.prefs.getBoolean("include_location", false),
-                action = { value -> setLocationConsent(value) },
-            )
-            location.addView(text(store.locationText(), 14, color = muted))
-            location.addView(button("Actualizar ubicación ahora", false) { requestLocation() })
-
-            val localData = card(body)
-            tz.cardHeader(localData, R.drawable.ic_heart, "Pulsera y datos del teléfono", null, TzindaDesign.Tone.SUCCESS)
-            localData.addView(text("Lecturas locales: ${store.telemetry.summary().arduino}. Los valores solo aparecen cuando la pulsera envía una lectura válida.", 14, color = muted))
-            addBraceletConnectionControls(localData, includeMethodOptions = true)
-
-            val alerts = card(body)
-            tz.cardHeader(alerts, R.drawable.ic_alert, "Detección y alertas", null, TzindaDesign.Tone.WARNING)
-            alerts.addView(text("Después de detectar un movimiento compatible con una caída, la app inicia una cuenta regresiva de 20 segundos. Puedes cancelarla con “Estoy bien”. La detección es experimental y puede omitir caídas suaves o producir falsas alarmas.", 14, color = muted))
-            alerts.addView(button("Probar cuenta regresiva", false) {
-                AlertDialog.Builder(this).setTitle("Prueba de 20 segundos")
-                    .setMessage("Si no cancelas la prueba, se solicitarán SMS reales y se intentarán llamadas a tus contactos.")
-                    .setNegativeButton("Cancelar", null).setPositiveButton("Iniciar prueba") { _, _ -> prepareAlert(GuardianMonitorService.ACTION_TEST) }.show()
-            })
-
-            val sms = card(body)
-            tz.cardHeader(sms, R.drawable.ic_phone, "SMS y llamadas", null, TzindaDesign.Tone.DANGER)
-            sms.addView(text("Los SMS se envían por la SIM configurada. Las llamadas se realizan en orden de prioridad. AxTarget Care no puede confirmar que el mensaje se haya leído.", 14, color = muted))
-            sms.addView(button("Configurar SIM para SMS", false) { configureSim() })
-            sms.addView(button("Permisos de Android", false) { openAppSettings() })
-            if (Build.VERSION.SDK_INT >= 34) sms.addView(button("Permitir alertas a pantalla completa", false) {
-                runCatching { startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:$packageName"))) }
-                    .onFailure { openAppSettings() }
-            })
-            permissionCard(sms)
-        }
-
-        val dataPrivacy = card(body)
-        tz.cardHeader(dataPrivacy, R.drawable.ic_lock, "Qué se guarda y qué se comparte", null, TzindaDesign.Tone.NEUTRAL)
-        dataPrivacy.addView(text("Contactos, eventos, lecturas válidas y ubicación autorizada se sincronizan si inicias sesión. El domicilio, la fecha de nacimiento y el video no se sincronizan. Los medicamentos son privados hasta que los compartes. Los datos de salud son informativos y no constituyen diagnóstico.", 14, color = muted))
-        dataPrivacy.addView(button("Leer aviso de privacidad y uso", false) {
-            AlertDialog.Builder(this).setTitle("Privacidad y uso de AxTarget Care")
-                .setMessage("Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nLos medicamentos se guardan en este teléfono y se sincronizan si inicias sesión. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo y registrar sus tomas, sin editar medicamentos ni horarios. AxTarget Care no recomienda ni modifica dosis. Si escaneas la caja o la receta, la foto se lee en este teléfono y no se guarda ni se envía.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. AxTarget Care es experimental y no sustituye servicios de emergencia ni atención médica.\n\nPuedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
-                .setPositiveButton("Entendido", null).show()
-        })
-
-        val profile = card(body)
-        tz.cardHeader(profile, R.drawable.ic_profile, "Mis datos", null, TzindaDesign.Tone.BRAND)
-        profile.addView(text("Consulta o actualiza tu información personal y tu contacto de emergencia.", 14, color = muted))
-        profile.addView(button("Abrir mi perfil", false) { openProfile() })
-        body.addView(text("AxTarget Care ${BuildConfig.VERSION_NAME} · Android", 13, color = muted).apply { setPadding(dp(4), dp(18), dp(4), dp(4)) })
-    }
     /**
      * The camera opens as a full-screen viewfinder: the live image fills the window and the
      * controls float above it. The previous 16:9 card wasted most of a phone screen.
@@ -6204,7 +6067,9 @@ class MainActivity : ComponentActivity() {
     }
     companion object {
         // A code exchange must survive Activity recreation; its result is stored independently.
-        private val passwordRecoveryIo = Executors.newSingleThreadExecutor()
+        private val authCallbackIo = Executors.newSingleThreadExecutor()
+        private val googleExchangeRunning = AtomicBoolean()
+        private const val RETIRED_ADVANCED_SETTINGS = 25
         private const val CAMERA_TAB = TzindaTabs.CAMERA
         private const val CAREGIVER_EVENT_PAGE_SIZE = 100
         private const val CAREGIVER_EVENT_CACHE_LIMIT = 1000
@@ -6218,7 +6083,6 @@ class MainActivity : ComponentActivity() {
          * [Activity.recreate] and the echo may reach a rebuilt instance, so this
          * must outlive individual activity instances.
          */
-        private var themeToggleGuardUntil = 0L
         private const val REQUEST_CAMERA = 108
         private const val REQUEST_CONTACTS = 101
         private const val REQUEST_ALERT = 102

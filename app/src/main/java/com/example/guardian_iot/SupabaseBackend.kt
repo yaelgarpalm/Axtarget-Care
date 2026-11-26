@@ -1,6 +1,8 @@
 package com.example.guardian_iot
 
 import android.net.Uri
+import com.example.guardian_iot.AuthFlowStore.Purpose.GOOGLE
+import com.example.guardian_iot.AuthFlowStore.Purpose.RECOVERY
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -13,7 +15,7 @@ class BackendFailure(val category: Category, val status: Int = 0, cause: Throwab
     IOException(messageFor(category), cause) {
     enum class Category {
         NETWORK, INVALID_CREDENTIALS, EMAIL_UNCONFIRMED, EMAIL_CONFIRMATION_REQUIRED,
-        EMAIL_RATE_LIMIT, AUTH_RATE_LIMIT, EMAIL_DELIVERY, VALIDATION, TEMPORARY, SESSION, RECOVERY,
+        EMAIL_RATE_LIMIT, AUTH_RATE_LIMIT, EMAIL_DELIVERY, VALIDATION, TEMPORARY, SESSION, RECOVERY, GOOGLE_SIGN_IN,
         CONFIGURATION, MISSING_MIGRATION, CAREGIVER_INVITE_INVALID_OR_EXPIRED,
         CAREGIVER_INVITE_SELF, CAMERA_INVITE_INVALID_OR_EXPIRED, CAMERA_INVITE_SELF, UNKNOWN
     }
@@ -30,6 +32,7 @@ class BackendFailure(val category: Category, val status: Int = 0, cause: Throwab
             Category.VALIDATION -> "Revisa los datos e inténtalo de nuevo."
             Category.TEMPORARY -> "Supabase no está disponible ahora. Inténtalo más tarde."
             Category.RECOVERY -> "El enlace no corresponde a una recuperación vigente en este teléfono. Solicita un enlace nuevo aquí y ábrelo en este mismo teléfono."
+            Category.GOOGLE_SIGN_IN -> "No se completó el acceso con Google. Pulsa «Continuar con Google» para intentarlo de nuevo."
             Category.SESSION -> "Tu sesión terminó. Inicia sesión otra vez."
             Category.CONFIGURATION -> "Falta configurar la URL o la clave pública de Supabase."
             Category.MISSING_MIGRATION -> "Supabase todavía no tiene activada la vinculación de cámaras. Aplica la migración correspondiente en el proyecto de Supabase."
@@ -85,74 +88,120 @@ class SupabaseBackend(
         return parseAndSaveSession(response) ?: throw BackendFailure(BackendFailure.Category.UNKNOWN)
     }
 
-    internal fun signInWithGoogle(idToken: String, nonce: String): AuthSession {
-        val response = request(
-            "POST", "/auth/v1/token?grant_type=id_token",
-            JSONObject().put("provider", "google").put("id_token", idToken).put("nonce", nonce),
-            needsSession = false, followRedirects = false,
-        )
-        return parseAndSaveSession(response) ?: throw BackendFailure(BackendFailure.Category.UNKNOWN)
+    internal fun googleSignInUrl(): Uri = synchronized(AccountStorage.lock) {
+        if (!isConfigured) throw BackendFailure(BackendFailure.Category.CONFIGURATION)
+        if (sessions.read() != null) throw BackendFailure(BackendFailure.Category.SESSION)
+        val state = sessions.authFlow.begin(GOOGLE)
+        Uri.parse(baseUrl + "/auth/v1/authorize").buildUpon()
+            .appendQueryParameter("provider", "google")
+            .appendQueryParameter("redirect_to", redirectUrl)
+            .appendQueryParameter("code_challenge", AuthFlowStore.challenge(state.getString("verifier")))
+            .appendQueryParameter("code_challenge_method", "s256")
+            .appendQueryParameter("prompt", "select_account")
+            .build()
+    }
+
+    internal val hasGoogleSignIn: Boolean get() = sessions.authFlow.hasGoogleFlow()
+
+    internal fun cancelGoogleSignIn() = synchronized(AccountStorage.lock) {
+        sessions.authFlow.clear(purpose = GOOGLE)
+    }
+
+    internal fun acceptGoogleCallback(uri: Uri): AuthSession {
+        if (!matchesAuthRedirect(uri)) throw BackendFailure(BackendFailure.Category.GOOGLE_SIGN_IN)
+        val state = sessions.authFlow.claim(GOOGLE) ?: throw BackendFailure(BackendFailure.Category.GOOGLE_SIGN_IN)
+        val id = state.getString("id")
+        try {
+            val code = authCode(uri) ?: throw BackendFailure(BackendFailure.Category.GOOGLE_SIGN_IN)
+            val session = exchangeAuthCode(code, state) ?: throw BackendFailure(BackendFailure.Category.GOOGLE_SIGN_IN)
+            synchronized(AccountStorage.lock) {
+                if (sessions.read() != null || !sessions.authFlow.isExchangingGoogle(id))
+                    throw BackendFailure(BackendFailure.Category.GOOGLE_SIGN_IN)
+                sessions.write(session)
+                boundUserId = session.userId
+            }
+            return session
+        } finally {
+            sessions.authFlow.clear(id)
+        }
     }
 
     fun requestPasswordRecovery(email: String) {
-        val state = sessions.recovery.begin(email)
+        val state = synchronized(AccountStorage.lock) { sessions.authFlow.begin(RECOVERY, email) }
         try {
             request("POST", "/auth/v1/recover?redirect_to=" + encode(redirectUrl),
                 JSONObject().put("email", email.trim())
-                    .put("code_challenge", PasswordRecoveryStore.challenge(state.getString("verifier")))
+                    .put("code_challenge", AuthFlowStore.challenge(state.getString("verifier")))
                     .put("code_challenge_method", "s256"), needsSession = false)
         } catch (failure: Throwable) {
-            sessions.recovery.clear(state.getString("id"))
+            sessions.authFlow.clear(state.getString("id"))
             throw failure
         }
     }
 
-    fun acceptPasswordRecovery(uri: Uri): AuthSession {
+    internal fun matchesAuthRedirect(uri: Uri): Boolean {
         val expected = Uri.parse(redirectUrl)
-        val code = if (uri.isHierarchical) uri.getQueryParameters("code").singleOrNull() else null
-        if (uri.scheme != expected.scheme || uri.encodedAuthority != expected.encodedAuthority ||
-            uri.encodedPath.orEmpty() != expected.encodedPath.orEmpty() || !uri.fragment.isNullOrEmpty() ||
-            uri.queryParameterNames != setOf("code") || code.isNullOrBlank() || code.length > 2048)
-            throw BackendFailure(BackendFailure.Category.RECOVERY)
-        val state = sessions.recovery.claim() ?: throw BackendFailure(BackendFailure.Category.RECOVERY)
+        return uri.isHierarchical && uri.scheme == expected.scheme && uri.encodedAuthority == expected.encodedAuthority &&
+            uri.encodedPath.orEmpty() == expected.encodedPath.orEmpty()
+    }
+
+    private fun authCode(uri: Uri): String? =
+        if (uri.fragment.isNullOrEmpty() && uri.queryParameterNames == setOf("code"))
+            uri.getQueryParameters("code").singleOrNull()?.takeIf { it.isNotBlank() && it.length <= 2048 }
+        else null
+
+    private fun exchangeAuthCode(code: String, state: JSONObject): AuthSession? {
+        val response = request("POST", "/auth/v1/token?grant_type=pkce",
+            JSONObject().put("auth_code", code).put("code_verifier", state.getString("verifier")),
+            needsSession = false, followRedirects = false)
+        return parseSession(response)?.takeIf { it.expiresAtSeconds > System.currentTimeMillis() / 1000 }
+    }
+
+    fun acceptPasswordRecovery(uri: Uri): AuthSession {
+        if (!matchesAuthRedirect(uri)) throw BackendFailure(BackendFailure.Category.RECOVERY)
+        val code = authCode(uri) ?: throw BackendFailure(BackendFailure.Category.RECOVERY)
+        val state = sessions.authFlow.claim(RECOVERY) ?: throw BackendFailure(BackendFailure.Category.RECOVERY)
         val id = state.getString("id")
         try {
-            val response = request("POST", "/auth/v1/token?grant_type=pkce",
-                JSONObject().put("auth_code", code).put("code_verifier", state.getString("verifier")), needsSession = false)
-            val user = response.optJSONObject("user") ?: throw BackendFailure(BackendFailure.Category.RECOVERY)
-            val session = AuthSession(response.optString("access_token"), response.optString("refresh_token"),
-                epochSeconds(response.optString("expires_at"), response.optString("expires_in")),
-                user.optString("id"), user.optString("email"))
-            if (session.userId.isBlank() || session.accessToken.isBlank() || session.refreshToken.isBlank() ||
-                session.expiresAtSeconds <= System.currentTimeMillis() / 1000 ||
-                !session.email.equals(state.getString("email"), ignoreCase = true) ||
-                !sessions.recovery.complete(id, session)) throw BackendFailure(BackendFailure.Category.RECOVERY)
+            val session = exchangeAuthCode(code, state) ?: throw BackendFailure(BackendFailure.Category.RECOVERY)
+            if (!session.email.equals(state.getString("email"), ignoreCase = true) ||
+                !sessions.authFlow.completeRecovery(id, session)) throw BackendFailure(BackendFailure.Category.RECOVERY)
             return session
         } catch (failure: Throwable) {
-            sessions.recovery.clear(id)
+            sessions.authFlow.clear(id)
             throw BackendFailure(BackendFailure.Category.RECOVERY, cause = failure)
         }
     }
 
-    val hasPasswordRecovery: Boolean get() = sessions.recovery.ready() != null
-    internal val passwordRecoveryRevision: Long get() = sessions.recovery.revision
-    fun cancelPasswordRecovery() { sessions.recovery.clear() }
+    val hasPasswordRecovery: Boolean get() = sessions.authFlow.ready() != null
+    internal val passwordRecoveryRevision: Long get() = sessions.authFlow.revision
+    fun cancelPasswordRecovery() { sessions.authFlow.clear(purpose = RECOVERY) }
 
     fun updatePassword(newPassword: String) {
-        val state = sessions.recovery.ready() ?: throw BackendFailure(BackendFailure.Category.RECOVERY)
+        val state = sessions.authFlow.ready() ?: throw BackendFailure(BackendFailure.Category.RECOVERY)
         val recoverySession = AuthSession(state.getString("access_token"), state.getString("refresh_token"),
             state.getLong("expires_at"), state.getString("user_id"), state.getString("email"))
         val user = request("PUT", "/auth/v1/user", JSONObject().put("password", newPassword),
             needsSession = false, sessionOverride = recoverySession)
         if (user.optString("id") != recoverySession.userId) throw BackendFailure(BackendFailure.Category.RECOVERY)
-        sessions.recovery.clear(state.getString("id"))
+        sessions.authFlow.clear(state.getString("id"))
+    }
+
+    internal fun clearLocalSession(): AuthSession? = synchronized(AccountStorage.lock) {
+        sessions.authFlow.clear()
+        val session = sessions.read()?.takeIf { boundUserId == null || it.userId == boundUserId }
+        session?.let { sessions.clearIfUser(it.userId) }
+        boundUserId = null
+        session
+    }
+
+    internal fun revokeSession(session: AuthSession) {
+        request("POST", "/auth/v1/logout?scope=local", null, needsSession = false,
+            sessionOverride = session, followRedirects = false)
     }
 
     fun signOut() {
-        cancelPasswordRecovery()
-        val owner = boundUserId ?: sessions.read()?.userId ?: return
-        try { request("POST", "/auth/v1/logout", null, needsSession = true) }
-        finally { sessions.clearIfUser(owner) }
+        clearLocalSession()?.let { session -> runCatching { revokeSession(session) } }
     }
 
     internal fun readMedicationLabel(imageBase64: String, document: MedicationDocument): JSONObject {
@@ -728,7 +777,7 @@ class SupabaseBackend(
         true,
     ).optJSONArray("data")?.optJSONObject(0)
 
-    private fun parseAndSaveSession(response: JSONObject, expectedSession: AuthSession? = null): AuthSession? {
+    private fun parseSession(response: JSONObject): AuthSession? {
         if (!response.has("access_token")) return null
         val user = response.optJSONObject("user") ?: JSONObject()
         val session = AuthSession(
@@ -739,11 +788,16 @@ class SupabaseBackend(
             email = user.optString("email"),
         )
         if (session.accessToken.isBlank() || session.refreshToken.isBlank() || session.userId.isBlank()) return null
+        return session
+    }
+
+    private fun parseAndSaveSession(response: JSONObject, expectedSession: AuthSession? = null): AuthSession? {
+        val session = parseSession(response) ?: return null
         if (expectedSession != null) {
             if (session.userId != expectedSession.userId || !sessions.writeIfCurrent(expectedSession, session))
                 throw BackendFailure(BackendFailure.Category.SESSION)
-        } else {
-            sessions.recovery.clear()
+        } else synchronized(AccountStorage.lock) {
+            sessions.authFlow.clear()
             sessions.write(session)
         }
         boundUserId = session.userId

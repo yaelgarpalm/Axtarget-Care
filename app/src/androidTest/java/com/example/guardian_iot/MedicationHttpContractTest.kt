@@ -108,18 +108,20 @@ class MedicationHttpContractTest {
         }
     }
 
-    @Test fun googleSignInSendsTheIdTokenAndNonceAndUsesTheNormalSessionStore() {
-        withServer(200, """{"access_token":"google-session","refresh_token":"google-refresh","expires_in":3600,"user":{"id":"$actor","email":"person@example.test"}}""") { backend, request ->
-            val session = backend.signInWithGoogle("test-id-token", "test-original-nonce")
-            assertEquals("google-session", session.accessToken)
-            assertEquals(session, sessions.read())
-            val sent = request.get(5, TimeUnit.SECONDS)
-            assertTrue(sent.line.startsWith("POST /auth/v1/token?grant_type=id_token "))
-            val body = JSONObject(sent.body)
-            assertEquals("google", body.getString("provider"))
-            assertEquals("test-id-token", body.getString("id_token"))
-            assertEquals("test-original-nonce", body.getString("nonce"))
-        }
+    @Test fun googleSignInBuildsSupabasePkceAuthorizationUrlAndKeepsItsVerifierPrivate() {
+        val backend = SupabaseBackend(sessions, "http://127.0.0.1:8000", "sb_publishable_audit_fake",
+            "com.guardian.tzindaapp.v2://auth-callback")
+        val url = backend.googleSignInUrl()
+        assertEquals("http", url.scheme)
+        assertEquals("127.0.0.1:8000", url.encodedAuthority)
+        assertEquals("/auth/v1/authorize", url.encodedPath)
+        assertEquals("google", url.getQueryParameter("provider"))
+        assertEquals("select_account", url.getQueryParameter("prompt"))
+        assertEquals("s256", url.getQueryParameter("code_challenge_method"))
+        assertEquals("com.guardian.tzindaapp.v2://auth-callback", url.getQueryParameter("redirect_to"))
+        assertTrue(url.getQueryParameter("code_challenge").orEmpty().isNotBlank())
+        assertTrue(sessions.authFlow.hasGoogleFlow())
+        assertNull(sessions.authFlow.claim(AuthFlowStore.Purpose.RECOVERY))
     }
 
     @Test fun unoQTokenIsEncryptedAtRestAndCanBeReadBack() {

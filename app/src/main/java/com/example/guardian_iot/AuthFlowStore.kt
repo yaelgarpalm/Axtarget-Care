@@ -16,28 +16,32 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** Recovery credentials never become the app's active account or enter Android backups. */
-internal class PasswordRecoveryStore(context: Context, private val now: () -> Long = System::currentTimeMillis) {
+/** Persists one pending PKCE flow across browser launches and Activity recreation. */
+internal class AuthFlowStore(context: Context, private val now: () -> Long = System::currentTimeMillis) {
+    enum class Purpose { RECOVERY, GOOGLE }
+
     private val file = AtomicFile(File(context.noBackupFilesDir, "password-recovery.v1"))
     val revision: Long get() = changes.get()
 
-    fun begin(email: String): JSONObject = synchronized(lock) {
-        JSONObject().put("id", random()).put("email", email.trim())
+    fun begin(purpose: Purpose, email: String = ""): JSONObject = synchronized(lock) {
+        JSONObject().put("id", random()).put("purpose", purpose.name).put("email", email.trim())
             .put("verifier", random()).put("created_at", now()).put("phase", "pending")
             .also(::write)
     }
 
+    fun hasGoogleFlow(): Boolean = synchronized(lock) { read()?.isFor(Purpose.GOOGLE) == true }
+
     /** Claim before exchanging: duplicate callbacks cannot exchange the same local flow. */
-    fun claim(): JSONObject? = synchronized(lock) {
+    fun claim(purpose: Purpose): JSONObject? = synchronized(lock) {
         val state = read() ?: return null
-        if (state.optString("phase") != "pending") return null
+        if (!state.isFor(purpose) || state.optString("phase") != "pending") return null
         write(JSONObject(state.toString()).put("phase", "exchanging").removeVerifier())
         state
     }
 
-    fun complete(id: String, session: AuthSession): Boolean = synchronized(lock) {
+    fun completeRecovery(id: String, session: AuthSession): Boolean = synchronized(lock) {
         val state = read() ?: return false
-        if (state.optString("id") != id || state.optString("phase") != "exchanging") return false
+        if (!state.isExchanging(Purpose.RECOVERY, id)) return false
         state.put("phase", "ready").put("access_token", session.accessToken)
             .put("refresh_token", session.refreshToken).put("expires_at", session.expiresAtSeconds)
             .put("user_id", session.userId)
@@ -45,12 +49,30 @@ internal class PasswordRecoveryStore(context: Context, private val now: () -> Lo
         true
     }
 
-    fun ready(): JSONObject? = synchronized(lock) {
-        read()?.takeIf { it.optString("phase") == "ready" && it.optLong("expires_at") > now() / 1000 }
+    fun isExchangingGoogle(id: String): Boolean = synchronized(lock) {
+        read()?.isExchanging(Purpose.GOOGLE, id) == true
     }
 
-    fun clear(id: String? = null) = synchronized(lock) {
-        if (id == null || read()?.optString("id") == id) { file.delete(); changes.incrementAndGet() }
+    fun ready(): JSONObject? = synchronized(lock) {
+        read()?.takeIf { it.isFor(Purpose.RECOVERY) && it.optString("phase") == "ready" && it.optLong("expires_at") > now() / 1000 }
+    }
+
+    fun clear(id: String? = null, purpose: Purpose? = null): Unit = synchronized(lock) {
+        if (id != null || purpose != null) {
+            val state = read() ?: return@synchronized
+            if (id != null && state.optString("id") != id) return@synchronized
+            if (purpose != null && !state.isFor(purpose)) return@synchronized
+        }
+        file.delete()
+        changes.incrementAndGet()
+    }
+
+    // State written by earlier versions only contains password recovery attempts.
+    private fun JSONObject.isFor(purpose: Purpose): Boolean =
+        optString("purpose", Purpose.RECOVERY.name) == purpose.name
+
+    private fun JSONObject.isExchanging(purpose: Purpose, id: String): Boolean {
+        return isFor(purpose) && optString("id") == id && optString("phase") == "exchanging"
     }
 
     private fun read(): JSONObject? = runCatching {

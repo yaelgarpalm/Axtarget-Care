@@ -22,7 +22,7 @@ No hace falta migrar ni borrar roles remotos para esta separación: las polític
 | Acción | Persona sobre sus datos | Cuidador sobre persona vinculada | Cámara independiente | Estado de revisión |
 |---|---|---|---|---|
 | Editar nombre y perfil propio | Sí | Solo su propio perfil | Solo su propio perfil | Separación de modo implementada; otros campos locales pendientes |
-| Cambiar modo del teléfono | Sí, local | Sí, local | Sí, local | No concede autorización remota |
+| Elegir modo del teléfono | Primer ingreso | Primer ingreso | Primer ingreso | Los vínculos requieren autorización |
 | Leer alertas/mediciones | Propias | Dentro del vínculo autorizado | Eventos propios y vinculación por RPC | RLS y pruebas de actores pendientes |
 | Editar medicamentos | Propietario | No | No en navegación de cámara | Guardas lote 5 y RLS local lote 6 probados; despliegue pendiente |
 | Confirmar tomas compartidas | Propietario | Actor vinculado y medicamento compartido | No | Textos, guardas, PATCH y 31 pruebas RLS locales; despliegue pendiente |

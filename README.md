@@ -52,7 +52,7 @@ El APK de depuración queda en `app/build/outputs/apk/debug/app-debug.apk`. Este
 
 Para activar el inicio de sesión, la sincronización y los vínculos entre teléfonos, copia [`.env.example`](.env.example) a `.env.local` y configura `TZINDA_SUPABASE_URL`, `TZINDA_SUPABASE_PUBLISHABLE_KEY` y `TZINDA_SUPABASE_REDIRECT_URL`. La aplicación Android utiliza la clave publicable. Las claves privadas, incluida `service_role`, se configuran en el servidor. [Guía de Supabase](docs/supabase-backend.md) · [Migraciones](supabase/migrations)
 
-**Continuar con Google** usa Credential Manager y Supabase Auth. El proveedor requiere un cliente OAuth Web y uno Android registrados en Google Auth Platform. [Configurar Google](docs/supabase-backend.md#inicio-de-sesión-con-google-en-android)
+**Continuar con Google** abre el navegador y regresa a AxTarget Care después de autenticar la cuenta. Desde **Ajustes → Cerrar sesión** puedes volver a la pantalla de acceso y entrar o crear una cuenta. [Configurar Google](docs/supabase-backend.md#inicio-de-sesión-con-google-en-android)
 
 La lectura en la nube es opcional. La función autenticada `medication-label` usa NVIDIA Nemotron 3.5 Parse para la página de la receta y Super VL para organizar la lectura. Si la nube falla, la app vuelve a leer la imagen en el teléfono. [Configuración del OCR en la nube](docs/medication-label-proxy.md)
 
