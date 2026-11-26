@@ -24,64 +24,54 @@ import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.ViewCompat
 
-/**
- * Sistema de diseño unificado e identidad visual para TzindaApp (Estilo Premium Apple HIG).
- *
- * Reglas de aplicación estricta:
- * - NO se usan tarjetas con fondos de color verde, rojo o amarillo saturado.
- * - En Modo Claro: Fondo #F8FAFC, tarjetas en blanco puro #FFFFFF con borde sutil #E2E8F0.
- * - En Modo Oscuro: Fondo casi negro #07090D y tarjetas carbón #15181F con borde blanco al 9%;
- *   el azul queda reservado para acentos, nunca para teñir toda la superficie.
- * - Badges y estados: Se presentan como pequeñas píldoras/chips compactas traslúcidas.
- */
+/** Shared colors, typography and controls for the Tzinda Android interface. */
 class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple: Boolean) {
 
     enum class Tone { SUCCESS, INFO, WARNING, DANGER, NEUTRAL, BRAND }
 
-    // Paleta oficial del rediseño Apple HIG (design-reference/tzindaapp/DESIGN.md)
-    val imperialRed = color("#FF1A23")
-    val coolWhite = color("#F8FAFC")
-    val selectiveYellow = color("#9A6200")
-    val forestGreen = color("#1E5E3A")
-    val persianBlue = color("#0E48D6")
-    val royalBlue = color("#0A1128")
-    val deepBlue = color("#0A1128")
-    val accentGreen = color("#008744")
-    val warningGold = color("#FFB800")
+    // Paleta Cobalto del diseño V5.
+    val imperialRed = color("#CC1940")
+    val coolWhite = color("#F4F5F9")
+    val selectiveYellow = color("#834209")
+    val forestGreen = color("#087846")
+    val persianBlue = color("#0047AB")
+    val royalBlue = color("#0D0D0D")
+    val deepBlue = color("#0D0D0D")
+    val accentGreen = color("#087846")
+    val warningGold = color("#F1C24A")
 
     // Tokens semánticos neutros y de alto contraste
     // El fondo de página es gris frío; las tarjetas son la única superficie elevada.
-    val paper = color(if (dark) "#07090D" else "#F8FAFC")
+    val paper = color(if (dark) "#07090D" else "#F4F5F9")
     val cardColor = color(if (dark) "#15181F" else "#FFFFFF")
-    val surfaceSunken = color(if (dark) "#0C0E13" else "#F1F5F9")
-    val softSurface = color(if (dark) "#1F232B" else "#F1F5F9")
+    val surfaceSunken = color(if (dark) "#0C0E13" else "#F2F2F2")
+    val softSurface = color(if (dark) "#1F232B" else "#F2F2F2")
     // Los colores de estado solo aparecen en iconos, chips, líneas y acciones.
-    val brandSoft = color(if (dark) "#1A2434" else "#E8EFFD")
-    val mint = color(if (dark) "#12241B" else "#E6F4EC")
+    val brandSoft = color(if (dark) "#1A2434" else "#E9F0FA")
+    val mint = color(if (dark) "#12241B" else "#DFF5E9")
     val mintStrong = forestGreen
     // En oscuro el verde de texto necesita un tono más claro para conservar contraste.
     val successText = if (dark) color("#5BD38D") else forestGreen
     val positive = successText
-    val ink = color(if (dark) "#F8FAFC" else "#0F172A")
-    val muted = color(if (dark) "#94A3B8" else "#64748B")
-    val metaGray = if (dark) color("#94A3B8") else color("#64748B")
+    val ink = color(if (dark) "#F4F5F9" else "#0D0D0D")
+    val muted = color(if (dark) "#94A3B8" else "#526063")
+    val metaGray = if (dark) color("#94A3B8") else color("#526063")
     val accent = if (dark) color("#8FA9FF") else persianBlue
     val primaryDeep = if (dark) color("#8FA9FF") else persianBlue
-    // DESIGN.md mantiene el azul #0E48D6 como relleno de acciones primarias en ambos temas;
-    // en oscuro solo el texto/enlace necesita el tono claro para conservar contraste.
+    // El enlace usa un azul más claro en el tema oscuro.
     val primaryFill = persianBlue
     val onAccent = color("#FFFFFF")
     // Bordes sutiles: hairline gris en claro, blanco al 9% en oscuro.
-    val outline = if (dark) color("#17FFFFFF") else color("#E2E8F0")
-    val controlOutline = if (dark) color("#3A3F4A") else color("#CBD5E1")
+    val outline = if (dark) color("#17FFFFFF") else color("#E3E7ED")
+    val controlOutline = if (dark) color("#3A3F4A") else color("#DEE2E8")
     val divider = outline
-    val critical = if (dark) color("#FF6B70") else color("#FF1A23")
+    val critical = if (dark) color("#FF6B83") else color("#CC1940")
     val criticalDeep = imperialRed
-    val criticalSurface = color(if (dark) "#2A1416" else "#FDECEC")
-    val onCriticalSurface = if (dark) color("#FF8A8F") else color("#B3121A")
-    // #FFB800 no alcanza contraste como texto en claro; se usa en fondos e iconos rellenos.
+    val criticalSurface = color(if (dark) "#2A1416" else "#FCE7EE")
+    val onCriticalSurface = if (dark) color("#FF8A8F") else color("#B51036")
+    // #F1C24A no alcanza contraste como texto en claro; se usa en fondos e iconos rellenos.
     val warning = if (dark) color("#FFC94D") else selectiveYellow
-    val warningSurface = color(if (dark) "#2E2410" else "#FFF7E0")
+    val warningSurface = color(if (dark) "#2E2410" else "#FCF1D5")
     val warningBright = warningGold
     val info = accent
     val infoSurface = brandSoft
@@ -91,7 +81,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
     val pink = accent
     val pinkSoft = brandSoft
     val pinkDeep = deepBlue
-    val navSelected = color(if (dark) "#232833" else "#E8EFFD")
+    val navSelected = primaryFill
     val navInactive = muted
     val scrim = colorWithAlpha(deepBlue, if (dark) .80f else .40f)
 
@@ -170,7 +160,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
 
     fun title(value: String, size: Int = 26, color: Int = ink): TextView =
         text(value, size, true, color).apply {
-            // Signature iOS large-title tracking is slightly tighter than body copy.
+            // Slightly tighter tracking for page titles.
             letterSpacing = -0.02f
             setLineSpacing(0f, 1.02f)
             setPadding(0, dp(2), 0, dp(5))
@@ -222,7 +212,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
                 setPadding(dp(10), dp(10), dp(4), dp(10))
                 isFocusable = true
                 isClickable = true
-                background = ripple(0x220E48D6, null, 18)
+                background = ripple(0x220047AB, null, 18)
                 setOnClickListener { action() }
                 contentDescription = actionLabel
             }
@@ -240,7 +230,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
         // Superficie neutra con hairline; el estado vive en chip, icono o dato, nunca en el fondo.
         val card = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            background = rounded(fill, 20).apply { setStroke(dp(1), outline) }
+            background = rounded(fill, 24)
             if (elevated) elevation = dp(1).toFloat()
             setPadding(space(18), space(18), space(18), space(18))
             isFocusable = false
@@ -254,7 +244,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
     fun card(parent: LinearLayout, fill: Int = cardColor): LinearLayout = plainCard(parent, fill)
 
     fun tintedCard(parent: LinearLayout, tone: Tone): LinearLayout =
-        plainCard(parent, cardColor)
+        plainCard(parent, toneBackground(tone))
 
     fun addGap(parent: LinearLayout, height: Int = 8) {
         parent.addView(Space(activity), LinearLayout.LayoutParams(1, space(height)))
@@ -286,16 +276,16 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
         gravity = Gravity.CENTER
         setPadding(dp(16), dp(10), dp(16), dp(10))
         setTextColor(if (primary) onAccent else ink)
-        // Secundario: superficie de campo con hairline, radio 14 según DESIGN.md.
+        // Las acciones secundarias tienen un borde fino.
         val fill = when {
             primary -> primaryFill
             dark -> softSurface
             else -> cardColor
         }
-        val shape = rounded(fill, 14).apply {
+        val shape = rounded(fill, 19).apply {
             if (!primary) setStroke(dp(1), controlOutline)
         }
-        background = ripple(if (primary) 0x33FFFFFF else 0x220E48D6, shape, 14)
+        background = ripple(if (primary) 0x33FFFFFF else 0x220047AB, shape, 19)
         if (iconRes != null) {
             val icon = ResourcesCompat.getDrawable(activity.resources, iconRes, activity.theme)?.mutate()
             icon?.setTint(if (primary) onAccent else accent)
@@ -313,7 +303,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
 
     fun dangerButton(labelText: String, iconRes: Int? = R.drawable.ic_emergency, action: () -> Unit): Button =
         button(labelText, true, action, iconRes).apply {
-            background = ripple(0x33FFFFFF, rounded(imperialRed, 14), 14)
+            background = ripple(0x33FFFFFF, rounded(imperialRed, 19), 19)
             setTextColor(Color.WHITE)
             setOnClickListener { action() }
         }
@@ -325,7 +315,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
             setPadding(dp(4), dp(10), dp(4), dp(10))
             isClickable = true
             isFocusable = true
-            background = ripple(0x1F0E48D6, null, 12)
+            background = ripple(0x1F0047AB, null, 12)
             setOnClickListener { action() }
             contentDescription = labelText
         }
@@ -639,7 +629,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
                 val surface = rounded(if (active) cardColor else Color.TRANSPARENT, 9).apply {
                     if (active && !dark) setStroke(dp(1), colorWithAlpha(outline, .70f))
                 }
-                background = ripple(0x1F0E48D6, surface, 9)
+                background = ripple(0x1F0047AB, surface, 9)
                 contentDescription = "$label${if (active) ", seleccionado" else ""}"
                 setOnClickListener { onSelect(index) }
             }
@@ -666,7 +656,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
             elevation = 0f
             setPadding(dp(12), dp(8), dp(12), dp(8))
             background = ripple(
-                0x220E48D6,
+                0x220047AB,
                 rounded(if (selected) primaryFill else softSurface, 999),
                 999,
             )
@@ -749,7 +739,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
             if (onClick != null) {
                 isClickable = true
                 isFocusable = true
-                background = ripple(0x1F0E48D6, null, 12)
+                background = ripple(0x1F0047AB, null, 12)
             }
         }
         val badge = if (leadingText != null) avatar(leadingText, 42, Tone.BRAND)
@@ -891,7 +881,7 @@ class TzindaDesign(private val activity: Activity, val dark: Boolean, val simple
             contentDescription = description
             isClickable = true
             isFocusable = true
-            background = ripple(0x1F0E48D6, rounded(softSurface, 999), 999)
+            background = ripple(0x1F0047AB, rounded(softSurface, 999), 999)
             setPadding(dp(12), dp(12), dp(12), dp(12))
             setOnClickListener { onClick() }
             minimumWidth = dp(size)

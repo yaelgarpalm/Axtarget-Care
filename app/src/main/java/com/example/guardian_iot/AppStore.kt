@@ -95,10 +95,12 @@ class AppStore(context: Context) {
         UnoQLocalAuth.putEncryptedToken(editor, appContext, token)
         check(editor.commit()) { "No se pudo guardar la configuración segura del UNO Q." }
     }
-    fun saveRole(role: String) {
+    fun saveRole(role: String, beginTutorial: Boolean = false) {
         require(role in setOf(ROLE_WEARER, ROLE_CAREGIVER, ROLE_CAMERA)) { "Selecciona un rol válido." }
         val changed = role() != role
-        check(prefs.edit().putString("user_role", role).putLong("role_updated_at", System.currentTimeMillis()).commit()) { "No se pudo guardar el modo de este teléfono." }
+        val editor = prefs.edit().putString("user_role", role).putLong("role_updated_at", System.currentTimeMillis())
+        if (beginTutorial) editor.putInt(FIRST_TUTORIAL_STEP, 0)
+        check(editor.commit()) { "No se pudo guardar el modo de este teléfono." }
         if (changed) CaregiverAccess(this).invalidateCache()
         LocationSharing(this).reconcile()
         SyncScheduler.enqueue(appContext)
@@ -124,6 +126,15 @@ class AppStore(context: Context) {
         val legacy = events()
         return (offset until minOf(legacy.length(), offset + limit)).mapNotNull { legacy.optJSONObject(it) }
     }
+    fun eventHistoryForIncident(incidentId: String): List<JSONObject> {
+        if (incidentId.isBlank()) return emptyList()
+        return telemetry.appEventsForIncident(incidentId).ifEmpty {
+            val legacy = events()
+            (0 until legacy.length()).mapNotNull { legacy.optJSONObject(it) }
+                .filter { it.optString("incident") == incidentId }
+        }
+    }
+
     fun eventHistoryCount(): Int = maxOf(telemetry.appEventCount(), events().length())
     fun possibleFallCountSince(capturedAt: Long): Int {
         val stored = telemetry.possibleFallCountSince(capturedAt)

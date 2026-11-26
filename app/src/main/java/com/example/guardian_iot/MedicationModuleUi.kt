@@ -20,14 +20,11 @@ import android.text.InputType
 import android.text.format.DateFormat
 import android.view.Gravity
 import android.view.View
-import android.widget.AdapterView
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Spinner
-import android.widget.ArrayAdapter
 import android.widget.Switch
 import android.widget.TextView
 import androidx.core.app.ActivityCompat
@@ -55,6 +52,7 @@ class MedicationModuleUi(
 ) {
     private val db = repository.database
     private val tz = TzindaDesign(activity, dark, AccountStorage.capture(activity).getSharedPreferences("tzinda_native", Context.MODE_PRIVATE).getBoolean("simple_accessibility", false))
+    private val v5 = TzindaV5(activity, tz)
     private val ink get() = tz.ink
     private val muted get() = tz.muted
     private val accent get() = tz.accent
@@ -74,16 +72,20 @@ class MedicationModuleUi(
             MedicationReminderScheduler.synchronizeAll(activity)
             db.markOverdue(ownerId)
         }
-        heading(
-            target,
-            if (readOnly) "CUIDADO COMPARTIDO" else "CUIDADO Y RUTINA",
-            if (readOnly) "Medicamentos compartidos" else "Mis medicamentos",
-            if (readOnly) {
-                "Consulta los horarios y tomas que la persona protegida decidió compartir. Puedes registrar las tomas compartidas; los medicamentos y horarios los edita su propietario."
-            } else {
-                "Guarda los horarios indicados y lleva un registro de cada toma."
-            },
-        )
+
+        val currentMedications = visibleMedications(includeDeleted = false)
+        if (!readOnly) {
+            medicationOverview(target, currentMedications.isEmpty())
+            if (currentMedications.isEmpty()) {
+                if (!initialSyncStarted && !ownerId.startsWith("local:")) {
+                    initialSyncStarted = true
+                    syncNow(silent = true)
+                }
+                return
+            }
+        } else {
+            v5.header(target, "Medicamentos", "Tomas y recordatorios compartidos.", gapBelow = 33)
+        }
         if (readOnly && ownerId.isNotBlank() && !sessionActive) {
             tz.banner(
                 target,
@@ -162,13 +164,6 @@ class MedicationModuleUi(
             summary.addView(row)
         }
 
-        if (!readOnly) {
-            target.addView(
-                button("Agregar medicamento", true, R.drawable.ic_plus) { showMedicationForm(null) },
-            )
-            gap(target, 8)
-        }
-
         val adherence = adherenceSummary(adherenceDays)
         val adherenceCard = card(target)
         adherenceCard.addView(label("Seguimiento de adherencia", ink, 19, true))
@@ -220,8 +215,7 @@ class MedicationModuleUi(
         todayIntakes.forEach { intake -> intakeCard(today, intake) }
 
         target.addView(label("Lista de medicamentos", ink, 21, true).apply { setPadding(dp(4), dp(12), 0, dp(4)) })
-        val meds = visibleMedications(includeDeleted = false)
-        if (meds.isEmpty()) {
+        if (currentMedications.isEmpty()) {
             tz.emptyState(
                 target,
                 if (readOnly) "Sin medicamentos compartidos" else "Aún no hay medicamentos",
@@ -235,8 +229,8 @@ class MedicationModuleUi(
                 R.drawable.ic_medication,
             )
         }
-        meds.forEach { medicationCard(target, it) }
-        target.addView(button("Ver historial de tomas", false, R.drawable.ic_calendar) { showHistory() })
+        currentMedications.forEach { medicationCard(target, it) }
+        if (readOnly) target.addView(button("Ver historial de tomas", false, R.drawable.ic_calendar) { showHistory() })
 
         val syncCard = card(target)
         syncCard.addView(label(if (readOnly) "Datos compartidos" else "Guardado y sincronización", ink, 18, true))
@@ -273,6 +267,40 @@ class MedicationModuleUi(
             initialSyncStarted = true
             syncNow(silent = true)
         }
+    }
+
+
+    private fun medicationOverview(target: LinearLayout, emptyList: Boolean) {
+        v5.header(target, "Medicamentos", "Tus tomas, a tu ritmo.", gapBelow = 27)
+        val next = nextIntakes().firstOrNull()
+        val hero = v5.panel(target, mint, radius = 29, padding = 19, margin = 24)
+        val row = v5.horizontal()
+        row.addView(v5.column().apply {
+            addView(v5.label("PLAN DEL DÍA", tz.positive))
+            v5.gap(this, 18)
+            addView(v5.title(if (next == null) "Tu rutina\nempieza aquí." else "Tu próxima toma", 28))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(v5.art(R.drawable.v5_art_medication), LinearLayout.LayoutParams(dp(103), dp(98)).apply { marginEnd = dp(5) })
+        hero.addView(row)
+        v5.gap(hero, 25)
+        hero.addView(v5.text(next?.let { formatTime(it.second) + " · " + it.first.name } ?: "Sin tomas programadas", 14, tz.positive))
+        v5.gap(hero, 10)
+        hero.addView(v5.text(next?.let { doseLine(it.first) } ?: "Añade un medicamento y define su horario.", 12, tz.positive))
+        v5.gap(hero, 4)
+        v5.action(target, "Añadir medicamento", R.drawable.ic_plus, margin = 26) { showMedicationForm(null) }
+        v5.section(target, "Tu registro")
+        val records = v5.panel(target, padding = 0, margin = 28)
+        v5.row(records, "Historial de tomas", "Próximas, registradas u omitidas", R.drawable.v5_clock, minHeight = 68, divider = true) { showHistory() }
+        v5.row(records, "Privacidad", "Elige qué registros compartir", R.drawable.v5_lock, mint, tz.positive, minHeight = 68) {
+            val help = AlertDialog.Builder(activity).setTitle("Privacidad de medicamentos")
+                .setMessage("Elige qué medicamentos compartes al guardarlos o editarlos. Solo una persona vinculada puede consultar las tomas compartidas.")
+                .setNegativeButton("Cerrar", null)
+            if (!emptyList && !ownerId.startsWith("local:")) {
+                help.setNeutralButton("Compartir todos") { _, _ -> confirmShareAll() }
+            }
+            help.show()
+        }
+        v5.note(target, "Los recordatorios configurados\nfuncionan sin Internet.", R.drawable.v5_clock)
     }
 
     private fun medicationCard(target: LinearLayout, medication: Medication) {
@@ -458,196 +486,154 @@ class MedicationModuleUi(
         var selectedStart = existing?.startDate ?: LocalDate.now().toString()
         var selectedEnd = existing?.endDate
         val selectedTimes = (existing?.scheduleTimes ?: emptyList()).toMutableList()
-        val dialog = Dialog(activity)
-        val root = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(14), dp(18), dp(12))
-            background = GradientDrawable().apply { setColor(cardColor); cornerRadius = dp(24).toFloat(); setStroke(dp(1), outline) }
-        }
-        val header = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val headerCopy = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        headerCopy.addView(label("MEDICAMENTO", accent, 12, true))
-        headerCopy.addView(label(if (existing == null) "Nuevo medicamento" else "Editar medicamento", ink, 22, true))
-        header.addView(headerCopy, LinearLayout.LayoutParams(0, -2, 1f))
-        header.addView(
-            tz.iconOnlyButton(R.drawable.ic_close, "Cerrar formulario", size = 48) { dialog.dismiss() },
-            LinearLayout.LayoutParams(dp(48), dp(48)),
-        )
-        root.addView(header)
 
-        val scroll = ScrollView(activity).apply { isFillViewport = false; clipToPadding = false }
-        val content = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(12), 0, dp(8))
+        var frequency = existing?.frequency ?: "Diaria"
+        var anchor = existing?.let { MedicationSchedulePolicy.intervalAnchor(it.scheduleTimes) }
+            ?: selectedTimes.minOrNull() ?: "08:00"
+        val dialog = Dialog(activity, if (dark) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
+        val root = v5.column().apply {
+            setBackgroundColor(paper)
+            setPadding(dp(20), dp(27), dp(20), 0)
+            isFocusableInTouchMode = true
         }
+        val scroll = ScrollView(activity).apply { isFillViewport = true; isVerticalScrollBarEnabled = false }
+        val content = v5.column().apply { setPadding(0, 0, 0, dp(24)) }
         scroll.addView(content)
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-
-        content.addView(label("MEDICAMENTO", accent, 12, true))
-        val scanSlot = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(scroll, LinearLayout.LayoutParams(-1, -1))
+        content.addView(v5.iconButton(R.drawable.v5_back, "Volver a Medicamentos") { dialog.dismiss() },
+            LinearLayout.LayoutParams(dp(44), dp(44)))
+        v5.gap(content, 13)
+        v5.header(content, if (existing == null) "Nuevo medicamento" else "Editar medicamento",
+            "Revisa la información de tu receta.", gapBelow = 34)
+        val scanSlot = v5.column()
         content.addView(scanSlot)
-        val name = input(content, "Nombre del medicamento", existing?.name.orEmpty(), hintText = "Ej. Losartán")
-        val dose = input(content, "Dosis indicada", existing?.prescribedDose.orEmpty(), hintText = "Ej. 1 tableta de 50 mg")
-        val presentation = input(content, "Presentación o unidad (opcional)", existing?.presentation.orEmpty(), hintText = "Ej. caja con 30 tabletas")
-        gap(content, 6)
-        content.addView(label("DÍAS Y HORARIOS", accent, 12, true))
-        content.addView(label("Elige cuándo empieza y cómo se repite. TzindaApp usará la frecuencia desde ese día.", muted, 14))
-        content.addView(label("Frecuencia", ink, 15, true).apply { setPadding(0, dp(10), 0, dp(4)) })
-        val frequencyOptions = MedicationSchedulePolicy.frequencyOptions
-        val existingFrequencyIndex = existing?.frequency?.let(frequencyOptions::indexOf)?.takeIf { it >= 0 } ?: 0
-        val frequency = Spinner(activity).apply {
-            adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, frequencyOptions)
-            setSelection(existingFrequencyIndex)
-            background = GradientDrawable().apply { setColor(cardColor); cornerRadius = dp(14).toFloat(); setStroke(dp(1), outline) }
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            contentDescription = "Frecuencia del medicamento"
-        }
-        content.addView(frequency, LinearLayout.LayoutParams(-1, dp(54)).apply { bottomMargin = dp(10) })
-        val startButton = button("", false) {}
-        fun refreshStartButton() { startButton.text = "Comienza · ${formatLocalDate(selectedStart)}" }
-        refreshStartButton()
-        startButton.setOnClickListener {
-            showDatePicker(selectedStart) { chosen -> selectedStart = chosen; refreshStartButton() }
-        }
-        content.addView(startButton, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        val name = v5.field(content, "Nombre del medicamento", existing?.name.orEmpty(), "Escribe el nombre", marginBelow = 12)
+        val dose = v5.field(content, "Dosis y presentación", existing?.prescribedDose.orEmpty(), "Según lo indicado en tu receta", marginBelow = 12)
+        content.addView(v5.text("Primera toma", 13, muted))
+        v5.gap(content, 9)
+        val firstDose = v5.action(content, "Elige fecha y hora", R.drawable.v5_clock, cardColor, accent,
+            margin = 17, trailingIcon = true) {}
+        firstDose.setTextColor(muted)
+        content.addView(v5.text("Frecuencia", 13, muted))
+        v5.gap(content, 9)
+        val frequencySlot = v5.column()
+        content.addView(frequencySlot)
+        v5.gap(content, 30)
+        val sharing = v5.panel(content, padding = 11, margin = 24)
+        val shareWithCaregiver = v5.toggleRow(sharing, "Compartir con cuidador", "Solo con un vínculo autorizado",
+            R.drawable.v5_people, existing?.shareWithCaregiver ?: false)
 
-        val endRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val endButton = button("", false) {}
-        var removeEndButton: Button? = null
-        fun refreshEndButton() {
-            endButton.text = selectedEnd?.let { "Termina · ${formatLocalDate(it)}" } ?: "Agregar fecha de fin (opcional)"
-            removeEndButton?.visibility = if (selectedEnd == null) View.GONE else View.VISIBLE
+        val formError = v5.text("", 14, tz.onCriticalSurface, bold = true).apply { visibility = View.GONE }
+        content.addView(formError)
+        val footer = v5.column()
+        content.addView(footer)
+        if (existing == null) v5.gap(content, 100)
+        val extra = v5.panel(content, padding = 14)
+        val extraOptions = v5.column().apply { visibility = if (existing == null) View.GONE else View.VISIBLE }
+        v5.action(extra, "Más opciones", fill = cardColor, fg = accent, margin = 0) {
+            extraOptions.visibility = if (extraOptions.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         }
-        val clearEndButton = button("Quitar", false) { selectedEnd = null; refreshEndButton() }
-        removeEndButton = clearEndButton
-        refreshEndButton()
-        endButton.setOnClickListener {
-            showDatePicker(selectedEnd ?: selectedStart) { chosen -> selectedEnd = chosen; refreshEndButton() }
+        extra.addView(extraOptions)
+        val presentation = input(extraOptions, "Presentación o unidad (opcional)", existing?.presentation.orEmpty(),
+            hintText = "Ej. caja con 30 tabletas")
+        val endButton = v5.action(extraOptions, "", fill = cardColor, fg = accent) {}
+        fun setEndLabel() {
+            endButton.text = selectedEnd?.let { "Termina · " + formatLocalDate(it) } ?: "Añadir fecha final"
+            endButton.contentDescription = endButton.text
         }
-        endRow.addView(endButton, LinearLayout.LayoutParams(0, -2, 1f))
-        endRow.addView(clearEndButton, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6) })
-        content.addView(endRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
+        setEndLabel()
+        endButton.setOnClickListener { showDatePicker(selectedEnd ?: selectedStart) { selectedEnd = it; setEndLabel() } }
+        v5.action(extraOptions, "Quitar fecha final", fill = cardColor, fg = accent) { selectedEnd = null; setEndLabel() }
+        val currentFrequency = v5.action(extraOptions, frequency, fill = cardColor, fg = accent) {}
+        val timeList = v5.column()
+        extraOptions.addView(timeList)
+        val instructions = input(extraOptions, "Indicaciones personales (opcional)", existing?.instructions.orEmpty(),
+            multiline = true, hintText = "Ej. tomar con agua después del desayuno")
+        val active = tz.switchRow(extraOptions, "Activar recordatorios", "Solo para este medicamento.",
+            value = existing?.isActive ?: true, action = {})
 
-        content.addView(label("RECORDATORIOS", accent, 12, true))
-        val scheduleHint = label("", muted, 14)
-        content.addView(scheduleHint)
-        val timesSection = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(timesSection)
-        var selectedAnchor = existing?.let { MedicationSchedulePolicy.intervalAnchor(it.scheduleTimes) }
-            ?.takeIf { MedicationSchedulePolicy.intervalHours(frequencyOptions[existingFrequencyIndex]) != null }
-            ?: selectedTimes.minOrNull().orEmpty().ifBlank { "08:00" }
-        fun intervalTimesFor(hours: Int): List<String> =
-            MedicationSchedulePolicy.intervalTimes(selectedAnchor, hours).orEmpty()
-        var renderSection: () -> Unit = {}
+        fun pickTime(value: String, onPicked: (String) -> Unit) {
+            val parts = value.split(':')
+            TimePickerDialog(activity, { _, hour, minute ->
+                onPicked(String.format(Locale.ROOT, "%02d:%02d", hour, minute))
+            }, parts.firstOrNull()?.toIntOrNull() ?: 8, parts.getOrNull(1)?.toIntOrNull() ?: 0,
+                DateFormat.is24HourFormat(activity)).show()
+        }
 
-        fun renderManualTimes() {
-            scheduleHint.text = "Agrega al menos un horario. Se pedirá confirmar cada toma; la app nunca la marca como tomada por su cuenta."
-            val timesContainer = LinearLayout(activity).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(0, dp(4), 0, 0)
+        val labels = listOf("Horas fijas", "Cada 8 h", "Cada 12 h", "Cada 24 h")
+        val frequencies = listOf("Diaria", "Cada 8 horas", "Cada 12 horas", "Cada 24 horas")
+        fun refreshSchedule() {
+            val interval = MedicationSchedulePolicy.intervalHours(frequency)
+            val first = if (interval == null) selectedTimes.minOrNull() else anchor
+            firstDose.text = if (first == null) "Elige fecha y hora" else formatLocalDate(selectedStart) + " · " + first
+            firstDose.contentDescription = "Primera toma. " + firstDose.text
+            currentFrequency.text = frequency
+            currentFrequency.contentDescription = "Frecuencia. " + frequency
+            timeList.removeAllViews()
+            if (interval == null) {
+                selectedTimes.sorted().forEach { time ->
+                    val row = v5.horizontal()
+                    row.addView(v5.text(time, 17), LinearLayout.LayoutParams(0, -2, 1f))
+                    row.addView(tz.textAction("Quitar $time", { selectedTimes.remove(time); refreshSchedule() }))
+                    timeList.addView(row)
+                }
+                v5.action(timeList, "Añadir horario", R.drawable.ic_plus, cardColor, accent) {
+                    pickTime(selectedTimes.lastOrNull() ?: anchor) { time ->
+                        if (time in selectedTimes) toast("Ese horario ya está agregado.")
+                        else { selectedTimes.add(time); refreshSchedule() }
+                    }
+                }
+            } else {
+                timeList.addView(v5.text(MedicationSchedulePolicy.intervalTimes(anchor, interval).orEmpty().joinToString(" · "),
+                    14, muted))
             }
-            fun renderTimes() {
-                timesContainer.removeAllViews()
-                if (selectedTimes.isEmpty()) {
-                    timesContainer.addView(label("Aún no agregas horarios.", muted, 14).apply { setPadding(0, dp(6), 0, dp(4)) })
-                } else selectedTimes.sorted().forEach { time ->
-                    val row = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                    row.addView(label(time, ink, 18, true), LinearLayout.LayoutParams(0, -2, 1f))
-                    row.addView(tz.textAction("Quitar", { selectedTimes.remove(time); renderTimes() }, R.drawable.ic_trash))
-                    row.contentDescription = "Horario ${time.replace(':', ' ')}. Quitar."
-                    row.minimumHeight = dp(48)
-                    timesContainer.addView(row, LinearLayout.LayoutParams(-1, -2))
+            frequencySlot.removeAllViews()
+            val mode = frequencies.indexOf(frequency).let { i -> if (i < 0 && interval == null) 0 else i }
+            v5.segments(frequencySlot, labels, mode) { i ->
+                if (interval == null) anchor = selectedTimes.minOrNull() ?: anchor
+                frequency = frequencies[i]
+                refreshSchedule()
+            }
+        }
+        firstDose.setOnClickListener {
+            showDatePicker(selectedStart) { chosen ->
+                val interval = MedicationSchedulePolicy.intervalHours(frequency)
+                val first = if (interval == null) selectedTimes.minOrNull() else anchor
+                pickTime(first ?: anchor) { time ->
+                    if (interval == null && first != time && time in selectedTimes) {
+                        toast("Ese horario ya está agregado.")
+                    } else {
+                        selectedStart = chosen
+                        if (interval == null) {
+                            if (first != null) selectedTimes.remove(first)
+                            selectedTimes.add(time)
+                        }
+                        anchor = time
+                        refreshSchedule()
+                    }
                 }
             }
-            renderTimes()
-            timesSection.addView(timesContainer)
-            timesSection.addView(button("Agregar horario", false, R.drawable.ic_plus) {
-                val last = selectedTimes.lastOrNull()?.split(":")
-                val hour = last?.getOrNull(0)?.toIntOrNull() ?: 8
-                val minute = last?.getOrNull(1)?.toIntOrNull() ?: 0
-                TimePickerDialog(activity, { _, chosenHour, chosenMinute ->
-                    val time = "%02d:%02d".format(Locale.ROOT, chosenHour, chosenMinute)
-                    if (time in selectedTimes) toast("Ese horario ya está agregado.")
-                    else { selectedTimes.add(time); selectedTimes.sort(); renderTimes() }
-                }, hour, minute, DateFormat.is24HourFormat(activity)).show()
-            })
         }
-
-        fun renderIntervalTimes(hours: Int) {
-            scheduleHint.text = "Los avisos se repiten cada $hours horas desde la primera toma. Si tomas a otra hora, podrás ajustar los próximos avisos desde esa toma."
-            val firstRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            firstRow.addView(label("Primera toma", ink, 15, true), LinearLayout.LayoutParams(0, -2, 1f))
-            val anchorButton = button(selectedAnchor, false) {}
-            firstRow.addView(anchorButton, LinearLayout.LayoutParams(dp(132), -2))
-            timesSection.addView(firstRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
-            val generated = intervalTimesFor(hours)
-            timesSection.addView(label(generated.joinToString(" · "), ink, 17, true))
-            timesSection.addView(
-                label(
-                    "Cada $hours horas · ${TzindaText.count(generated.size, "toma al día", "tomas al día")} · horarios generados automáticamente",
-                    muted, 13,
-                ),
-            )
-            anchorButton.setOnClickListener {
-                val parts = selectedAnchor.split(":")
-                TimePickerDialog(activity, { _, chosenHour, chosenMinute ->
-                    selectedAnchor = "%02d:%02d".format(Locale.ROOT, chosenHour, chosenMinute)
-                    renderSection()
-                }, parts.getOrNull(0)?.toIntOrNull() ?: 8, parts.getOrNull(1)?.toIntOrNull() ?: 0, DateFormat.is24HourFormat(activity)).show()
-            }
+        currentFrequency.setOnClickListener {
+            val options = MedicationSchedulePolicy.frequencyOptions
+            AlertDialog.Builder(activity).setTitle("Frecuencia").setItems(options.toTypedArray()) { _, i ->
+                if (MedicationSchedulePolicy.intervalHours(frequency) == null) anchor = selectedTimes.minOrNull() ?: anchor
+                frequency = options[i]
+                refreshSchedule()
+            }.show()
         }
-
-        var intervalMode = MedicationSchedulePolicy.intervalHours(frequencyOptions[existingFrequencyIndex]) != null
-        renderSection = {
-            timesSection.removeAllViews()
-            val hours = MedicationSchedulePolicy.intervalHours(frequency.selectedItem?.toString().orEmpty())
-            if (hours != null) renderIntervalTimes(hours) else renderManualTimes()
-        }
-        renderSection()
-        frequency.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val hours = MedicationSchedulePolicy.intervalHours(frequencyOptions[position])
-                if (hours != null && !intervalMode) {
-                    // Al pasar a un intervalo, la hora de referencia es el primer horario que ya tenía.
-                    selectedAnchor = selectedTimes.minOrNull().orEmpty().ifBlank { selectedAnchor }
-                }
-                intervalMode = hours != null
-                renderSection()
-            }
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-        }
-
-        gap(content, 4)
-        content.addView(label("DETALLES OPCIONALES", accent, 12, true))
-        val instructions = input(content, "Indicaciones personales (opcional)", existing?.instructions.orEmpty(), multiline = true, hintText = "Ej. tomar con agua después del desayuno")
-        val active = tz.switchRow(
-            content,
-            "Activar recordatorios",
-            "Los avisos se programan solo para este medicamento.",
-            value = existing?.isActive ?: true,
-            action = {},
-        )
-        val shareWithCaregiver = tz.switchRow(
-            content,
-            "Compartir con cuidador/a",
-            "Permite que la persona vinculada vea este medicamento, sus horarios y sus tomas. Empieza desactivado.",
-            value = existing?.shareWithCaregiver ?: false,
-            action = {},
-        )
+        refreshSchedule()
 
         val labelScanner = scanner
         fun applyGuess(guess: MedicationLabelGuess) {
             if (guess.name.isNotBlank()) name.setText(guess.name)
             if (guess.presentation.isNotBlank()) presentation.setText(guess.presentation)
             if (guess.dose.isNotBlank()) dose.setText(guess.dose)
-            val index = frequencyOptions.indexOf(guess.frequency)
-            if (index >= 0) {
-                frequency.setSelection(index)
-                if (guess.anchorTime.isNotBlank()) selectedAnchor = guess.anchorTime
-                intervalMode = MedicationSchedulePolicy.intervalHours(guess.frequency) != null
-                renderSection()
+            if (guess.frequency in MedicationSchedulePolicy.frequencyOptions) {
+                frequency = guess.frequency
+                guess.anchorTime.takeIf { it.isNotBlank() }?.let { anchor = it }
+                refreshSchedule()
             }
-            toast("Revisa los datos detectados antes de guardar.")
         }
 
         var scanAgain: () -> Unit = {}
@@ -747,47 +733,26 @@ class MedicationModuleUi(
         }
         scanAgain = { showScanOptions() }
 
+
         if (labelScanner != null) {
-            scanSlot.addView(button("Escanear caja o receta", false, R.drawable.ic_camera) { showScanOptions() })
-            scanSlot.addView(
-                label(
-                    if (labelScanner.cloudAvailable) {
-                        "Al elegir la nube, la foto pasa por Supabase y NVIDIA; la opción en el teléfono no envía nada. Revisa siempre lo detectado."
-                    } else {
-                        "Lee el nombre, la dosis y la presentación de una foto y rellena el formulario. Revisa siempre lo detectado."
-                    },
-                    muted,
-                    13,
-                ),
-            )
-            gap(content, 6)
+            val scan = v5.panel(scanSlot, tz.brandSoft, radius = 22, padding = 0, margin = 27)
+            v5.row(scan, "Escanear caja o receta", "Completa los datos con la cámara", R.drawable.v5_camera,
+                minHeight = 77, emphasis = true, titleColor = accent, action = ::showScanOptions)
         }
-
-        val formError = label("", tz.critical, 14, true).apply {
-            visibility = View.GONE
-            setPadding(dp(2), dp(8), dp(2), 0)
-        }
-        root.addView(formError)
-
-        val footer = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END or Gravity.CENTER_VERTICAL }
-        footer.addView(button("Cancelar", false) { dialog.dismiss() }, LinearLayout.LayoutParams(0, -2, 1f))
-        var saveButton: Button? = null
-        saveButton = button(if (existing == null) "Guardar" else "Guardar cambios") {
-            val buttonView = saveButton ?: return@button
-            val chosenFrequency = frequency.selectedItem.toString()
-            val chosenInterval = MedicationSchedulePolicy.intervalHours(chosenFrequency)
-            val schedule = if (chosenInterval != null) {
-                MedicationSchedulePolicy.intervalTimes(selectedAnchor, chosenInterval).orEmpty()
-            } else {
-                selectedTimes.distinct().sorted()
-            }
+        lateinit var saveButton: Button
+        saveButton = v5.action(footer, if (existing == null) "Guardar medicamento" else "Guardar cambios", R.drawable.v5_check) {
+            val buttonView = saveButton
+            val chosenFrequency = frequency
+            val interval = MedicationSchedulePolicy.intervalHours(chosenFrequency)
+            val schedule = if (interval != null) MedicationSchedulePolicy.intervalTimes(anchor, interval).orEmpty()
+                else selectedTimes.distinct().sorted()
             val validation = MedicationSchedulePolicy.validate(name.text.toString(), dose.text.toString(), chosenFrequency, schedule, selectedStart, selectedEnd)
             if (validation != null) {
                 formError.text = validation
                 formError.visibility = View.VISIBLE
                 tz.announce(formError, validation)
                 name.requestFocus()
-                return@button
+                return@action
             }
             formError.visibility = View.GONE
             buttonView.isEnabled = false
@@ -799,7 +764,7 @@ class MedicationModuleUi(
             }
             saved.onFailure {
                 buttonView.isEnabled = true
-                buttonView.text = if (existing == null) "Guardar" else "Guardar cambios"
+                buttonView.text = if (existing == null) "Guardar medicamento" else "Guardar cambios"
                 val message = it.message ?: "No se pudo guardar el medicamento."
                 formError.text = message
                 formError.visibility = View.VISIBLE
@@ -815,14 +780,8 @@ class MedicationModuleUi(
                 rerender()
             }
         }
-        footer.addView(saveButton, LinearLayout.LayoutParams(0, -2, 1.2f).apply { leftMargin = dp(8) })
-        root.addView(footer, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-        dialog.setContentView(root)
-        dialog.show()
-        dialog.window?.apply {
-            setBackgroundDrawableResource(android.R.color.transparent)
-            setLayout((activity.resources.displayMetrics.widthPixels - dp(28)).coerceAtLeast(dp(280)), (activity.resources.displayMetrics.heightPixels * .88f).toInt())
-        }
+
+        v5.showFullScreen(dialog, root)
     }
 
     private fun showDatePicker(initial: String, onSelected: (String) -> Unit) {
@@ -1125,10 +1084,6 @@ class MedicationModuleUi(
             input.setSingleLine(false)
         }
         return input
-    }
-
-    private fun heading(parent: LinearLayout, eyebrow: String, title: String, subtitle: String) {
-        tz.heading(parent, eyebrow, title, subtitle)
     }
 
     private fun card(parent: LinearLayout) = tz.plainCard(parent)

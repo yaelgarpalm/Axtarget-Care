@@ -20,8 +20,8 @@ android {
         if (auditBuild) applicationIdSuffix = ".audit"
         minSdk = 24
         targetSdk = 36
-        versionCode = 11
-        versionName = "2.1.7"
+        versionCode = 13
+        versionName = "2.1.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "SUPABASE_URL", buildConfigString(configValue("TZINDA_SUPABASE_URL")))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", buildConfigString(configValue("TZINDA_SUPABASE_PUBLISHABLE_KEY")))
@@ -52,6 +52,7 @@ dependencies {
     implementation(platform("io.github.jan-tennert.supabase:bom:3.2.4"))
     implementation("io.github.jan-tennert.supabase:realtime-kt")
     implementation("io.ktor:ktor-client-cio:3.3.0")
+    implementation("io.ktor:ktor-client-android:3.3.0")
     // Supabase Realtime logs through SLF4J; provide a no-op binding instead of noisy warnings.
     implementation("org.slf4j:slf4j-nop:2.0.16")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")

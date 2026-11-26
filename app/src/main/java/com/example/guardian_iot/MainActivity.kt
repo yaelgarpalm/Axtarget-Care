@@ -62,11 +62,20 @@ class MainActivity : ComponentActivity() {
     private var authPassword: EditText? = null
     private var authName: EditText? = null
     private var authConfirmation: EditText? = null
-    private var authPrivacy: Switch? = null
+    private var authPrivacy: CheckBox? = null
+    private var authSubmit: Button? = null
+    private var authEmailDraft = ""
+    private var authSubmitting = false
+    private var startupPermissionsVisible = false
+    private var startupPermissionInFlight = false
+    private var welcomeStep: Int? = null
+    private var tutorialStep: Int? = null
+    private var tutorialReturnTab: Int? = null
     private var caregiverRefreshInFlight = false
     private var caregiverRefreshAt = 0L
     private var caregiverRefreshScope: CaregiverScope? = null
     private var caregiverRefreshRequest = 0L
+    private var caregiverMapRetry: Pair<Long, () -> Unit>? = null
     private var caregiverEventsPageInFlight = false
     private var caregiverEventsHasMore = true
     private var wearerLinkRefreshInFlight = false
@@ -79,6 +88,12 @@ class MainActivity : ComponentActivity() {
     private var lastCareDataRefreshAt = 0L
     private var locationFreshnessRenderAt = 0L
     private var caregiverLocationUpdater: (() -> Unit)? = null
+    private val mapService = lazy { TzindaMapService(this) }
+    private val mapLocation = lazy { TzindaMapLocation(this, ::storedMapFix) }
+    private var locationMap: TzindaV11? = null
+    private var mapLocationPermission: ((MapFix?) -> Unit)? = null
+    private var cancelMapFix: (() -> Unit)? = null
+    private var showOtherCaregiverAlerts = false
     private var caregiverVitalsUpdater: (() -> Unit)? = null
     private var lastRenderKey: String? = null
     private var profileReturnTab = 0
@@ -89,10 +104,23 @@ class MainActivity : ComponentActivity() {
     private var supervisionReturnTab = 0
     private var settingsReturnTab = 0
     private var activityFilter = 0
-    private var activityHistoryLimit = 100
+    private var historyOffset = 0
     private var cameraHistoryLimit = 100
-    private var activitySection = 1
     private var careJournalFilter = ""
+    private var careSection = 0
+    private var contactIndex = -1
+    private var contactNameInput: EditText? = null
+    private var contactPhoneInput: EditText? = null
+    private var contactNameDraft = ""
+    private var contactPhoneDraft = ""
+    private var selectedEvent: JSONObject? = null
+    private var helpIncident = ""
+    private var helpSignature: List<String> = emptyList()
+    private var helpDispatchActive = false
+    private var updateHomeProtection: (() -> Unit)? = null
+    private var practiceDialog: Dialog? = null
+    private val v5 get() = TzindaV5(this, tz)
+    private val v9 get() = TzindaV9(this, v5)
     private var patientPulseValue: TextView? = null
     private var patientSpo2Value: TextView? = null
     private var patientPulseUnit: TextView? = null
@@ -100,6 +128,8 @@ class MainActivity : ComponentActivity() {
     private var patientPulseSpark: SparklineView? = null
     private var patientSpo2Spark: SparklineView? = null
     private var patientVitalsStatus: TextView? = null
+    private val vitalTileUpdates = mutableListOf<(String) -> Unit>()
+    private var updateVitalsCaption: ((Boolean) -> Unit)? = null
     private var caregiverSharedLocationView: TextView? = null
     private var caregiverLocationCoordinatesView: TextView? = null
     private var caregiverLocationFreshnessView: TextView? = null
@@ -113,16 +143,6 @@ class MainActivity : ComponentActivity() {
     private var editingContacts = false
     private val handler = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
-    private var appBarSubtitle: TextView? = null
-    private var appBarStatus: TextView? = null
-    private var appBarProfile: TextView? = null
-    private var homeStatus: TextView? = null
-    private var homeHeadline: TextView? = null
-    private var monitorButton: Button? = null
-    private var monitorToggle: Switch? = null
-    private var updatingMonitorToggle = false
-    private var emergencyProgressCard: LinearLayout? = null
-    private var emergencyProgressStatus: TextView? = null
     private var smsPermissionStatus: TextView? = null
     private var smsPermissionButton: Button? = null
     private var smsPermissionPill: TextView? = null
@@ -143,15 +163,17 @@ class MainActivity : ComponentActivity() {
     private var readingContacts = false
     private var countdownDialog: Dialog? = null
     private var countdownText: TextView? = null
-    private var countdownDescription: TextView? = null
     private var countdownRing: CountdownRing? = null
     private var cameraController: CameraFallController? = null
     private var cameraPreviewView: PreviewView? = null
+    private var cameraRoomBackdrop: ImageView? = null
     private var cameraOverlayView: PoseOverlayView? = null
     private var cameraPlaceholder: TextView? = null
     private var cameraStatusTitle: TextView? = null
     private var cameraStatusDetail: TextView? = null
-    private var cameraActionButton: Button? = null
+    private var cameraActionButton: TextView? = null
+    private var cameraStateBadge: TextView? = null
+    private var cameraControlIcon: ImageView? = null
     private var cameraRequested = false
     private var cameraFallHandled = false
     private var cameraSessionLogged = false
@@ -227,7 +249,6 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    private enum class AuthMode { LOGIN, REGISTER, RECOVER, RESET }
     private val locationTimeout = Runnable {
         if (locationListener != null) { stopLocation(); toast("No se obtuvo una ubicación nueva. Los SMS siguen disponibles.", true) }
     }
@@ -259,6 +280,17 @@ class MainActivity : ComponentActivity() {
             ?: if (backend.isConfigured && sessions.read() == null && !store.prefs.getBoolean("local_only_mode", false)) AuthMode.LOGIN else null
         if (backend.hasPasswordRecovery) authMode = AuthMode.RESET
         else if (authMode == AuthMode.RESET) authMode = AuthMode.RECOVER
+        val firstWelcome = store.role().isBlank() && sessions.read() == null &&
+            !store.prefs.getBoolean("local_only_mode", false) && !store.prefs.getBoolean("v9_intro_seen", false)
+        if (firstWelcome && authMode != AuthMode.RESET && restoredState?.containsKey("auth_mode") != true) {
+            welcomeStep = store.prefs.getInt("v9_intro_step", 0).coerceIn(0, 2)
+            authMode = null
+        }
+        tutorialReturnTab = restoredState?.getInt("v9_tutorial_return", -1)?.takeIf { it >= 0 }
+        val restoredTutorial = restoredState?.getInt("v9_tutorial_page", -1)?.takeIf { it in 0..2 }
+        val choosingTutorialRole = restoredState?.getInt("tab", -1) == ROLE_TAB && restoredTutorial == null
+        tutorialStep = if (store.role().isBlank()) null else restoredTutorial
+            ?: firstTutorialStep().takeUnless { choosingTutorialRole }
         if (dark) setTheme(R.style.AppTheme_Dark)
         super.onCreate(restoredState)
         tab = restoredState?.getInt("tab") ?: if (store.role().isBlank()) ROLE_TAB else 0
@@ -271,10 +303,17 @@ class MainActivity : ComponentActivity() {
         careReturnTab = restoredState?.getInt("care_return_tab", 0) ?: 0
         supervisionReturnTab = restoredState?.getInt("supervision_return_tab", 0) ?: 0
         activityFilter = restoredState?.getInt("activity_filter", 0) ?: 0
-        activitySection = restoredState?.getInt("activity_section", 1) ?: 1
+        historyOffset = restoredState?.getInt("history_offset", 0) ?: 0
+        selectedEvent = restoredState?.getString("selected_event")?.let { runCatching { JSONObject(it) }.getOrNull() }
+        helpIncident = restoredState?.getString("help_incident").orEmpty()
+        contactIndex = restoredState?.getInt("contact_index", -1) ?: -1
+        contactNameDraft = restoredState?.getString("contact_name_draft").orEmpty()
+        contactPhoneDraft = restoredState?.getString("contact_phone_draft").orEmpty()
+        careSection = restoredState?.getInt("care_section", 0) ?: 0
         editingContacts = restoredState?.getBoolean("editing_contacts", false) ?: false
         smsRequestInFlight = restoredState?.getBoolean("sms_request_pending") ?: false
         resumeAlertSetup = restoredState?.getBoolean("resume_alert_setup") ?: false
+        startupPermissionInFlight = restoredState?.getBoolean("startup_permission_pending") ?: false
         importSlot = restoredState?.getInt("import_slot", -2) ?: -2
         restoredState?.getString("contact_draft")?.let { json ->
             runCatching { val a = JSONArray(json); contactDraft = (0 until a.length()).map { TrustedContact(a.getJSONObject(it).optString("name"), a.getJSONObject(it).optString("phone")) } }
@@ -284,28 +323,23 @@ class MainActivity : ComponentActivity() {
         root = findViewById(R.id.root)
         frame = findViewById(R.id.content)
         root.setBackgroundColor(paper)
-        appBarSubtitle = findViewById(R.id.app_bar_subtitle)
-        appBarStatus = findViewById(R.id.app_bar_status)
-        appBarProfile = findViewById(R.id.app_bar_profile)
-        findViewById<View>(R.id.app_bar).setBackgroundColor(paper)
         val back = findViewById<ImageView>(R.id.app_bar_back)
-        back.setColorFilter(accent)
-        back.setOnClickListener {
-            if (isSecondaryScreen(tab)) {
-                navigateBack()
-            } else if (tab == CAMERA_TAB && !isCameraRole) {
-                selectTab(primaryTabOr(cameraReturnTab))
-            } else onBackPressedDispatcher.onBackPressed()
-        }
-        appBarProfile?.apply {
-            background = rounded(tz.primaryFill, 24)
-            setTextColor(onAccent)
-            setOnClickListener { openProfile() }
-        }
+        back.setOnClickListener { navigateBack() }
+        back.isFocusable = true
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (isSecondaryScreen(tab)) {
-                    navigateBack()
+                if (authMode != null) {
+                    backFromAccess()
+                } else if (welcomeStep != null && welcomeStep!! > 0) {
+                    showWelcomeStep(welcomeStep!! - 1)
+                } else if (startupPermissionsVisible) {
+                    finishStartupPermissions()
+                } else if (tutorialStep != null) {
+                    previousTutorialStep()
+                } else if (tab == ROLE_TAB && firstTutorialStep() != null) {
+                    finishTutorial()
+                } else if (isSecondaryScreen(tab) || tab == ROLE_TAB && store.role().isNotBlank()) {
+                    if (tab == ROLE_TAB) resetNavigation(0) else navigateBack()
                 } else {
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -316,8 +350,10 @@ class MainActivity : ComponentActivity() {
         root.setOnApplyWindowInsetsListener { view, insets ->
             if (Build.VERSION.SDK_INT >= 30) {
                 val padding = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
-                view.setPadding(padding.left, padding.top, padding.right, padding.bottom)
-            } else view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.stableInsetBottom)
+                if (tab == CAMERA_TAB && authMode == null && tutorialStep == null) view.setPadding(0, 0, 0, 0)
+                else view.setPadding(padding.left, padding.top, padding.right, padding.bottom)
+            } else if (tab == CAMERA_TAB) view.setPadding(0, 0, 0, 0)
+            else view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.stableInsetBottom)
             insets
         }
         if (Build.VERSION.SDK_INT >= 30) window.insetsController?.setSystemBarsAppearance(
@@ -352,11 +388,22 @@ class MainActivity : ComponentActivity() {
         out.putString("account_scope", AccountStorage.key(store.appContext))
         out.putInt("tab", tab); out.putIntArray("navigation_back_stack", navigationHistory.snapshot())
         out.putInt("profile_return_tab", profileReturnTab); out.putInt("camera_return_tab", cameraReturnTab); out.putInt("device_return_tab", deviceReturnTab); out.putInt("medication_return_tab", medicationReturnTab); out.putInt("care_return_tab", careReturnTab); out.putInt("supervision_return_tab", supervisionReturnTab)
-        out.putInt("activity_filter", activityFilter); out.putInt("activity_section", activitySection); out.putBoolean("editing_contacts", editingContacts)
+        out.putInt("activity_filter", activityFilter)
+        out.putInt("history_offset", historyOffset)
+        out.putBoolean("editing_contacts", editingContacts)
+        out.putString("selected_event", selectedEvent?.toString())
+        out.putString("help_incident", helpIncident)
+        out.putInt("contact_index", contactIndex)
+        out.putString("contact_name_draft", contactNameInput?.text?.toString() ?: contactNameDraft)
+        out.putString("contact_phone_draft", contactPhoneInput?.text?.toString() ?: contactPhoneDraft)
+        out.putInt("care_section", careSection)
         out.putString("action", pendingAction); out.putInt("import_slot", importSlot)
         out.putBoolean("sms_request_pending", smsRequestInFlight)
         out.putBoolean("resume_alert_setup", resumeAlertSetup)
+        out.putBoolean("startup_permission_pending", startupPermissionInFlight)
         authMode?.let { out.putString("auth_mode", it.name) }
+        tutorialStep?.let { out.putInt("v9_tutorial_page", it) }
+        tutorialReturnTab?.let { out.putInt("v9_tutorial_return", it) }
         contactDraft?.let { rows -> out.putString("contact_draft", JSONArray().apply { rows.forEach { put(JSONObject().put("name", it.name).put("phone", it.phone)) } }.toString()) }
         profileDraft?.let { out.putString("profile_draft", it.toString()) }
         super.onSaveInstanceState(out)
@@ -364,6 +411,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (!AccountStorage.isCurrent(store.appContext)) { recreate(); return }
+        locationMap?.setForeground(true)
         refreshPasswordRecovery()
         handler.post(live); refreshPermissionUi(); updateServiceIfActive()
         MedicationReminderScheduler.synchronizeAll(this)
@@ -375,9 +423,14 @@ class MainActivity : ComponentActivity() {
             resumeAlertSetup = false
             pendingAction?.let { action -> handler.post { if (!isFinishing && !isDestroyed) requestRemainingAlertPermissions(action) } }
         }
+        if (hasFocus && startupPermissionsVisible && !startupPermissionInFlight) {
+            handler.post { requestNextStartupPermission() }
+        }
     }
     override fun onPause() {
         handler.removeCallbacks(live)
+        locationMap?.setForeground(false)
+        cancelMapFix?.invoke()
         if (tab == CAMERA_TAB && cameraRequested) cameraController?.stop()
         super.onPause()
     }
@@ -392,7 +445,11 @@ class MainActivity : ComponentActivity() {
         caregiverHealthRealtime = null
         handler.removeCallbacksAndMessages(null)
         countdownDialog?.dismiss()
+        practiceDialog?.dismiss()
         smsHelpDialog?.dismiss()
+        locationMap?.close()
+        cancelMapFix?.invoke()
+        if (mapService.isInitialized()) mapService.value.close()
         stopLocation()
         cameraController?.shutdown()
         cameraController = null
@@ -676,6 +733,8 @@ class MainActivity : ComponentActivity() {
         override fun run() { refreshPasswordRecovery(); refreshLive(); handler.postDelayed(this, 1_000) }
     }
     private fun refreshLive() {
+        locationMap?.checkAccess()
+        if (locationMap?.isShowing() != true) cancelMapFix?.invoke()
         if (tab == DEVICE_TAB) {
             val revision = store.prefs.getLong("camera_registry_revision", 0L)
             if (revision != cameraRegistryRenderedRevision) {
@@ -690,43 +749,35 @@ class MainActivity : ComponentActivity() {
             locationFreshnessRenderAt = System.currentTimeMillis()
             caregiverLocationUpdater?.invoke()
         }
-        homeStatus?.text = store.prefs.getString("status", "Configura tus contactos y activa el monitoreo.")
         val braceletStatus = store.prefs.getString("arduino_status", "Pulsera sin conectar.").orEmpty()
         braceletStatusViews.forEach { it.text = braceletStatus }
         braceletStatusPillUpdaters.forEach { it(braceletStatus) }
-        if (!isCaregiver && tab in 0..1) refreshPatientVitals()
-        homeHeadline?.text = if (GuardianMonitorService.monitoring) "Sistema en línea y seguro" else "La protección está en pausa"
-        monitorButton?.text = if (GuardianMonitorService.monitoring) "Detener monitoreo" else "Activar monitoreo"
-        monitorToggle?.let { toggle ->
-            updatingMonitorToggle = true
-            toggle.isChecked = GuardianMonitorService.monitoring
-            toggle.contentDescription = if (GuardianMonitorService.monitoring) "Pausar monitoreo" else "Activar monitoreo"
-            updatingMonitorToggle = false
+        if (!isCaregiver) refreshPatientVitals()
+        updateHomeProtection?.invoke()
+        val pendingId = store.prefs.getString("pending_id", "").orEmpty()
+        val activeDispatch = store.prefs.getString("dispatch_id", "").orEmpty()
+        val dispatchId = activeDispatch.ifBlank {
+            shownIncident?.takeIf { pendingId.isBlank() && incidentEntries(it).any { event ->
+                val message = event.optString("message")
+                message.startsWith("Alerta:") || message.startsWith("SMS solicitado") || message.startsWith("Llamada solicitada")
+            } }.orEmpty()
         }
-        appBarStatus?.apply {
-            val linked = when {
-                isCaregiver -> store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank()
-                isCameraRole -> store.prefs.getString("paired_camera_device_id", "").orEmpty().isNotBlank()
-                else -> GuardianMonitorService.monitoring
-            }
-            val label = when {
-                isCaregiver -> if (linked) "Vínculo activo" else "Sin vínculo"
-                isCameraRole -> if (linked) "Cámara vinculada" else "Sin vínculo"
-                GuardianMonitorService.monitoring -> "Protección activa"
-                else -> "En pausa"
-            }
-            val tone = if (linked) TzindaDesign.Tone.SUCCESS else TzindaDesign.Tone.NEUTRAL
-            text = label
-            setTextColor(tz.toneForeground(tone))
-            background = rounded(tz.toneBackground(tone), 22)
-            contentDescription = "Estado actual: $label"
-            minHeight = dp(40)
+        if (authMode == null && !isCaregiver && !isCameraRole && dispatchId.isNotBlank() && helpIncident != dispatchId) {
+            locationMap?.close()
+            helpIncident = dispatchId
+            tutorialStep = null
+            tutorialReturnTab = null
+            selectTab(TzindaTabs.HELP_REQUEST)
+            return
         }
-        appBarProfile?.text = store.profile().text("fullName").trim().split(Regex("\\s+")).filter { it.isNotBlank() }.take(2).mapNotNull { it.firstOrNull()?.uppercaseChar() }.joinToString("").ifBlank { "T" }
-        appBarProfile?.contentDescription = "Abrir mi perfil"
-        emergencyProgressCard?.visibility = if (store.prefs.getString("dispatch_id", "").orEmpty().isNotBlank()) View.VISIBLE else View.GONE
-        emergencyProgressStatus?.text = store.prefs.getString("status", "Solicitando SMS y llamadas a tus contactos.")
-        val id = store.prefs.getString("pending_id", "").orEmpty()
+        if (tab == TzindaTabs.HELP_REQUEST) {
+            val latest = incidentEntries(helpIncident).map { it.optString("message") }
+            if (latest != helpSignature || helpDispatchActive != (activeDispatch.isNotBlank() && activeDispatch == helpIncident)) {
+                render()
+                return
+            }
+        }
+        val id = pendingId
         if (id.isNotEmpty()) {
             if (id != shownIncident || countdownDialog?.isShowing != true) {
                 countdownDialog?.dismiss()
@@ -738,112 +789,183 @@ class MainActivity : ComponentActivity() {
             val left = ((store.prefs.getLong("pending_deadline", 0) - System.currentTimeMillis() + 999) / 1000).coerceAtLeast(0)
             countdownText?.text = left.toString()
             countdownText?.contentDescription = "Quedan $left segundos"
-            countdownDescription?.text = "Si no cancelas, TzindaApp solicitará SMS a tus contactos e intentará llamarles cuando termine la cuenta regresiva."
             countdownRing?.progress = (left / 20f).coerceIn(0f, 1f)
             countdownRing?.contentDescription = "Quedan $left segundos"
         } else {
             countdownDialog?.dismiss(); countdownDialog = null; shownIncident = null
-            countdownText = null; countdownDescription = null; countdownRing = null
+            countdownText = null; countdownRing = null
             if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(false); setTurnScreenOn(false) }
             else window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
         }
     }
 
+
     private fun showCountdownDialog() {
         if (isFinishing || isDestroyed) return
-        val content = column().apply { setPadding(dp(18), dp(20), dp(18), dp(24)) }
-        val scroll = ScrollView(this).apply { isFillViewport = true; addView(content) }
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        header.addView(tz.iconBadge(R.drawable.ic_shield, TzindaDesign.Tone.DANGER, 42), LinearLayout.LayoutParams(dp(42), dp(42)))
-        val headerCopy = column().apply { setPadding(dp(12), 0, 0, 0) }
-        headerCopy.addView(text("Alarma de caída activa", 21, true, ink))
-        headerCopy.addView(text("TzindaApp detectó un movimiento compatible con una caída.", 14, color = muted))
-        header.addView(headerCopy, LinearLayout.LayoutParams(0, -2, 1f))
-        content.addView(header)
-        tz.addGap(content, 14)
-
-        val warning = card(content)
-        warning.addView(text("POSIBLE CAÍDA DETECTADA", 12, true, tz.critical))
-        warning.addView(text("¿Estás bien?", 28, true, tz.critical))
-        warning.addView(text("Si puedes, pulsa “Estoy bien” para cancelar el aviso. Si no respondes, se pedirá ayuda a tus contactos.", 15, color = muted))
-
-        val timer = card(content)
-        val timerFrame = FrameLayout(this).apply { minimumHeight = dp(244) }
-        val ring = CountdownRing(this).apply { progress = 1f }
-        countdownRing = ring
-        timerFrame.addView(ring, FrameLayout.LayoutParams(dp(224), dp(224), Gravity.CENTER))
-        val timerLabels = column().apply { gravity = Gravity.CENTER }
-        val seconds = text("20", 82, true, ink).apply {
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 0)
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            fontFeatureSettings = "tnum"
-            contentDescription = "Quedan 20 segundos"
-        }
-        countdownText = seconds
-        timerLabels.addView(seconds)
-        timerLabels.addView(text("SEGUNDOS", 12, true, muted).apply {
-            gravity = Gravity.CENTER
-            letterSpacing = .08f
-        })
-        timerFrame.addView(timerLabels, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
-        timer.addView(timerFrame)
-        val description = text("Si no cancelas, se solicitarán SMS y se intentarán llamadas a tus contactos.", 16, color = muted).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(8), dp(10), dp(8), dp(8))
-        }
-        countdownDescription = description
-        timer.addView(description)
-        timer.addView(text("El SMS y las llamadas dependen de tu SIM, permisos, cobertura y del teléfono. La app no puede confirmar que alguien haya respondido.", 13, color = muted).apply {
-            gravity = Gravity.CENTER
-        })
-
-        val cancel = Button(this).apply {
-            text = "Estoy bien · cancelar alerta"
-            isAllCaps = false
-            typeface = tz.boldTypeface()
-            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, tz.textScale(18f))
-            minHeight = tz.controlScale(64)
-            setTextColor(if (dark) tz.ink else Color.WHITE)
-            gravity = Gravity.CENTER
-            // Neutral high-contrast surface; Imperial Red stays reserved for sending help.
-            background = RippleDrawable(
-                ColorStateList.valueOf(if (dark) 0x22000000 else 0x33FFFFFF),
-                rounded(if (dark) tz.softSurface else tz.ink, 14),
-                null,
-            )
-            contentDescription = "Estoy bien. Cancelar la alerta y no enviar mensajes."
-            setOnClickListener { service(GuardianMonitorService.ACTION_CANCEL) }
-            layoutParams = LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) }
-        }
-        content.addView(cancel)
-        val needHelp = tz.dangerButton("Pedir ayuda ahora", R.drawable.ic_emergency) {
-            AlertDialog.Builder(this).setTitle("Enviar alerta ahora")
-                .setMessage("Se solicitarán SMS y se intentará llamar a tus contactos inmediatamente, sin esperar a que termine la cuenta regresiva.")
-                .setNegativeButton("Seguir esperando", null)
-                .setPositiveButton("Enviar alerta") { _, _ -> prepareAlert(GuardianMonitorService.ACTION_ALERT_NOW) }
-                .show()
-        }.apply { minHeight = dp(60); textSize = 17f }
-        content.addView(needHelp)
-        content.addView(text("También puedes usar el teléfono para llamar a emergencias. TzindaApp no sustituye a los servicios de emergencia.", 13, color = muted).apply {
-            gravity = Gravity.CENTER
-            setPadding(0, dp(10), 0, 0)
-        })
-
-        val dialog = Dialog(this)
-        dialog.setContentView(scroll)
-        dialog.setCancelable(false)
-        dialog.setCanceledOnTouchOutside(false)
-        dialog.show()
-        dialog.window?.apply {
-            setBackgroundDrawable(ColorDrawable(paper))
-            setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
-            addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            setDimAmount(0f)
-        }
-        countdownDialog = dialog
+        locationMap?.close()
+        practiceDialog?.dismiss()
+        countdownDialog = showV5Countdown(practice = false)
     }
+
+    private fun showV5Countdown(practice: Boolean): Dialog {
+        val dialog = Dialog(this, if (dark) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
+        val surface = column().apply {
+            setBackgroundColor(tz.primaryFill)
+            setPadding(dp(20), dp(30), dp(20), 0)
+            clipChildren = false
+        }
+        val bar = v5.horizontal()
+        bar.addView(v5.iconButton(R.drawable.v5_back, if (practice) "Volver a la práctica" else "Continuar fuera de esta pantalla",
+            0x33FFFFFF, Color.WHITE, glyphSize = 29) {
+            if (practice) dialog.dismiss() else moveTaskToBack(true)
+        }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        v5.push(bar)
+        val status = v5.horizontal().apply {
+            minimumHeight = dp(28)
+            background = rounded(tz.criticalSurface, 99)
+            setPadding(dp(14), 0, dp(14), 0)
+        }
+        if (!practice) {
+            status.addView(v5.icon(R.drawable.v5_motion, 24, tz.onCriticalSurface),
+                LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(8) })
+        }
+        status.addView(v5.label(if (practice) "Simulacro SOS" else "Posible caída", tz.onCriticalSurface))
+        bar.addView(status)
+        surface.addView(bar)
+        gap(surface, 17)
+        surface.addView(v5.title("¿Estás bien?", 35, Color.WHITE))
+        gap(surface, 8)
+        surface.addView(v5.text(
+            if (practice) "Esta es una práctica.\nNo se enviarán avisos."
+            else "Detectamos un movimiento compatible\ncon una caída.", 14, v5.onBlueMuted,
+        ))
+        gap(surface, 25)
+        surface.addView(v5.label("TIEMPO PARA RESPONDER", v5.onBlueMuted).apply { gravity = Gravity.CENTER })
+        gap(surface, 12)
+        val ring = CountdownRing(this)
+        val dial = FrameLayout(this).apply { clipChildren = false }
+        dial.addView(ring, FrameLayout.LayoutParams(-1, dp(282), Gravity.CENTER))
+        val seconds = v5.text("20", 68, Color.WHITE).apply {
+            gravity = Gravity.CENTER
+            fontFeatureSettings = "tnum"
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val digits = column().apply {
+            gravity = Gravity.CENTER
+            addView(seconds)
+            addView(v5.text("segundos", 13, v5.onBlueMuted))
+        }
+        dial.addView(digits, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        surface.addView(dial, LinearLayout.LayoutParams(-1, dp(184)))
+        surface.addView(v5.text("Puedes cancelar el aviso", 12, v5.onBlueMuted).apply { gravity = Gravity.CENTER })
+        gap(surface, 16)
+
+        val actions = column().apply {
+            background = GradientDrawable().apply {
+                setColor(tz.cardColor)
+                val radius = dp(31).toFloat()
+                cornerRadii = floatArrayOf(radius, radius, radius, radius, 0f, 0f, 0f, 0f)
+            }
+            setPadding(dp(20), dp(19), dp(20), dp(24))
+        }
+        actions.addView(v5.title("Confirma cómo te encuentras", 18))
+        gap(actions, 24)
+        val safe = v5.panel(actions, tz.primaryFill, radius = 22, padding = 0, margin = 11)
+        v5.row(safe, "Estoy bien", if (practice) "Terminar la práctica" else "Cancelar la alerta",
+            R.drawable.v5_check, fill = 0x33FFFFFF, fg = Color.WHITE, minHeight = 67,
+            titleColor = Color.WHITE, subtitleColor = v5.onBlueMuted, emphasis = true) {
+            if (practice) {
+                dialog.dismiss()
+                toast("Práctica terminada")
+            } else service(GuardianMonitorService.ACTION_CANCEL)
+        }
+        v5.action(actions, if (practice) "Practicar pedir ayuda" else "Pedir ayuda ahora",
+            R.drawable.v5_phone, tz.imperialRed, Color.WHITE, height = 56, margin = 23) {
+            if (practice) {
+                dialog.dismiss()
+                toast("Práctica terminada. No se enviaron avisos.")
+            } else confirmHelp()
+        }
+        val warning = v5.panel(actions, tz.warningSurface, radius = 22, padding = 14, margin = 19)
+        val warningRow = v5.horizontal()
+        warningRow.addView(v5.icon(R.drawable.v5_people, 30, tz.warning))
+        warningRow.addView(column().apply {
+            addView(v5.text("Si no respondes", 13, tz.warning, bold = true))
+            gap(this, 5)
+            addView(v5.text(if (practice) "La práctica termina cuando vence el tiempo."
+                else "Se solicitarán SMS y llamadas\na tus contactos.", 12, tz.warning))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(9) })
+        warning.addView(warningRow)
+        actions.addView(v5.text(if (practice) "Simulación sin SMS ni llamadas."
+            else "Los avisos dependen de permisos y cobertura.", 11, muted).apply { gravity = Gravity.CENTER })
+        val page = column().apply {
+            setBackgroundColor(tz.primaryFill)
+            addView(surface)
+            addView(actions, LinearLayout.LayoutParams(-1, -2, 1f))
+        }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            addView(page)
+        }
+        dialog.setCancelable(practice)
+        dialog.setCanceledOnTouchOutside(false)
+        v5.showFullScreen(dialog, scroll, top = tz.primaryFill, bottom = tz.cardColor, lightStatus = false)
+        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        fun display(left: Long) {
+            seconds.text = left.toString()
+            ring.progress = left / 20f
+            ring.contentDescription = "Quedan $left segundos"
+        }
+        display(20)
+        if (practice) {
+            val timer = object : CountDownTimer(20_000, 250) {
+                override fun onTick(remaining: Long) = display((remaining + 999) / 1000)
+                override fun onFinish() {
+                    dialog.dismiss()
+                    toast("Práctica terminada. No se enviaron avisos.")
+                }
+            }
+            dialog.setOnDismissListener {
+                timer.cancel()
+                if (practiceDialog === dialog) practiceDialog = null
+            }
+            timer.start()
+        } else {
+            countdownText = seconds
+            countdownRing = ring
+        }
+        return dialog
+    }
+
+    private fun practiceScreen(body: LinearLayout) {
+        v5.header(body, "Simulacro SOS", "Practica cómo responder con tranquilidad.", gapBelow = 31)
+        val hero = v5.panel(body, tz.primaryFill, radius = 28, padding = 20, margin = 26)
+        val row = v5.horizontal()
+        row.addView(column().apply {
+            addView(v5.label("UN MOMENTO\nPARA PREPARARTE", v5.onBlueMuted))
+            gap(this, 18)
+            addView(v5.title("Ensaya\ncon calma.", 29, Color.WHITE))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(v5.art(R.drawable.v5_art_sos), LinearLayout.LayoutParams(dp(113), dp(101)).apply { marginEnd = dp(18) })
+        hero.addView(row)
+        gap(hero, 49)
+        hero.addView(v5.text("Acciones de prueba", 12, Color.WHITE))
+        v5.section(body, "Así será la práctica")
+        val steps = v5.timeline(body, margin = 26)
+        v5.row(steps, "Observa la cuenta regresiva", "Tendrás 20 segundos para responder.", R.drawable.v5_clock, minHeight = 80, round = true)
+        v5.row(steps, "Prueba «Estoy bien»", "Aprende a cancelar una alerta.", R.drawable.v5_check, minHeight = 80, round = true)
+        v5.row(steps, "Termina cuando quieras", "Regresa a Ajustes al finalizar.", R.drawable.v5_shield, minHeight = 80, round = true)
+        v5.action(body, "Iniciar práctica", R.drawable.v5_play) { practiceDialog = showV5Countdown(practice = true) }
+        v5.action(body, "Volver a Ajustes", fill = tz.cardColor, fg = accent) { navigateBack() }
+    }
+
     private fun selectTab(index: Int) {
+        if (index == TzindaTabs.SAFE_ZONES) {
+            openSafeZones()
+            return
+        }
+        if (index != TzindaTabs.ACTIVITY || tab != index) showOtherCaregiverAlerts = false
         navigationHistory.record(tab, index, isSecondaryScreen(index))
         showTab(index)
     }
@@ -860,14 +982,19 @@ class MainActivity : ComponentActivity() {
         showTab(index)
     }
     private fun chooseRole(role: String) {
-        if (role == store.role()) { resetNavigation(0); return }
+        val guided = store.role().isBlank() || firstTutorialStep() != null
+        if (role == store.role()) {
+            if (guided) setTutorialStep(0) else resetNavigation(TzindaTabs.HOME)
+            return
+        }
         val applyRole = {
             if (GuardianMonitorService.monitoring || store.prefs.getBoolean("monitor_enabled", false))
                 service(GuardianMonitorService.ACTION_STOP)
             // Leaving the camera role must release the lens instead of keeping a hidden session.
             disposeCameraController()
-            store.saveRole(role)
-            resetNavigation(0)
+            store.saveRole(role, beginTutorial = guided)
+            if (guided) tutorialStep = 0
+            resetNavigation(TzindaTabs.HOME)
         }
         if (store.role().isNotBlank() && (GuardianMonitorService.monitoring || store.prefs.getBoolean("monitor_enabled", false))) {
             AlertDialog.Builder(this).setTitle("Cambiar modo de este teléfono")
@@ -878,7 +1005,10 @@ class MainActivity : ComponentActivity() {
     }
     private fun openCameraScreen() {
         if (tab != CAMERA_TAB) cameraReturnTab = if (isPrimaryTab(tab)) tab else 0
-        val continueToCamera = { selectTab(CAMERA_TAB) }
+        val continueToCamera = {
+            selectTab(CAMERA_TAB)
+            if (!cameraRequested && packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) toggleCameraDetection()
+        }
         if (store.prefs.getBoolean("camera_intro_seen", false)) {
             continueToCamera()
             return
@@ -907,8 +1037,8 @@ class MainActivity : ComponentActivity() {
         selectTab(DEVICE_TAB)
     }
     private fun openMedicationScreen() {
-        if (tab != MEDICATIONS_TAB) medicationReturnTab = if (isPrimaryTab(tab)) tab else 0
-        selectTab(MEDICATIONS_TAB)
+        if (tab != TzindaTabs.MEDICATION_RECORDS) medicationReturnTab = if (isPrimaryTab(tab)) tab else MEDICATIONS_TAB
+        selectTab(TzindaTabs.MEDICATION_RECORDS)
     }
     private fun openCareFeatures() {
         if (tab != CARE_TAB) careReturnTab = if (isPrimaryTab(tab)) tab else 0
@@ -934,13 +1064,20 @@ class MainActivity : ComponentActivity() {
         index == TzindaTabs.PROFILE || index == DEVICE_TAB || index == CARE_TAB ||
             (index == TzindaTabs.CONTACTS && !isCameraRole) ||
             (index == TzindaTabs.SETTINGS && !isCameraRole) ||
-            index == CAMERA_TAB && !isCameraRole
+            index == CAMERA_TAB || index in TzindaTabs.MEDICATION_RECORDS..TzindaTabs.CARE_SETTINGS
 
     private fun returnTabFor(index: Int): Int = primaryTabOr(when (index) {
         TzindaTabs.PROFILE -> profileReturnTab
         CAMERA_TAB -> cameraReturnTab
         DEVICE_TAB -> deviceReturnTab
-        MEDICATIONS_TAB -> medicationReturnTab
+        TzindaTabs.MEDICATION_RECORDS -> medicationReturnTab
+        TzindaTabs.PULSE, TzindaTabs.OXYGEN -> MEDICATIONS_TAB
+        TzindaTabs.ALERT_HISTORY, TzindaTabs.ALERT_DETAILS, TzindaTabs.BRACELET_ALERT, TzindaTabs.HELP_REQUEST -> TzindaTabs.ACTIVITY
+        TzindaTabs.ALERT_PRACTICE, TzindaTabs.EMERGENCY_CARD, TzindaTabs.ADVANCED_SETTINGS -> TzindaTabs.SETTINGS
+        TzindaTabs.BRACELET_PAIR, TzindaTabs.BRACELET_DIAGNOSTIC, TzindaTabs.SAFE_ZONES -> SUPERVISION_TAB
+        TzindaTabs.ADD_CONTACT -> TzindaTabs.CONTACTS
+        TzindaTabs.CARE_SETTINGS -> CARE_TAB
+        TzindaTabs.REPORT -> TzindaTabs.SETTINGS
         CARE_TAB -> careReturnTab
         SUPERVISION_TAB -> supervisionReturnTab
         TzindaTabs.SETTINGS -> settingsReturnTab
@@ -953,71 +1090,83 @@ class MainActivity : ComponentActivity() {
         if (tab == TzindaTabs.PROFILE && profileEdits.isNotEmpty()) profileDraft = collectProfile()
     }
     private fun render() {
+        startupPermissionsVisible = false
         // Keep the reading position when the same screen is rebuilt (sync, permissions, toggles).
         // A real navigation changes the key, so those screens still start at the top.
         val scrollBefore = (frame.getChildAt(0) as? ScrollView)?.scrollY ?: 0
         val renderKey = "${store.role()}|$tab"
-        frame.removeAllViews(); homeStatus = null; homeHeadline = null; monitorButton = null; monitorToggle = null
+        frame.removeAllViews()
+        updateHomeProtection = null
+        contactNameDraft = contactNameInput?.text?.toString() ?: contactNameDraft
+        contactPhoneDraft = contactPhoneInput?.text?.toString() ?: contactPhoneDraft
+        contactNameInput = null
+        contactPhoneInput = null
         patientPulseValue = null; patientSpo2Value = null; patientPulseUnit = null; patientSpo2Unit = null
         patientPulseSpark = null; patientSpo2Spark = null
         patientVitalsStatus = null; patientVitalsRefreshAt = 0L
+        vitalTileUpdates.clear()
+        updateVitalsCaption = null
         caregiverSharedLocationView = null
         caregiverLocationCoordinatesView = null; caregiverLocationFreshnessView = null; caregiverMapButton = null
         caregiverLocationUpdater = null
         caregiverVitalsUpdater = null
         braceletStatusViews.clear()
         braceletStatusPillUpdaters.clear()
-        emergencyProgressCard = null; emergencyProgressStatus = null
         smsPermissionStatus = null; smsPermissionButton = null; smsPermissionPill = null
         contactEdits.clear(); profileEdits.clear()
         authMode?.let { lastRenderKey = null; renderAuth(it); return }
+        welcomeStep?.let { step ->
+            val body = entrySurface()
+            v9.welcome(body, step,
+                next = {
+                    if (step < 2) showWelcomeStep(step + 1)
+                    else if (backend.isConfigured) openAccess(AuthMode.REGISTER) else useLocally()
+                },
+                skip = { if (backend.isConfigured) openAccess(AuthMode.LOGIN) else useLocally() },
+                login = { openAccess(AuthMode.LOGIN) })
+            return
+        }
+        startupPermissionSetup()?.let { setup ->
+            renderStartupPermissions(setup)
+            return
+        }
+        tutorialStep?.let { step ->
+            val body = entrySurface()
+            v9.tutorial(body, TzindaNavigationPolicy.role(store.role()), step, ::previousTutorialStep,
+                next = { if (step < 2) setTutorialStep(step + 1) else finishTutorial() }, skip = ::finishTutorial)
+            return
+        }
         val role = TzindaNavigationPolicy.role(store.role())
         val appBar = findViewById<View>(R.id.app_bar)
         val navigation = findViewById<LinearLayout>(R.id.navigation)
         val onboarding = tab == ROLE_TAB
         val fullscreenCamera = tab == CAMERA_TAB
         val secondary = isSecondaryScreen(tab)
-        appBar.visibility = if (onboarding || fullscreenCamera) View.GONE else View.VISIBLE
-        navigation.visibility = if (onboarding || fullscreenCamera) View.GONE else View.VISIBLE
+        appBar.visibility = if (secondary && !fullscreenCamera) View.VISIBLE else View.GONE
+        navigation.visibility = if (onboarding || fullscreenCamera || secondary) View.GONE else View.VISIBLE
         // The viewfinder uses the whole display. Every other screen restores the system bars.
         root.setBackgroundColor(if (fullscreenCamera) Color.BLACK else paper)
-        window.statusBarColor = if (fullscreenCamera) Color.BLACK else paper
-        window.navigationBarColor = if (fullscreenCamera) Color.BLACK else paper
+        window.statusBarColor = if (fullscreenCamera) Color.TRANSPARENT else paper
+        window.navigationBarColor = if (fullscreenCamera) Color.TRANSPARENT else paper
+        root.requestApplyInsets()
         WindowCompat.getInsetsController(window, window.decorView).apply {
             isAppearanceLightStatusBars = !dark && !fullscreenCamera
             isAppearanceLightNavigationBars = !dark && !fullscreenCamera
-            if (fullscreenCamera) {
-                hide(WindowInsetsCompat.Type.systemBars())
-                systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            } else {
-                show(WindowInsetsCompat.Type.systemBars())
-            }
+            show(WindowInsetsCompat.Type.systemBars())
         }
         appBar.setBackgroundColor(paper)
-        // Cápsula flotante: superficie neutra con hairline para separarla del fondo.
-        navigation.background = tz.rounded(
-            tz.colorWithAlpha(tz.cardColor, if (dark) .96f else 1f), 28,
-        ).apply { setStroke(dp(1), outline) }
-        navigation.elevation = dp(8).toFloat()
-        navigation.clipToOutline = false
-        findViewById<TextView>(R.id.app_bar_title).apply {
-            setTextColor(ink)
-            text = TzindaNavigationPolicy.barTitle(role, tab)
-        }
-        appBarSubtitle?.visibility = View.GONE
-        // The content already communicates the current state. Keeping the header to brand, back
-        // navigation and profile removes duplicated labels from every screen.
-        appBarStatus?.visibility = View.GONE
-        findViewById<ImageView>(R.id.app_bar_logo).apply {
-            setColorFilter(accent)
-            visibility = View.GONE
-        }
+        navigation.background = tz.rounded(tz.cardColor, 36).apply { setStroke(dp(1), outline) }
+        navigation.elevation = 0f
         findViewById<ImageView>(R.id.app_bar_back).apply {
             setColorFilter(accent)
-            visibility = if (secondary) View.VISIBLE else View.GONE
+            background = tz.rounded(tz.cardColor, 99)
             contentDescription = "Volver a ${TzindaNavigationPolicy.screenName(role, navigationHistory.peek() ?: returnTabFor(tab))}"
         }
-        appBarProfile?.apply { setTextColor(onAccent); background = rounded(tz.primaryFill, 24) }
+        findViewById<TextView>(R.id.app_bar_badge).apply {
+            visibility = if (tab == TzindaTabs.ALERT_PRACTICE || tab == TzindaTabs.EMERGENCY_CARD || tab == TzindaTabs.REPORT) View.VISIBLE else View.GONE
+            setTextColor(accent)
+            background = tz.rounded(tz.brandSoft, 99)
+        }
         val navItems = TzindaNavigationPolicy.items(role)
         val selectedIndex = TzindaNavigationPolicy.selectedIndex(role, tab)
         listOf(R.id.nav_home, R.id.nav_activity, R.id.nav_health, R.id.nav_supervision, R.id.nav_settings).forEachIndexed { index, id ->
@@ -1031,9 +1180,10 @@ class MainActivity : ComponentActivity() {
             val selected = selectedIndex == index
             button.apply {
                 text = item.label
-                setTextColor(if (selected) tz.primaryDeep else tz.metaGray)
-                textSize = if (simpleMode) 13f else 11f
-                setTypeface(tz.boldTypeface(), if (selected) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(if (selected) onAccent else tz.metaGray)
+                textSize = if (simpleMode) 13f else 12f
+                typeface = if (selected) tz.boldTypeface() else tz.regularTypeface()
+                isSelected = selected
                 background = RippleDrawable(
                     ColorStateList.valueOf(tz.colorWithAlpha(tz.accent, .20f)),
                     rounded(if (selected) tz.navSelected else Color.TRANSPARENT, 999),
@@ -1042,14 +1192,15 @@ class MainActivity : ComponentActivity() {
                 stateListAnimator = null; elevation = 0f
                 setPadding(dp(2), dp(6), dp(2), dp(6))
                 minHeight = dp(if (simpleMode) 62 else 56)
+                maxLines = 2
+                includeFontPadding = false
                 val icon = getDrawable(item.iconRes)?.mutate()
-                icon?.setTint(if (selected) tz.primaryDeep else tz.metaGray)
-                icon?.setBounds(0, 0, dp(22), dp(22))
+                icon?.setTint(if (selected) onAccent else tz.metaGray)
+                icon?.setBounds(0, 0, dp(26), dp(26))
                 setCompoundDrawables(null, icon, null, null)
                 compoundDrawablePadding = dp(3)
                 contentDescription = "${item.label}${if (selected) ", seleccionado" else ""}"
                 setOnClickListener {
-                    if (role == TzindaRole.CAREGIVER && item.targetTab == TzindaTabs.ACTIVITY) activitySection = 1
                     selectTab(item.targetTab)
                 }
             }
@@ -1062,19 +1213,33 @@ class MainActivity : ComponentActivity() {
             refreshLive(); refreshPermissionUi()
             return
         }
-        val body = column().apply { setPadding(dp(16), dp(12), dp(16), dp(28)) }
-        val scroll = ScrollView(this).apply { isFillViewport = true; addView(body); tag = "screen_scroll" }
+        val top = when {
+            secondary && tab == TzindaTabs.SETTINGS -> 0
+            secondary -> 11
+            onboarding -> 28
+            tab == TzindaTabs.HOME && role == TzindaRole.WEARER -> 40
+            else -> 31
+        }
+        val body = column().apply { setPadding(dp(20), dp(top), dp(20), dp(if (secondary) 24 else 8)) }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            addView(body)
+            tag = "screen_scroll"
+        }
         frame.addView(scroll)
         if (renderKey == lastRenderKey) scroll.post { scroll.scrollTo(0, scrollBefore) }
         lastRenderKey = renderKey
         when (tab) {
-            ROLE_TAB -> roleSelection(body)
+            ROLE_TAB -> v9.chooseMode(body, ::chooseRole,
+                back = if (store.role().isNotBlank() && firstTutorialStep() == null) ::openSettings else null)
             0 -> home(body)
             1 -> activity(body)
             2 -> if (isCameraRole) cameraPairingScreen(body) else contacts(body)
             3 -> settings(body)
             DEVICE_TAB -> deviceLinkScreen(body)
-            MEDICATIONS_TAB -> {
+            MEDICATIONS_TAB -> healthScreen(body)
+            TzindaTabs.MEDICATION_RECORDS -> {
                 val linkedOwner = store.prefs.getString("caregiver_owner_id", "").orEmpty()
                 // The link survives an expired session, so cached shared medications stay visible.
                 val isLinkedCaregiver = isCaregiver && store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank() && linkedOwner.isNotBlank()
@@ -1085,88 +1250,254 @@ class MainActivity : ComponentActivity() {
                 }.render(body)
             }
             CARE_TAB -> careFeaturesScreen(body)
-            SUPERVISION_TAB -> if (isCaregiver) supervisionCenter(body) else deviceLinkScreen(body)
+            SUPERVISION_TAB -> if (isCaregiver) supervisionCenter(body) else circleScreen(body)
+            TzindaTabs.PULSE -> readingScreen(body, pulse = true)
+            TzindaTabs.OXYGEN -> readingScreen(body, pulse = false)
+            TzindaTabs.ALERT_HISTORY -> alerts(body, history = true)
+            TzindaTabs.ALERT_DETAILS -> alertDetails(body)
+            TzindaTabs.HELP_REQUEST -> helpRequest(body)
+            TzindaTabs.ALERT_PRACTICE -> practiceScreen(body)
+            TzindaTabs.BRACELET_ALERT -> braceletNotice(body)
+            TzindaTabs.BRACELET_PAIR -> braceletPair(body)
+            TzindaTabs.BRACELET_DIAGNOSTIC -> braceletDiagnosis(body)
+            TzindaTabs.SAFE_ZONES -> v5.action(body, "Abrir zonas seguras", R.drawable.v5_pin, action = ::openSafeZones)
+            TzindaTabs.ADD_CONTACT -> addContactScreen(body)
+            TzindaTabs.EMERGENCY_CARD -> emergencyCard(body)
+            TzindaTabs.REPORT -> prepareReport(body)
+            TzindaTabs.ADVANCED_SETTINGS -> advancedSettings(body)
+            TzindaTabs.CARE_SETTINGS -> careSettings(body)
             else -> profile(body)
         }
         refreshLive(); refreshPermissionUi()
     }
-    private fun renderAuth(mode: AuthMode) {
+    private fun entrySurface(): LinearLayout {
         findViewById<View>(R.id.app_bar).visibility = View.GONE
         findViewById<LinearLayout>(R.id.navigation).visibility = View.GONE
-        val body = column().apply { setPadding(dp(24), dp(36), dp(24), dp(28)) }
-        frame.addView(ScrollView(this).apply { isFillViewport = true; addView(body) })
-        body.addView(ImageView(this).apply { setImageResource(R.drawable.ic_shield); setColorFilter(accent) }, LinearLayout.LayoutParams(dp(52), dp(52)))
-        gap(body, 18)
-        val title = when(mode) { AuthMode.LOGIN -> "Inicia sesión"; AuthMode.REGISTER -> "Crea tu cuenta"; AuthMode.RECOVER -> "Recupera tu acceso"; AuthMode.RESET -> "Nueva contraseña" }
-        heading(body, "TZINDAAPP · CUENTA SEGURA", title, when(mode) {
-            AuthMode.LOGIN -> "Sincroniza tu perfil, contactos y alertas con tu cuenta."
-            AuthMode.REGISTER -> "Crea una cuenta con tu correo y contraseña para sincronizar tus datos."
-            AuthMode.RECOVER -> "Solicita el enlace aquí y ábrelo en este mismo teléfono. Solo el enlace más reciente será válido."
-            AuthMode.RESET -> "Elige una contraseña nueva. Después inicia sesión con ella; la cuenta activa de la app no cambia al abrir este enlace."
-        })
-        val form = card(body)
-        if (mode == AuthMode.REGISTER) authName = field(form, "Nombre", "", tag = "auth_name") else authName = null
-        if (mode != AuthMode.RESET) {
-            authEmail = field(form, "Correo electrónico", "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS, "auth_email")
-        } else authEmail = null
-        if (mode == AuthMode.LOGIN || mode == AuthMode.REGISTER || mode == AuthMode.RESET) {
-            authPassword = field(form, if (mode == AuthMode.RESET) "Nueva contraseña (mínimo 8 caracteres)" else "Contraseña", "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD, "auth_password")
-            tz.switchRow(
-                form,
-                "Mostrar contraseña",
-                "Úsalo solo si nadie más está mirando la pantalla.",
-                value = false,
-                action = { visible ->
-                    authPassword?.let { input ->
-                        val cursor = input.selectionStart.coerceAtLeast(0)
-                        input.inputType = if (visible) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-                        else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                        input.setSelection(cursor.coerceAtMost(input.text.length))
-                    }
-                },
-            )
-        } else authPassword = null
-        if (mode == AuthMode.REGISTER || mode == AuthMode.RESET) authConfirmation = field(form, "Confirma la contraseña", "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD, "auth_confirmation") else authConfirmation = null
-        if (mode == AuthMode.REGISTER) {
-            authPrivacy = tz.switchRow(
-                form,
-                "Acepto el aviso de privacidad",
-                "Confirmo que leí cómo se sincronizan mis datos.",
-                value = false,
-                action = {},
-            )
-            form.addView(button("Leer aviso de privacidad y uso", false) {
-                    AlertDialog.Builder(this).setTitle("Privacidad y uso de TzindaApp")
-                    .setMessage("Al iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador vinculado puede registrar tomas compartidas; no puede editar el medicamento ni sus horarios. Puedes retirar el permiso de compartir editando el registro. TzindaApp no recomienda ni modifica dosis. Al escanear una caja o receta puedes elegir procesar la foto en el teléfono sin enviarla. Si eliges la lectura en la nube con sesión iniciada, la foto pasa por Supabase y NVIDIA para extraer texto; TzindaApp no la almacena y vuelve a la lectura local si falla la nube.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. TzindaApp es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
-                    .setPositiveButton("Entendido", null).show()
-            })
+        root.setBackgroundColor(paper)
+        window.statusBarColor = paper
+        window.navigationBarColor = paper
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !dark
+            isAppearanceLightNavigationBars = !dark
+            show(WindowInsetsCompat.Type.systemBars())
         }
-        authStatus = text("", 14, color = muted).also { form.addView(it) }
-        val actionLabel = when(mode) { AuthMode.LOGIN -> "Iniciar sesión"; AuthMode.REGISTER -> "Crear cuenta"; AuthMode.RECOVER -> "Enviar enlace"; AuthMode.RESET -> "Guardar contraseña" }
-        form.addView(button(actionLabel) { submitAuth(mode) })
-        if (mode == AuthMode.LOGIN) body.addView(button("Crear una cuenta", false) { authMode = AuthMode.REGISTER; render() })
-        if (mode == AuthMode.LOGIN) body.addView(button("Olvidé mi contraseña", false) { authMode = AuthMode.RECOVER; render() })
-        if (mode == AuthMode.REGISTER || mode == AuthMode.RECOVER) body.addView(button("Volver a iniciar sesión", false) { authMode = AuthMode.LOGIN; render() })
-        if (mode == AuthMode.RESET) body.addView(button("Cancelar recuperación", false) { backend.cancelPasswordRecovery(); authMode = null; render() })
-        if (mode == AuthMode.LOGIN) body.addView(button("Usar la app en este teléfono", false) {
-            store.prefs.edit().putBoolean("local_only_mode", true).apply(); authMode = null; render()
+        root.requestApplyInsets()
+        lastRenderKey = null
+        val body = column().apply {
+            setPadding(dp(20), dp(28), dp(20), dp(16))
+            isFocusableInTouchMode = true
+        }
+        frame.addView(ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            addView(body)
         })
-        body.addView(text("La detección, cuenta regresiva y avisos locales siguen funcionando en este teléfono. La sincronización solo empieza al iniciar sesión.", 14, color = muted).apply { setPadding(0, dp(16), 0, 0) })
+        body.requestFocus()
+        return body
     }
+
+    private data class StartupPermissionSetup(
+        val key: String,
+        val attempted: Set<String>,
+        val remaining: List<StartupPermissionGroup>,
+    )
+
+    private fun startupPermissionSetup(): StartupPermissionSetup? {
+        val rawRole = store.role()
+        if (authMode != null || welcomeStep != null || tab == ROLE_TAB || rawRole.isBlank()) return null
+        val key = "startup_permissions_v1_$rawRole"
+        val attempted = store.prefs.getStringSet(key, emptySet()).orEmpty()
+        if (STARTUP_PERMISSIONS_FINISHED in attempted) return null
+        val owner = store.ownerUserId() ?: return null
+        if (sessions.read()?.userId != owner) return null
+        val telephony = packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)
+        val calling = if (Build.VERSION.SDK_INT >= 33) {
+            packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_CALLING)
+        } else telephony
+        val role = TzindaNavigationPolicy.role(rawRole)
+        val remaining = startupPermissionGroups(
+            role = role,
+            sdk = Build.VERSION.SDK_INT,
+            supportsCamera = packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY),
+            usesNearby = store.braceletConnectionMode() == AppStore.BRACELET_MODE_BLE &&
+                packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE),
+            canRequestSms = role == TzindaRole.WEARER && smsPermissionState() == SmsPermissionPolicy.State.REQUESTABLE,
+            supportsCalling = calling,
+            supportsSim = telephony,
+        ).filter { it.name !in attempted && !it.isGranted(::has) }
+        if (remaining.isEmpty() && !startupPermissionInFlight) {
+            store.prefs.edit().putStringSet(key, setOf(STARTUP_PERMISSIONS_FINISHED)).apply()
+            return null
+        }
+        return StartupPermissionSetup(key, attempted, remaining)
+    }
+
+    private fun renderStartupPermissions(setup: StartupPermissionSetup) {
+        startupPermissionsVisible = true
+        val body = entrySurface()
+        v5.header(body, "Permisos de Tzinda", "Configura el acceso para las funciones de este modo.", gapBelow = 20)
+        if (setup.attempted.isEmpty()) {
+            val panel = v5.panel(body, padding = 17, margin = 16)
+            setup.remaining.forEach { group ->
+                panel.addView(v5.text(group.purpose, 14))
+                v5.gap(panel, 9)
+            }
+            v5.action(body, "Configurar permisos", R.drawable.v5_shield) { requestNextStartupPermission(begin = true) }
+        } else {
+            body.addView(v5.text("Responde a las solicitudes de Android para continuar.", 14, muted))
+            v5.gap(body, 16)
+            handler.post { requestNextStartupPermission() }
+        }
+        v5.action(body, "Ahora no", fill = tz.cardColor, fg = accent) { finishStartupPermissions() }
+    }
+
+    private fun requestNextStartupPermission(begin: Boolean = false) {
+        if (!startupPermissionsVisible || startupPermissionInFlight || !hasWindowFocus() || isFinishing || isDestroyed) return
+        val setup = startupPermissionSetup() ?: run { render(); return }
+        if (!begin && setup.attempted.isEmpty()) return
+        val group = setup.remaining.firstOrNull() ?: return
+        // Record the request before Android takes focus. A denied permission will be available
+        // from its feature later without reopening this setup on each login.
+        store.prefs.edit().putStringSet(setup.key, setup.attempted + group.name).apply()
+        startupPermissionInFlight = true
+        try {
+            requestPermissions(group.permissions, REQUEST_STARTUP_PERMISSIONS)
+        } catch (_: RuntimeException) {
+            startupPermissionInFlight = false
+            render()
+        }
+    }
+
+    private fun finishStartupPermissions() {
+        startupPermissionSetup()?.let { setup ->
+            store.prefs.edit().putStringSet(setup.key, setOf(STARTUP_PERMISSIONS_FINISHED)).apply()
+        }
+        render()
+    }
+
+    private fun showWelcomeStep(step: Int) {
+        welcomeStep = step
+        store.prefs.edit().putInt("v9_intro_step", step).apply()
+        render()
+    }
+
+    private fun finishWelcome() {
+        if (welcomeStep == null) return
+        welcomeStep = null
+        store.prefs.edit().putBoolean("v9_intro_seen", true).remove("v9_intro_step").apply()
+    }
+
+    private fun firstTutorialStep(): Int? = store.prefs.getInt(FIRST_TUTORIAL_STEP, -1).takeIf { it in 0..2 }
+
+    private fun setTutorialStep(step: Int) {
+        tutorialStep = step
+        if (tutorialReturnTab == null) store.prefs.edit().putInt(FIRST_TUTORIAL_STEP, step).apply()
+        render()
+    }
+
+    private fun previousTutorialStep() {
+        val step = tutorialStep ?: return
+        if (step > 0) {
+            setTutorialStep(step - 1)
+        } else if (tutorialReturnTab != null) {
+            finishTutorial()
+        } else {
+            tutorialStep = null
+            resetNavigation(ROLE_TAB)
+        }
+    }
+
+    private fun finishTutorial() {
+        if (tutorialReturnTab == null) store.prefs.edit().remove(FIRST_TUTORIAL_STEP).apply()
+        val destination = tutorialReturnTab ?: TzindaTabs.HOME
+        tutorialReturnTab = null
+        tutorialStep = null
+        if (destination == tab) render() else resetNavigation(destination)
+    }
+
+    private fun useLocally() {
+        if (authSubmitting) return
+        finishWelcome()
+        authMode = null
+        authEmailDraft = ""
+        store.prefs.edit().putBoolean("local_only_mode", true).apply()
+        resetNavigation(if (store.role().isBlank()) ROLE_TAB else TzindaTabs.HOME)
+    }
+
+    private fun openAccess(mode: AuthMode) {
+        if (authSubmitting) return
+        if (authMode != null) authEmailDraft = authEmail?.text?.toString()?.trim() ?: authEmailDraft
+        finishWelcome()
+        authMode = mode
+        render()
+    }
+
+    private fun backFromAccess() {
+        if (authSubmitting) return
+        when (authMode) {
+            AuthMode.RESET -> {
+                backend.cancelPasswordRecovery()
+                authMode = null
+                render()
+            }
+            AuthMode.REGISTER, AuthMode.RECOVER -> openAccess(AuthMode.LOGIN)
+            AuthMode.LOGIN -> {
+                authMode = null
+                authEmailDraft = ""
+                if (store.role().isBlank() && !store.prefs.getBoolean("local_only_mode", false)) {
+                    store.prefs.edit().remove("v9_intro_seen").apply()
+                    showWelcomeStep(0)
+                } else render()
+            }
+            null -> Unit
+        }
+    }
+
+    private fun renderAuth(mode: AuthMode) {
+        val fields = v9.access(entrySurface(), mode, authEmailDraft, ::backFromAccess, ::openAccess,
+            ::showPrivacyNotice, ::useLocally) { submitAuth(mode) }
+        authEmail = fields.email
+        authName = fields.name
+        authPassword = fields.password
+        authConfirmation = fields.confirmation
+        authPrivacy = fields.privacy
+        authStatus = fields.status
+        authSubmit = fields.submit
+        fields.submit.isEnabled = !authSubmitting
+    }
+
+    private fun showPrivacyNotice() {
+        AlertDialog.Builder(this).setTitle("Privacidad y uso de TzindaApp")
+            .setMessage("Al iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador vinculado puede registrar tomas compartidas; no puede editar el medicamento ni sus horarios. Puedes retirar el permiso de compartir editando el registro. TzindaApp no recomienda ni modifica dosis. Al escanear una caja o receta puedes elegir procesar la foto en el teléfono sin enviarla. Si eliges la lectura en la nube con sesión iniciada, la foto pasa por Supabase y NVIDIA para extraer texto; TzindaApp no la almacena y vuelve a la lectura local si falla la nube.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. TzindaApp es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
+            .setPositiveButton("Entendido", null).show()
+    }
+
+    private fun setAuthStatus(message: String, error: Boolean = false) {
+        authStatus?.apply {
+            text = message
+            setTextColor(if (error) tz.onCriticalSurface else muted)
+            visibility = View.VISIBLE
+        }
+    }
+
     private fun submitAuth(mode: AuthMode) {
+        if (authSubmitting || authMode != mode) return
         val email = authEmail?.text?.toString()?.trim().orEmpty()
         val password = authPassword?.text?.toString().orEmpty()
         val name = authName?.text?.toString()?.trim().orEmpty()
         val confirmation = authConfirmation?.text?.toString().orEmpty()
-        if (mode != AuthMode.RESET && !AuthInputPolicy.validEmail(email)) { authStatus?.text = "Escribe un correo válido."; return }
-        if (mode == AuthMode.REGISTER && (name.isBlank() || name.length > 120 || !authPrivacy!!.isChecked)) { authStatus?.text = "Completa tu nombre y acepta el aviso de sincronización."; return }
-        if (mode == AuthMode.LOGIN && password.isBlank()) { authStatus?.text = "Escribe tu contraseña."; return }
+        val consented = authPrivacy?.isChecked == true
+        if (mode != AuthMode.RESET && !AuthInputPolicy.validEmail(email)) { setAuthStatus("Escribe un correo válido.", true); return }
+        if (mode == AuthMode.REGISTER && (name.isBlank() || name.length > 120 || !consented)) { setAuthStatus("Completa tu nombre y acepta el aviso de privacidad.", true); return }
+        if (mode == AuthMode.LOGIN && password.isBlank()) { setAuthStatus("Escribe tu contraseña.", true); return }
         if (mode == AuthMode.REGISTER || mode == AuthMode.RESET) {
-            if (!AuthInputPolicy.validPassword(password)) { authStatus?.text = "La contraseña debe tener entre 8 y 128 caracteres."; return }
-            if (password != confirmation) { authStatus?.text = "Las contraseñas no coinciden."; return }
+            if (!AuthInputPolicy.validPassword(password)) { setAuthStatus("La contraseña debe tener entre 8 y 128 caracteres.", true); return }
+            if (password != confirmation) { setAuthStatus("Las contraseñas no coinciden.", true); return }
         }
-        if (!backend.isConfigured) { authStatus?.text = "Supabase aún no está configurado. Puedes seguir en modo local."; return }
-        authStatus?.text = "Conectando de forma segura…"
+        if (!backend.isConfigured) { setAuthStatus("Supabase aún no está configurado. Puedes seguir en modo local.", true); return }
+        authSubmitting = true
+        authSubmit?.isEnabled = false
+        setAuthStatus("Conectando de forma segura…")
         io.execute {
             val result = runCatching {
                 when (mode) {
@@ -1182,9 +1513,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
             runOnUiThread {
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                authSubmitting = false
+                authSubmit?.isEnabled = true
                 result.onSuccess { message ->
-                    authStatus?.text = message
-                    if (mode == AuthMode.RESET) { authMode = AuthMode.LOGIN; render(); authStatus?.text = message }
+                    setAuthStatus(message)
+                    if (mode == AuthMode.RESET) { authMode = AuthMode.LOGIN; render(); setAuthStatus(message) }
                     if (mode in setOf(AuthMode.LOGIN, AuthMode.REGISTER) && sessions.read() != null) {
                         sessions.read()?.let { session ->
                             if (store.bindLocalDataToUser(session.userId)) {
@@ -1202,12 +1536,16 @@ class MainActivity : ComponentActivity() {
                                 toast("Cuenta cambiada. Los datos anteriores siguen guardados por separado.")
                             }
                             store.prefs.edit().putBoolean("local_only_mode", false).apply()
-                            if (mode == AuthMode.REGISTER && authPrivacy?.isChecked == true) {
+                            if (mode == AuthMode.REGISTER && consented) {
                                 store.prefs.edit().putString("privacy_notice_version", "2026-10-21-v1")
                                     .putLong("privacy_consent_at", System.currentTimeMillis()).apply()
                             }
                             store.prepareContactsForUser(session.userId)
+                            finishWelcome()
                             authMode = null
+                            authEmailDraft = ""
+                            authPassword = null
+                            authConfirmation = null
                             val pendingType = store.prefs.getString("pending_pairing_type", "").orEmpty()
                             val pendingCode = store.prefs.getString("pending_pairing_code", "").orEmpty()
                             store.prefs.edit().remove("pending_pairing_type").remove("pending_pairing_code").apply()
@@ -1223,102 +1561,61 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                }.onFailure { authStatus?.text = it.message ?: "No se pudo completar la operación." }
+                }.onFailure { setAuthStatus(it.message ?: "No se pudo completar la operación.", true) }
             }
         }
     }
-    private fun roleSelection(body: LinearLayout) {
-        body.setPadding(dp(20), dp(30), dp(20), dp(28))
-        body.addView(ImageView(this).apply {
-            setImageResource(R.drawable.ic_shield); setColorFilter(accent); contentDescription = null
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }, LinearLayout.LayoutParams(dp(52), dp(52)))
-        tz.addGap(body, 18)
-        heading(body, "TZINDAAPP · CUIDADO CONECTADO", "¿Cómo usarás TzindaApp?", "Elige el modo de este teléfono. Podrás cambiarlo después en Ajustes.")
-        body.addView(text("Tu cuenta identifica quién eres. Este modo organiza las funciones de este teléfono; no cambia el modo de otros teléfonos ni concede acceso a datos ajenos. Los vínculos y permisos de compartir se autorizan por separado.", 14, color = muted))
-        val options = listOf(
-            Triple(AppStore.ROLE_WEARER, "Llevo el teléfono", "Persona protegida. Detecta posibles caídas, comparte lo que autorices y avisa a tu red."),
-            Triple(AppStore.ROLE_CAREGIVER, "Acompaño a otra persona", "Cuidador o familiar. Consulta solo los datos que la persona protegida comparta."),
-            Triple(AppStore.ROLE_CAMERA, "Este teléfono es una cámara", "Dispositivo de cámara. Detecta posturas de riesgo solo cuando abres la cámara y comparte eventos autorizados."),
-        )
-        options.forEach { (role, title, description) ->
-            val selected = store.role() == role
-            val item = card(body)
-            val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            val badge = when (role) {
-                AppStore.ROLE_WEARER -> Triple(R.drawable.ic_shield, tz.brandSoft, tz.accent)
-                AppStore.ROLE_CAREGIVER -> Triple(R.drawable.ic_supervision, tz.pinkSoft, tz.pinkDeep)
-                else -> Triple(R.drawable.ic_camera, tz.mint, tz.positive)
-            }
-            top.addView(tz.coloredBadge(badge.first, badge.second, badge.third, 44),
-                LinearLayout.LayoutParams(dp(44), dp(44)))
-            val copy = column().apply { setPadding(dp(12), 0, 0, 0) }
-            copy.addView(text(title, 20, true))
-            copy.addView(text(description, 14, color = muted))
-            top.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
-            item.addView(top)
-            if (selected) item.addView(statusPill(TzindaCopy("Modo actual", "La navegación está adaptada a este teléfono.", TzindaTone.POSITIVE)))
-            val actionLabel = if (selected) {
-                "Continuar como ${TzindaNavigationPolicy.roleLabel(TzindaNavigationPolicy.role(role)).lowercase(Locale.getDefault())}"
-            } else "Elegir modo: $title"
-            item.addView(button(actionLabel, !selected) { chooseRole(role) }.apply {
-                contentDescription = actionLabel
-            })
-        }
-        body.addView(text("Puedes usar TzindaApp sin cuenta; en ese caso los datos permanecen en este teléfono. La sincronización con Supabase solo empieza al iniciar sesión.", 13, color = muted).apply {
-            setPadding(dp(4), dp(14), dp(4), dp(4))
-        })
-    }
+
     private fun cameraHome(body: LinearLayout) {
-        val linkId = store.prefs.getString("paired_camera_device_id", "").orEmpty()
-        val linked = linkId.isNotBlank()
-        val cameraName = store.prefs.getString("paired_camera_name", "").orEmpty().ifBlank { "Cámara Tzinda" }
-        val ownerName = store.prefs.getString("paired_camera_owner_name", "").orEmpty()
-        heading(
-            body,
-            "MODO CÁMARA",
-            if (linked) cameraName else "Cámara sin vincular",
-            "Este teléfono funciona como un dispositivo de cámara independiente para la persona protegida.",
-        )
-        val status = card(body)
-        status.addView(statusPill(TzindaStatusCopy.cameraLink(linked, cameraName)))
-        if (linked && ownerName.isNotBlank()) {
-            status.addView(text("Protegiendo a: $ownerName", 15, true, ink).apply { setPadding(0, dp(6), 0, 0) })
+        val linked = store.prefs.getString("paired_camera_device_id", "").orEmpty().isNotBlank()
+        v5.header(body, "Cámara", "Tu teléfono, atento a esta estancia.", settings = ::openSettings, gapBelow = 30)
+        val picture = FrameLayout(this).apply {
+            background = rounded(v5.cameraSurface, 28)
+            clipToOutline = true
         }
-        status.addView(text(if (linked) "Los eventos se guardan aquí y se envían cuando hay Internet. La cámara solo se activa al abrirla." else "Escanea el QR o escribe el código de 8 caracteres generado en el teléfono de la persona protegida.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
-        status.addView(button(if (linked) "Abrir cámara de apoyo" else "Vincular con QR o código") {
-            if (linked) openCameraScreen() else selectTab(2)
-        })
-        if (linked) status.addView(button("Desvincular cámara", false) { unlinkCameraAccess() })
-
-        val detector = card(body)
-        detector.addView(text("Detección bajo demanda", 20, true))
-        detector.addView(text("La cámara no se activa en segundo plano. La imagen se procesa en este teléfono y no se guarda ni se comparte; solo se envía el evento de posible caída.", 14, color = muted))
-        detector.addView(button("Abrir cámara ahora", false) { openCameraScreen() })
-        detector.addView(text("La detección visual puede equivocarse. No sustituye la pulsera ni los servicios de emergencia.", 13, color = muted))
-
-        if (linked) {
-            val alerts = card(body)
-            alerts.addView(text("Avisos y sincronización", 20, true))
-            val notificationsAllowed = Build.VERSION.SDK_INT < 33 || has(Manifest.permission.POST_NOTIFICATIONS)
-            alerts.addView(statusPill(TzindaCopy(
-                if (notificationsAllowed) "Avisos locales permitidos" else "Avisos locales bloqueados",
-                if (notificationsAllowed) "Este teléfono puede mostrar una notificación si detecta una posible caída." else "Permite las notificaciones para recibir el aviso en este teléfono.",
-                if (notificationsAllowed) TzindaTone.POSITIVE else TzindaTone.WARNING,
-            )))
-            if (!notificationsAllowed) alerts.addView(button("Permitir avisos de cámara", false) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_CAMERA_NOTIFICATIONS)
-            })
-            alerts.addView(button("Sincronizar eventos ahora", false) {
-                SyncScheduler.enqueue(applicationContext, immediate = true)
-                toast("Sincronización de cámara solicitada.")
-            })
-            alerts.addView(button("Ver eventos registrados", false) { activitySection = 1; selectTab(1) })
+        picture.addView(v5.art(R.drawable.v5_art_camera).apply { scaleType = ImageView.ScaleType.CENTER_CROP },
+            FrameLayout.LayoutParams(-1, -1))
+        fun capsule(text: String, bg: Int, fg: Int) = v5.text(text, 11, fg, bold = true).apply {
+            background = rounded(bg, 99)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(7), dp(12), dp(7))
         }
-        body.addView(text("Vincular esta cámara no activa la cámara por sí solo. La persona protegida decide cuándo usarla.", 13, color = muted).apply {
-            setPadding(dp(4), dp(12), dp(4), dp(4))
+        picture.addView(capsule("•  En pausa", Color.WHITE, Color.BLACK), FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply {
+            topMargin = dp(16); marginStart = dp(16)
         })
+        picture.addView(capsule("Ejemplo", v5.cameraSurface, Color.WHITE), FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(16); marginEnd = dp(17)
+        })
+        picture.addView(v5.iconButton(R.drawable.v5_play, "Iniciar detección", Color.WHITE, tz.persianBlue, 32, ::openCameraScreen),
+            FrameLayout.LayoutParams(dp(54), dp(54), Gravity.CENTER).apply { bottomMargin = dp(14) })
+        val copy = column().apply {
+            addView(v5.title("Lista para detectar", 22, Color.WHITE))
+            gap(this, 6)
+            addView(v5.text("Activa la cámara cuando la necesites.", 12, 0xFFE7EFF2.toInt()))
+        }
+        picture.addView(copy, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
+            marginStart = dp(18); marginEnd = dp(18); bottomMargin = dp(19)
+        })
+        body.addView(picture, LinearLayout.LayoutParams(-1, dp(222)).apply { bottomMargin = dp(16) })
+        v5.action(body, "Iniciar detección", R.drawable.v5_play, height = 56, margin = 16, action = ::openCameraScreen)
+        val privacy = v5.panel(body, tz.mint, radius = 19, padding = 13, margin = 28)
+        val seal = v5.horizontal()
+        seal.addView(v5.icon(R.drawable.v5_shield, 29, tz.positive))
+        seal.addView(column().apply {
+            addView(v5.text("Tu cámara, bajo tu control", 14, tz.positive, bold = true))
+            gap(this, 6)
+            addView(v5.text("Procesamiento en este teléfono.", 11, tz.positive))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(14) })
+        privacy.addView(seal)
+        v5.section(body, "Tu cámara")
+        val list = v5.panel(body, padding = 0, margin = 0)
+        v5.row(list, if (linked) "Cámara vinculada" else "Vincular cámara", "Comparte detecciones autorizadas",
+            R.drawable.v5_link, minHeight = 57, divider = true) { selectTab(TzindaTabs.CONTACTS) }
+        v5.row(list, "Historial de detecciones", "Consulta la actividad de la cámara",
+            R.drawable.v5_clock, minHeight = 57, divider = true) { selectTab(TzindaTabs.ACTIVITY) }
+        v5.row(list, "Privacidad y permisos", "Tú decides cuándo usarla", R.drawable.v5_lock, tz.mint, tz.positive, minHeight = 57) { openSettings() }
     }
+
     private fun cameraPairingScreen(body: LinearLayout) {
         heading(body, "VINCULAR DISPOSITIVO", "Conecta esta cámara", "Escanea el QR de la persona protegida o escribe su código. Cada teléfono puede estar en una red distinta.")
         if (sessions.read() == null) {
@@ -1441,214 +1738,164 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
     private fun home(body: LinearLayout) {
         if (isCaregiver) { caregiverHome(body); return }
         if (isCameraRole) { cameraHome(body); return }
         refreshWearerLinkedData()
-        val profile = store.profile()
-        val name = profile.text("fullName").trim().substringBefore(" ")
-        val recipients = store.recipients()
-        val today = SimpleDateFormat("EEEE, d 'de' MMMM", Locale("es", "MX")).format(Date())
-            .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale("es", "MX")) else it.toString() }
-        heading(
-            body,
-            today,
-            if (name.isBlank()) "Tu tranquilidad, primero" else "Hola, $name",
-            "",
-        )
+        v5.header(body, "Resumen", eyebrow = "HOY", gapBelow = 18, settings = ::openSettings)
 
-        if (smsPermissionState() != SmsPermissionPolicy.State.GRANTED) permissionCard(body)
-
-        val monitoring = GuardianMonitorService.monitoring
-        val monitorCopy = TzindaStatusCopy.monitoring(monitoring)
-        tz.section(body, "Estado de protección").addView(
-            text(if (monitoring) "Activo" else "En pausa", 13, true, if (monitoring) tz.positive else muted),
-        )
-        val hero = card(body)
-        val heroHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        heroHeader.addView(
-            tz.iconBadge(R.drawable.ic_bluetooth, if (monitoring) TzindaDesign.Tone.SUCCESS else TzindaDesign.Tone.NEUTRAL, size = 34),
-            LinearLayout.LayoutParams(dp(34), dp(34)),
-        )
-        heroHeader.addView(
-            text(if (arduinoConnectionAvailable()) "Dispositivo en línea" else "Sensores del teléfono", 15, true, ink)
-                .apply { setPadding(dp(10), 0, 0, 0) },
-            LinearLayout.LayoutParams(0, -2, 1f),
-        )
-        if (simpleMode) {
-            // Stack the pill so it never has to wrap at 1.25x text scale.
-            hero.addView(heroHeader)
-            hero.addView(statusPill(monitorCopy))
-        } else {
-            heroHeader.addView(statusPill(monitorCopy))
-            hero.addView(heroHeader)
-        }
-        homeHeadline = text(if (monitoring) "Sistema en línea y seguro" else "La protección está en pausa", 22, true, ink)
-            .apply { setPadding(0, dp(10), 0, dp(2)) }
-            .also { hero.addView(it) }
-        homeStatus = text(monitorCopy.detail, 15, color = muted).also { hero.addView(it) }
-        val heroFooter = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(12), 0, 0)
-        }
-        heroFooter.addView(
-            text(if (monitoring) "Detección de caídas en segundo plano" else "Detección detenida", 13, color = muted),
-            LinearLayout.LayoutParams(0, -2, 1f),
-        )
-        heroFooter.addView(text(
-            TzindaStatusCopy.sync(store.syncState().pending, store.syncState().failed, hasValidatedInternet(), sessions.read() != null).title,
-            13, true, muted,
-        ))
-        hero.addView(heroFooter)
-        val toggleRow = tz.switchRow(
-            hero,
-            if (monitoring) "Monitoreo en este teléfono" else "Activar monitoreo",
-            if (recipients.isEmpty()) "Agrega al menos un contacto antes de activarlo." else "La detección usa los sensores del teléfono.",
-            monitoring,
-            action = { enabled ->
-                if (!updatingMonitorToggle) {
-                    if (enabled) prepareAlert(GuardianMonitorService.ACTION_START)
-                    else service(GuardianMonitorService.ACTION_STOP)
-                }
-            },
-        )
-        monitorToggle = toggleRow
-        monitorToggle?.contentDescription = if (monitoring) "Pausar monitoreo" else "Activar monitoreo"
-
-        if (todayPossibleFallCount() > 0) {
-            statusBanner(
-                body,
-                TzindaCopy("Hay una alerta de hoy para revisar", "Abre Actividad para ver el evento y el seguimiento registrado.", TzindaTone.WARNING),
-                "Revisar actividad",
-            ) { activitySection = 1; selectTab(1) }
-        }
-
-        tz.section(body, "¿Necesitas ayuda ahora?").addView(text("Urgencias", 13, true, tz.critical))
-        val emergency = card(body)
-        val sosHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
-        sosHeader.addView(tz.iconBadge(R.drawable.ic_emergency, TzindaDesign.Tone.DANGER, size = 34), LinearLayout.LayoutParams(dp(34), dp(34)))
-        sosHeader.addView(text("Presiona para activar el protocolo o contactar a tu red de apoyo inmediata.", 15, color = muted).apply {
-            setPadding(dp(10), 0, 0, 0)
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        emergency.addView(sosHeader)
-        emergency.addView(tz.dangerButton("Pedir Ayuda SOS • 911") {
-            AlertDialog.Builder(this).setTitle("Enviar SMS de ayuda")
-                .setMessage("Se solicitarán SMS a ${TzindaText.count(store.recipients().size, "contacto")} y se intentará llamarles. La recepción depende de la SIM, la red y la disponibilidad del teléfono.")
-                .setNegativeButton("Cancelar", null).setPositiveButton("Enviar") { _, _ -> prepareAlert(GuardianMonitorService.ACTION_ALERT_NOW) }.show()
+        val hero = v5.panel(body, tz.primaryFill, radius = 28, padding = 16, margin = 16)
+        val heading = v5.horizontal()
+        heading.addView(v5.badge(R.drawable.v5_shield, Color.WHITE, Color.BLACK, 44, 29, 99))
+        val state = v5.text("", 13, v5.onBlueMuted)
+        heading.addView(column().apply {
+            addView(v5.text("Tu protección", 16, Color.WHITE, bold = true))
+            gap(this, 4)
+            addView(state)
+        }, LinearLayout.LayoutParams(-1, -2).apply { marginStart = dp(12) })
+        hero.addView(heading)
+        gap(hero, 10)
+        val protectionTitle = v5.title("", 27, Color.WHITE)
+        protectionTitle.setPadding(dp(4), 0, 0, 0)
+        hero.addView(protectionTitle)
+        gap(hero, 5)
+        hero.addView(v5.text("Tu teléfono te acompaña ante una posible caída.", 13, v5.onBlueMuted).apply {
+            setPadding(dp(4), 0, 0, 0)
         })
-        emergency.addView(text("Mantén presionado para confirmación instantánea; también puedes llamar directo a emergencias.", 12, color = muted).apply {
-            setPadding(0, dp(6), 0, 0)
-        })
-
-        tz.section(body, "Constantes y actividad", null, "Resumen") { activitySection = 0; selectTab(1) }
-        addVitalSummary(body, caregiver = false)
-
-        tz.section(body, "Próximo tratamiento", null, "Recordatorio") { openMedicationScreen() }
-        val ownerId = medicationRepository.currentOwnerScope()
-        val ownMeds = runCatching { medicationRepository.database.medications(ownerId) }.getOrDefault(emptyList())
-            .filter { !it.isDeleted && it.isActive }
-        val nowMillis = System.currentTimeMillis()
-        val nextDose = ownMeds
-            .flatMap { med -> med.scheduleTimes.mapNotNull { t -> parseTimeToday(t, nowMillis)?.let { Pair(med, it) } } }
-            .minByOrNull { it.second }
-        val doseCard = card(body)
-        if (nextDose == null) {
-            doseCard.addView(text("Sin tratamientos programados para hoy.", 15, color = muted))
-        } else {
-            val doseRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            doseRow.addView(tz.iconBadge(R.drawable.ic_medication, TzindaDesign.Tone.BRAND, size = 40), LinearLayout.LayoutParams(dp(40), dp(40)))
-            doseRow.addView(column().apply {
-                addView(text(nextDose.first.name, 17, true, ink))
-                addView(text(nextDose.first.prescribedDose.ifBlank { nextDose.first.presentation }, 14, color = muted))
-            }, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(10) })
-            doseRow.addView(tz.textAction("Registrar toma", action = { openMedicationScreen() }))
-            doseCard.addView(doseRow)
-        }
-
-        val contactsCard = card(body)
-        val contactsHeader = tz.section(contactsCard, "Contactos de confianza", TzindaText.count(recipients.size, "destinatario"), "Administrar")
-        contactsHeader.setOnClickListener { selectTab(2) }
-        if (recipients.isEmpty()) {
-            contactsCard.addView(text("Aún no tienes contactos", 17, true, ink).apply { setPadding(0, dp(6), 0, 0) })
-            contactsCard.addView(text("Agrega al menos una persona para activar el monitoreo y enviar alertas.", 14, color = muted))
-            contactsCard.addView(button("Agregar contactos", false) { selectTab(2) }.apply { tag = "open_contacts" })
-        } else {
-            recipients.take(2).forEachIndexed { index, contact ->
-                tz.actionRow(
-                    contactsCard,
-                    contact.name.ifBlank { "Contacto ${index + 1}" },
-                    contact.phone,
-                    leadingText = contact.name.trim().split(Regex("\\s+")).filter { it.isNotBlank() }.take(2)
-                        .mapNotNull { it.firstOrNull()?.uppercaseChar() }.joinToString("").ifBlank { "${index + 1}" },
-                    trailingText = if (index == 0) "Prioridad 1" else null,
-                    showDivider = index < minOf(recipients.size, 2) - 1,
-                ) {
-                    runCatching { startActivity(Intent(Intent.ACTION_DIAL, Uri.fromParts("tel", contact.phone, null))) }
-                        .onFailure { toast("No se pudo abrir el marcador del teléfono.", true) }
-                }
+        gap(hero, 14)
+        val control = v5.action(hero, "Activar monitoreo", fill = Color.WHITE, fg = Color.BLACK,
+            height = 40, radius = 17, margin = 0) {
+            if (GuardianMonitorService.monitoring) service(GuardianMonitorService.ACTION_STOP)
+            else prepareAlert(GuardianMonitorService.ACTION_START)
+        }.apply { tag = "monitor_toggle" }
+        updateHomeProtection = {
+            val active = GuardianMonitorService.monitoring
+            val action = if (active) "Pausar monitoreo" else "Activar monitoreo"
+            if (control.text != action || protectionTitle.text.isEmpty()) {
+                state.text = if (active) "Monitoreo activo" else "Monitoreo en pausa"
+                protectionTitle.text = if (active) "Tu protección está activa" else "Activa tu protección"
+                control.text = action
+                control.contentDescription = action
             }
-            contactsCard.addView(button("Ver y editar contactos", false) { selectTab(2) }.apply { tag = "open_contacts" })
+        }
+        val device = v5.panel(body, padding = 0, margin = 8)
+        val watchRow = v5.row(device, "Pulsera Tzinda", braceletConnectionLabel(), R.drawable.v5_watch,
+            round = true, minHeight = 67, inset = 8, iconGap = 6) { selectTab(TzindaTabs.BRACELET_PAIR) }
+        val watchLabels = watchRow.getChildAt(1) as LinearLayout
+        val watchState = watchLabels.getChildAt(watchLabels.childCount - 1) as TextView
+        braceletStatusPillUpdaters.add {
+            val connection = braceletConnectionLabel()
+            watchState.text = connection
+            watchRow.contentDescription = "Pulsera Tzinda. " + connection
         }
 
-        val shortcuts = card(body)
-        shortcuts.addView(text("Cuidado diario", 20, true))
-        shortcuts.addView(text("Medicamentos, rutinas y los dispositivos que te acompañan.", 14, color = muted))
-        tz.actionRow(shortcuts, "Medicamentos y recordatorios", "Horarios indicados y tomas de hoy", R.drawable.ic_medication) { openMedicationScreen() }
-        tz.actionRow(shortcuts, "Bitácora, zonas y rutinas", "Registros que decides compartir", R.drawable.ic_book) { openCareFeatures() }
-        tz.actionRow(shortcuts, "Dispositivos y cuidador/a", "Pulsera, cámaras y vínculos", R.drawable.ic_phone_headset, showDivider = false) { openDeviceLinkScreen() }
-
-        val sync = store.syncState()
-        val syncCopy = TzindaStatusCopy.sync(
-            sync.pending,
-            sync.failed,
-            hasValidatedInternet(),
-            sessions.read() != null,
-        )
-        val syncCard = card(body)
-        syncCard.addView(text("Internet y sincronización", 20, true))
-        syncCard.addView(statusPill(syncCopy))
-        syncCard.addView(text(syncCopy.detail, 14, color = muted).apply { setPadding(0, dp(8), 0, dp(2)) })
-        syncCard.addView(text(store.prefs.getString("sync_status", "Aún sin sincronización remota confirmada").orEmpty(), 13, color = muted))
-        store.syncModules().forEach { (module, state) ->
-            syncCard.addView(text("$module: ${state.pending} pendientes · ${state.failed} con error", 13, color = muted))
-        }
-        syncCard.addView(button("Sincronizar ahora", false) {
-            store.retryFailedSyncItems()
-            SyncScheduler.enqueue(applicationContext, immediate = true)
-            render()
-        })
-
-        val location = card(body)
-        location.addView(text("Ubicación del teléfono", 20, true))
-        val locationShared = store.prefs.getBoolean("include_location", false) && GuardianMonitorService.monitoring
-        location.addView(statusPill(TzindaCopy(
-            if (locationShared) "Ubicación autorizada" else "Ubicación no compartida",
-            if (locationShared) "Se actualiza mientras la protección está activa y se adjunta a los avisos." else "Solo se usará si lo autorizas y el monitoreo está activo.",
-            if (locationShared) TzindaTone.POSITIVE else TzindaTone.NEUTRAL,
-        )))
-        location.addView(text(store.locationText(), 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
-        location.addView(button("Actualizar ubicación", false) { requestLocation() })
-
-        body.addView(text("Tzinda Guardian Android v3.0 • Conexión cifrada", 13, color = muted).apply {
-            gravity = Gravity.CENTER
-            setPadding(0, dp(18), 0, dp(2))
-        })
-        body.addView(text("CENTRO MÉDICO TELEASISTIDO 24/7", 11, true, muted).apply {
-            gravity = Gravity.CENTER
-            letterSpacing = .08f
-        })
-        body.addView(text("La detección es experimental y puede omitir algunas caídas. No sustituye servicios de emergencia ni atención médica.", 13, color = muted).apply {
-            setPadding(dp(4), dp(10), dp(4), dp(4))
-        })
+        v5.section(body, "Tu salud", "Ver todo") { selectTab(MEDICATIONS_TAB) }
+        v5VitalTiles(body, compact = true)
+        gap(body, 16)
+        val medicine = v5.panel(body, padding = 0, margin = 17)
+        v5.row(medicine, "Medicamentos", "Recordatorios y próximas tomas", R.drawable.v5_pill,
+            fill = tz.softSurface, fg = tz.warning, minHeight = 67, round = true, inset = 8, iconGap = 6, action = ::openMedicationScreen)
+        v5.action(body, "Pedir ayuda", R.drawable.v5_phone, tz.criticalSurface, tz.onCriticalSurface,
+            height = 50, radius = 30, margin = 0, centeredIcon = true, action = ::confirmHelp)
     }
-    /**
-     * Compact, honest vitals block used by Inicio. It keeps the existing live-update views
-     * ([patientPulseValue], [patientSpo2Value] and [patientVitalsStatus]) intact.
-     */
+
+    private fun confirmHelp() {
+        AlertDialog.Builder(this).setTitle("Pedir ayuda")
+            .setMessage("Se solicitarán SMS y llamadas a tus contactos de confianza. La recepción depende de la cobertura, los permisos y tu operador.")
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Pedir ayuda") { _, _ -> prepareAlert(GuardianMonitorService.ACTION_ALERT_NOW) }
+            .show()
+    }
+
+    private fun braceletConnectionLabel(): String {
+        val raw = store.prefs.getString("arduino_status", "").orEmpty()
+        return when {
+            arduinoConnectionAvailable() -> "Conectada"
+            raw.contains("buscando", ignoreCase = true) -> "Buscando pulsera"
+            else -> "Sin conexión"
+        }
+    }
+
+    private fun healthScreen(body: LinearLayout) {
+        if (isCaregiver) { caregiverHealth(body); return }
+        v5.header(body, "Salud", "Tu bienestar y tus cuidados, en un lugar.", "TZINDA / SALUD",
+            gapBelow = 39, eyebrowGap = 27, settings = ::openSettings)
+        val hero = v5.panel(body, tz.primaryFill, radius = 28, padding = 19, margin = 18).apply {
+            minimumHeight = dp(163)
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val row = v5.horizontal()
+        val live = arduinoConnectionAvailable()
+        row.addView(column().apply {
+            addView(v5.label("PULSERA TZINDA", v5.onBlueMuted))
+            gap(this, 13)
+            addView(v5.title(if (live) "Tu pulsera está conectada" else "Tu próxima lectura empieza aquí.", 25, Color.WHITE))
+            gap(this, 17)
+            addView(v5.text(if (live) "Revisa tu pulsera" else "Conecta tu pulsera", 13, Color.WHITE, bold = true))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(v5.art(R.drawable.v5_art_watch), LinearLayout.LayoutParams(dp(64), dp(108)).apply {
+            marginStart = dp(16); marginEnd = dp(5)
+        })
+        hero.addView(row)
+        hero.contentDescription = "Conecta tu pulsera"
+        v5.activate(hero) { selectTab(TzindaTabs.BRACELET_PAIR) }
+        v5VitalTiles(body, compact = false)
+        gap(body, 27)
+        v5.section(body, "Tus cuidados")
+        val care = v5.panel(body, padding = 0)
+        v5.row(care, "Medicamentos", "Tomas y recordatorios", R.drawable.v5_pill,
+            fill = tz.mint, fg = tz.positive, minHeight = 66, divider = true, action = ::openMedicationScreen)
+        v5.row(care, "Bitácora de cuidados", "Tu seguimiento, día a día", R.drawable.v5_journal, minHeight = 66, action = ::openCareFeatures)
+    }
+
+    private fun v5VitalTiles(body: LinearLayout, compact: Boolean) {
+        val snapshot = vitalSnapshot(false, JSONArray())
+        fun tile(isPulse: Boolean): LinearLayout {
+            val color = if (isPulse) tz.onCriticalSurface else accent
+            val label = if (isPulse) "Frecuencia cardíaca" else "Oxígeno en sangre"
+            val tile = column().apply {
+                minimumHeight = dp(if (compact) 148 else 174)
+                setPadding(dp(16), dp(16), dp(16), dp(13))
+                background = rounded(if (isPulse) tz.criticalSurface else tz.brandSoft, 26)
+            }
+            tile.addView(v5.icon(if (isPulse) R.drawable.v5_pulse else R.drawable.v5_oxygen, if (compact) 21 else 27, color))
+            gap(tile, 5)
+            val tileLabel = if (compact) label else if (isPulse) "Frecuencia\ncardíaca" else "Oxígeno\nen sangre"
+            tile.addView(v5.text(tileLabel, if (compact) 13 else 14, color, bold = true))
+            gap(tile, 2)
+            val row = v5.horizontal().apply { gravity = Gravity.BOTTOM }
+            val reading = v5.text(if (isPulse) snapshot.pulse else snapshot.oxygen, 38, bold = compact)
+            val unit = if (isPulse) "lpm" else "%"
+            row.addView(reading)
+            row.addView(v5.text(unit, 13, muted).apply { setPadding(dp(10), 0, 0, dp(4)) })
+            tile.addView(row)
+            if (isPulse) patientPulseValue = reading else patientSpo2Value = reading
+            if (compact) {
+                gap(tile, 10)
+                tile.addView(View(this).apply { setBackgroundColor(tz.colorWithAlpha(color, .2f)) },
+                    LinearLayout.LayoutParams(-1, dp(1)))
+                gap(tile, 5)
+                val meta = v5.text("", 12, muted)
+                tile.addView(meta)
+                vitalTileUpdates.add { latest ->
+                    meta.text = if (latest == "—") "En espera de lecturas" else "Última lectura válida"
+                    tile.contentDescription = if (latest == "—") "$label. En espera de lecturas" else "$label, $latest $unit"
+                }
+            } else {
+                vitalTileUpdates.add { latest -> tile.contentDescription = if (latest == "—") "$label. Sin lecturas" else "$label, $latest $unit" }
+            }
+            v5.activate(tile) { selectTab(if (isPulse) TzindaTabs.PULSE else TzindaTabs.OXYGEN) }
+            return tile
+        }
+        v5.twoColumns(body, tile(true), tile(false))
+        if (!compact) {
+            gap(body, 16)
+            val caption = v5.text("", 12, muted)
+            body.addView(caption)
+            updateVitalsCaption = { available -> caption.text = if (available) "Últimas lecturas válidas" else "En espera de lecturas válidas" }
+        }
+    }
     private data class VitalSnapshot(
         val pulse: String,
         val oxygen: String,
@@ -1785,171 +2032,190 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    private fun caregiverHeader(body: LinearLayout, title: String, detail: String) {
+        val heading = FrameLayout(this)
+        val labels = column()
+        labels.addView(v5.label("TZINDA / CUIDADOR").apply { setPadding(dp(2), dp(7), 0, 0) })
+        gap(labels, 25)
+        labels.addView(v5.title(title, 33))
+        gap(labels, 7)
+        labels.addView(v5.text(detail, 13, muted))
+        heading.addView(labels, FrameLayout.LayoutParams(-1, -2))
+        heading.addView(v5.iconButton(R.drawable.v5_settings, "Ajustes", fg = if (dark) accent else null,
+            glyphSize = 27, action = ::openSettings).apply { translationY = -dp(2).toFloat() },
+            FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END))
+        body.addView(heading)
+        gap(body, 32)
+    }
+
+    private fun caregiverLinkAvailable(): Boolean =
+        store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank() &&
+            store.prefs.getString("caregiver_owner_id", "").orEmpty().isNotBlank()
+
+    private fun caregiverMessage(
+        body: LinearLayout,
+        title: String,
+        detail: String,
+        icon: Int,
+        height: Int,
+        margin: Int,
+    ) {
+        val card = v5.panel(body, tz.brandSoft, radius = 23, padding = 0, margin = margin)
+        val row = v5.horizontal().apply {
+            minimumHeight = tz.controlScale(height)
+            setPadding(dp(17), dp(5), dp(14), dp(16))
+        }
+        row.addView(v5.icon(icon, if (height > 60) 34 else 22, accent))
+        row.addView(column().apply {
+            addView(v5.text(title, if (height > 60) 17 else 13, accent, bold = true))
+            gap(this, 6)
+            addView(v5.text(detail, if (height > 60) 12 else 11, muted))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(13) })
+        card.addView(row)
+    }
+
     private fun caregiverHome(body: LinearLayout) {
         refreshCaregiverSharedData()
-        val linked = store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank()
-        val ownerName = store.prefs.getString("caregiver_shared_name", "").orEmpty().trim()
-        val person = ownerName.ifBlank { "Persona protegida" }
-        val events = sharedEvents()
-        val devices = sharedDevices()
-        val alertFollowups = AlertFollowupPolicy.latestByEvent(sharedAlertFollowups())
-        val pending = events.filter { AlertFollowupPolicy.isPendingSharedAlert(it, alertFollowups) }
-        val fetchedAt = store.prefs.getLong("caregiver_shared_fetched_at", 0L)
-        val today = SimpleDateFormat("EEEE, d 'de' MMMM", Locale("es", "MX")).format(Date())
-            .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale("es", "MX")) else it.toString() }
-        heading(
-            body,
-            today,
-            if (linked) "Hola, cuidador/a" else "Acompaña con tranquilidad",
-            if (linked) "El estado de $person, sus alertas y sus equipos en un solo lugar."
-            else "Vincula a la persona protegida para recibir solo los datos que decida compartir.",
-        )
-
-        if (!linked) {
-            val intro = card(body)
-            intro.addView(statusPill(TzindaCopy("Sin vínculo activo", "Todavía no hay una persona conectada.", TzindaTone.NEUTRAL)))
-            intro.addView(text("Conecta la cuenta de la persona a la que acompañas", 21, true))
-            intro.addView(text("Necesitas un código QR o de 8 caracteres generado en su teléfono. El vínculo es necesario para recibir alertas, ubicación autorizada y medicamentos compartidos.", 14, color = muted))
-            intro.addView(button("Vincular persona protegida") { selectTab(2) })
-            val how = card(body)
-            how.addView(text("Qué podrás ver", 20, true))
-            tz.actionRow(how, "Alertas y actividad", "Solo eventos que la persona comparte", R.drawable.ic_alert)
-            tz.actionRow(how, "Signos vitales", "Lecturas válidas de la pulsera, sin valores de ejemplo", R.drawable.ic_heart)
-            tz.actionRow(how, "Medicamentos", "Solo los que la persona marque como compartidos; puedes registrar tomas, sin editar medicamentos", R.drawable.ic_medication, showDivider = false)
-            val privacy = card(body)
-            privacy.addView(text("Privacidad por diseño", 18, true))
-            privacy.addView(text("No puedes editar medicamentos ni confirmar tomas. La cámara de la persona solo se activa cuando ella la abre. Si no hay datos recientes, la app lo dirá en lugar de inventar una conexión.", 14, color = muted))
-            return
+        val linked = caregiverLinkAvailable()
+        val person = store.prefs.getString("caregiver_shared_name", "").orEmpty().ifBlank { "Persona protegida" }
+        caregiverHeader(body, "Tu círculo", "Cuidar se siente más cerca.")
+        val hero = v5.panel(body, v5.darkHero, radius = 28, padding = 18, margin = 28).apply {
+            setPadding(paddingLeft, paddingTop, paddingRight, dp(9))
         }
+        val row = v5.horizontal()
+        row.addView(column().apply {
+            addView(v5.label("CUIDAR ES CONECTAR", v5.onBlueMuted))
+            gap(this, 18)
+            addView(v5.title("Cerca, incluso\na distancia.", 28, Color.WHITE))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(v5.art(R.drawable.v8_art_circle), LinearLayout.LayoutParams(dp(97), dp(96)).apply { gravity = Gravity.TOP })
+        hero.addView(row)
+        gap(hero, 13)
+        hero.addView(v5.text(if (linked) "Acompañas a $person." else "Conecta con la persona que quieres cuidar.", 12, v5.onBlueMuted))
+        gap(hero, 19)
+        v5.action(hero, if (linked) "Revisar vínculo" else "Vincular persona", R.drawable.v5_link,
+            Color.WHITE, Color.BLACK, margin = 0) { selectTab(if (linked) SUPERVISION_TAB else TzindaTabs.CONTACTS) }
 
-        if (pending.isEmpty()) {
-            statusBanner(
-                body,
-                TzindaCopy(
-                    "Sin alertas pendientes",
-                    "Nada requiere seguimiento ahora. Los últimos eventos aparecen más abajo.",
-                    TzindaTone.POSITIVE,
-                ),
-            )
-        } else pending.firstOrNull()?.let { alert ->
-            val copy = TzindaCopy(
-                if (pending.size == 1) "1 alerta sin confirmar" else "${pending.size} alertas sin confirmar",
-                "${TzindaStatusCopy.classification(alert.optString("classification"))} · ${TzindaStatusCopy.source(alert.optString("source"))} · ${formatSharedMoment(alert.optString("occurred_at"))}",
-                TzindaTone.CRITICAL,
-            )
-            statusBanner(body, copy, "Revisar alerta") { activitySection = 1; selectTab(1) }
+        v5.section(body, "Tu acompañamiento", titleSize = 19)
+        val support = v5.panel(body, padding = 0, margin = 22)
+        v5.row(support, "Alertas compartidas", "Avisos y seguimiento del vínculo", R.drawable.v5_bell,
+            minHeight = 69, divider = true, titleSize = 14, detailSize = 12) {
+            selectTab(TzindaTabs.ACTIVITY)
         }
-
-        tz.section(body, "Persona vinculada", null, "Actualizar") {
-            caregiverSharedStatusView?.text = "Actualizando datos compartidos…"
-            refreshCaregiverSharedData(force = true, renderWhenDone = true)
-        }
-        val hero = card(body)
-        val personRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        personRow.addView(text(initials(person), 18, true, tz.onAccent).apply {
-            gravity = Gravity.CENTER
-            background = tz.rounded(tz.primaryFill, 999)
-            minWidth = dp(56)
-            minHeight = dp(56)
-        }, LinearLayout.LayoutParams(dp(56), dp(56)))
-        personRow.addView(column().apply {
-            addView(text(person, 20, true, ink))
-            addView(statusPill(TzindaStatusCopy.link(true, person, fetchedAt)))
-        }, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12) })
-        hero.addView(personRow)
-        hero.addView(Space(this), LinearLayout.LayoutParams(1, dp(16)))
-        val metrics = tz.twoColumns(hero)
-        tz.metricTile(metrics, "Alertas", pending.size.toString(), "", if (pending.isEmpty()) "Sin pendientes" else "Revisa el detalle", if (pending.isEmpty()) TzindaDesign.Tone.SUCCESS else TzindaDesign.Tone.WARNING)
-        val devicesTile = tz.metricTile(metrics, "Equipos", devices.size.toString(), "", if (devices.isEmpty()) "Sin equipos" else "Estado abajo", TzindaDesign.Tone.INFO)
-        (devicesTile.layoutParams as LinearLayout.LayoutParams).leftMargin = dp(8)
-        hero.addView(tz.textAction("Ver persona y vínculo", action = { selectTab(2) }).apply { setPadding(0, dp(8), 0, 0) })
-
-        val deviceCard = card(body)
-        deviceCard.addView(text("Dispositivos de $person", 20, true))
-        if (devices.isEmpty()) {
-            deviceCard.addView(text("La cuenta vinculada aún no tiene equipos registrados.", 14, color = muted))
-        } else {
-            devices.take(3).forEachIndexed { index, device ->
-                val copy = sharedDeviceCopy(device)
-                tz.actionRow(
-                    deviceCard,
-                    device.optString("name").ifBlank { "Dispositivo" },
-                    "${device.optString("device_type").replace('_', ' ').replaceFirstChar { it.uppercase() }} · ${copy.detail}",
-                    leadingIcon = if (device.optString("device_type") == "phone") R.drawable.ic_phone else R.drawable.ic_phone_headset,
-                    statusText = copy.title.substringBefore(" ·"),
-                    statusTone = designTone(copy.tone),
-                    showDivider = index < minOf(devices.size, 3) - 1,
-                ) { openSupervisionCenter() }
-            }
-        }
-        deviceCard.addView(button("Ver estado de todos los equipos", false) { openSupervisionCenter() })
-
-        addSharedLocationCard(body)
-
-        val vitals = card(body)
-        vitals.addView(text("Signos vitales compartidos", 20, true))
-        addVitalSummary(vitals, caregiver = true)
-        vitals.addView(button("Ver historial y tendencia", false) { activitySection = 0; selectTab(1) })
-
-        val linkedOwner = store.prefs.getString("caregiver_owner_id", "").orEmpty()
-        val meds = runCatching { medicationRepository.database.medications(linkedOwner) }.getOrDefault(emptyList())
-        val sharedMeds = meds.count { it.shareWithCaregiver && !it.isDeleted }
-        val medsCard = card(body)
-        medsCard.addView(text("Medicamentos compartidos", 20, true))
-        medsCard.addView(statusPill(TzindaCopy("Solo lectura", "La persona protegida conserva el control de horarios y tomas.", TzindaTone.INFO)))
-        medsCard.addView(text(
-            when {
-                sharedMeds > 0 -> "${TzindaText.count(sharedMeds, "medicamento compartido", "medicamentos compartidos")} y su historial de tomas."
-                sessions.read() == null -> "Sesión vencida: inicia sesión para descargar los medicamentos compartidos."
-                else -> "No hay medicamentos compartidos con este vínculo. La persona debe marcarlos como compartidos en su cuenta y pulsar Actualizar."
-            },
-            14, color = muted,
-        ).apply { setPadding(0, dp(8), 0, 0) })
-        medsCard.addView(button("Consultar medicamentos", false) { openMedicationScreen() })
-
-        val care = card(body)
-        care.addView(text("Más herramientas de cuidado", 20, true))
-        tz.actionRow(care, "Bitácora, zonas y rutinas", "Solo registros compartidos y autorizados", R.drawable.ic_book) { openCareFeatures() }
-        tz.actionRow(care, "Centro de supervisión", "Ubicación, vitales y estado de equipos", R.drawable.ic_supervision, showDivider = false) { openSupervisionCenter() }
-
-        val recent = card(body)
-        recent.addView(text("Actividad reciente", 20, true))
-        if (events.isEmpty()) {
-            recent.addView(text("Sin eventos compartidos.", 15, true, muted))
-            recent.addView(text("Cuando la persona comparta una detección o alerta, aparecerá aquí. No se muestran eventos inventados.", 14, color = muted))
-        } else {
-            events.take(4).forEachIndexed { index, event ->
-                val prepared = AlertFollowupPolicy.isPendingSharedAlert(event, alertFollowups)
-                tz.actionRow(
-                    recent,
-                    TzindaStatusCopy.classification(event.optString("classification")),
-                    // El estado "sin confirmar" ya vive en el chip de la derecha; repetirlo alarga la fila.
-                    "${formatSharedMoment(event.optString("occurred_at"))} · ${TzindaStatusCopy.source(event.optString("source"))}" +
-                        if (prepared) "" else " · ${TzindaStatusCopy.confirmation(event.optString("confirmation_status"))}",
-                    leadingIcon = if (prepared) R.drawable.ic_alert else R.drawable.ic_activity,
-                    trailingText = if (prepared) "Sin confirmar" else null,
-                    showDivider = index < minOf(events.size, 4) - 1,
-                ) { activitySection = 1; selectTab(1) }
-            }
-            recent.addView(button("Ver todas las alertas", false) { activitySection = 1; selectTab(1) })
-        }
-        addCaregiverSyncControls(body)
-        body.addView(text("TzindaApp muestra únicamente los datos autorizados por la persona protegida. No sustituye servicios de emergencia ni atención médica.", 13, color = muted).apply {
-            setPadding(dp(4), dp(12), dp(4), dp(4))
-        })
+        v5.row(support, "Salud compartida", "Lecturas y tomas autorizadas", R.drawable.v5_pulse, tz.criticalSurface,
+            tz.onCriticalSurface, minHeight = 69, divider = true, titleSize = 14, detailSize = 12) { selectTab(MEDICATIONS_TAB) }
+        v5.row(support, "Supervisión y permisos", "Estado de la conexión y los datos", R.drawable.v5_supervision,
+            tz.mint, tz.positive, minHeight = 69, titleSize = 14, detailSize = 12, action = ::openSupervisionCenter)
+        caregiverMessage(body, "Solo lo que decida compartir.", "La persona conserva el control de sus datos.",
+            R.drawable.v5_shield, height = 57, margin = 0)
     }
+
+    private fun caregiverHealth(body: LinearLayout) {
+        refreshCaregiverSharedData(renderWhenDone = true)
+        val linked = caregiverLinkAvailable()
+        caregiverHeader(body, "Salud compartida", "Acompaña su bienestar con información.")
+        caregiverMessage(body, "La persona decide", "Solo verás los datos que autorice compartir.",
+            R.drawable.v5_shield, height = 86, margin = 18)
+        fun measurements() = if (caregiverLinkAvailable()) runCatching { JSONArray(store.prefs.getString("caregiver_shared_measurements", "[]")) }
+            .getOrDefault(JSONArray()) else JSONArray()
+        val shared = measurements()
+        val snapshot = vitalSnapshot(true, shared)
+        val tileUpdates = mutableListOf<(VitalSnapshot) -> Unit>()
+        fun tile(pulse: Boolean): LinearLayout {
+            val color = if (pulse) tz.onCriticalSurface else accent
+            val fill = if (pulse) tz.criticalSurface else tz.brandSoft
+            val value = if (pulse) snapshot.pulse else snapshot.oxygen
+            return column().apply {
+                minimumHeight = tz.controlScale(181)
+                background = rounded(fill, 26)
+                setPadding(dp(16), dp(17), dp(16), dp(13))
+                addView(v5.icon(if (pulse) R.drawable.v5_pulse else R.drawable.v5_oxygen, 26, color))
+                gap(this, 8)
+                addView(v5.text(if (pulse) "Frecuencia\ncardíaca" else "Oxígeno\nen sangre", 15, color, bold = true))
+                gap(this, 6)
+                val reading = v5.horizontal().apply { gravity = Gravity.BOTTOM }
+                val number = v5.text(value, 37, bold = true)
+                reading.addView(number)
+                reading.addView(v5.text(if (pulse) "lpm" else "SpO₂ · %", 12, muted).apply { setPadding(dp(11), 0, 0, dp(4)) })
+                addView(reading)
+                gap(this, 10)
+                val caption = v5.text(if (value == "—") "Sin datos compartidos" else "Última lectura compartida", 11, muted)
+                addView(caption)
+                tileUpdates.add { fresh ->
+                    val readingValue = if (pulse) fresh.pulse else fresh.oxygen
+                    number.text = readingValue
+                    caption.text = if (readingValue == "—") "Sin datos compartidos" else "Última lectura compartida"
+                }
+            }
+        }
+        v5.twoColumns(body, tile(true), tile(false))
+        gap(body, 15)
+        v5.section(body, "Cuidados compartidos", titleSize = 19)
+        val meds = v5.panel(body, padding = 0, margin = 14)
+        val owner = store.prefs.getString("caregiver_owner_id", "").orEmpty()
+        val sharedCount = if (linked) medicationRepository.database.medications(owner)
+            .count { it.shareWithCaregiver && !it.isDeleted } else 0
+        v5.row(meds, "Medicamentos y tomas",
+            if (sharedCount == 0) "Sin registros autorizados" else TzindaText.count(sharedCount, "medicamento compartido", "medicamentos compartidos"),
+            R.drawable.v5_pill, tz.mint, tz.positive, minHeight = 75, inset = 16, badgeSize = 42, emphasis = true, detailSize = 12)
+        meds.addView(v5.text("Los horarios los administra la persona protegida.", 11, muted).apply {
+            setPadding(dp(17), 0, dp(14), dp(13))
+        })
+        v5.activate(meds, ::openMedicationScreen)
+        v5.note(body, "Podrás registrar tomas cuando\nla persona habilite ese permiso.", margin = 18,
+            fill = tz.cardColor, padding = 10)
+        v5.action(body, "Ver permisos del vínculo", R.drawable.v5_lock, tz.cardColor, accent, margin = 0, action = ::openSupervisionCenter)
+        if (linked && shared.length() > 0) {
+            gap(body, 22)
+            v5.section(body, "Historial de lecturas")
+            addVitalSummary(v5.panel(body), caregiver = true)
+        }
+        val refreshHistory = caregiverVitalsUpdater
+        caregiverVitalsUpdater = {
+            val fresh = vitalSnapshot(true, measurements())
+            tileUpdates.forEach { it(fresh) }
+            refreshHistory?.invoke()
+        }
+    }
+
     private fun supervisionCenter(body: LinearLayout) {
         refreshCaregiverSharedData()
-        val linked = store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank()
-        heading(body, "", "Supervisión", "Centro de acompañamiento familiar")
-        if (!linked) {
-            statusBanner(
-                body,
-                TzindaCopy("Sin vínculo activo", "Vincula una persona para consultar sus datos autorizados.", TzindaTone.NEUTRAL),
-                "Vincular persona",
-            ) { selectTab(2) }
-            return
+        val linked = caregiverLinkAvailable()
+        val name = store.prefs.getString("caregiver_shared_name", "").orEmpty().ifBlank { "Persona protegida" }
+        caregiverHeader(body, "Supervisión", "El vínculo y sus permisos, con claridad.")
+        val summary = v5.panel(body, tz.primaryFill, radius = 28, padding = 18, margin = 18)
+        summary.addView(v5.label("ESTADO DEL VÍNCULO", v5.onBlueMuted))
+        gap(summary, 12)
+        summary.addView(v5.title(if (linked) name else "Tu círculo\naún no está conectado.", 22, Color.WHITE))
+        gap(summary, 16)
+        summary.addView(v5.text(if (linked) "Vínculo activo con la persona protegida." else "Vincula a tu persona para comenzar.",
+            12, v5.onBlueMuted))
+        v5.action(body, if (linked) "Administrar vínculo" else "Vincular persona", R.drawable.v5_link, margin = 22) {
+            selectTab(TzindaTabs.CONTACTS)
         }
+        body.addView(v5.title("Datos autorizados", 19))
+        gap(body, 8)
+        body.addView(v5.text(if (linked) "Información compartida por la persona protegida" else "Pendientes de un vínculo activo", 12, muted))
+        gap(body, 21)
+        val access = v5.panel(body, padding = 0, margin = 12)
+        val hasLocation = linked && sharedMapFix() != null
+        val deviceCount = if (linked) sharedDevices().size else 0
+        val records = if (linked) sharedCareRecords() else emptyList()
+        v5.row(access, "Ubicación compartida", if (hasLocation) "Ubicación disponible" else "Sin información autorizada",
+            R.drawable.v5_pin, minHeight = 66, divider = true, titleSize = 14, detailSize = 12, action = ::openSharedMap)
+        v5.row(access, "Pulsera y dispositivos", if (deviceCount == 0) "Sin datos compartidos" else TzindaText.count(deviceCount, "dispositivo"),
+            R.drawable.v5_watch, minHeight = 66, divider = true, titleSize = 14, detailSize = 12)
+        v5.row(access, "Cuidados y bitácora", if (records.isEmpty()) "Sin registros compartidos" else TzindaText.count(records.size, "registro compartido", "registros compartidos"),
+            R.drawable.v5_journal, tz.mint, tz.positive, minHeight = 67, titleSize = 14, detailSize = 12,
+            action = if (linked) ::openCareFeatures else null)
+        val consent = v5.panel(body, tz.mint, radius = 20, padding = 13, margin = 0)
+        val note = v5.horizontal()
+        note.addView(v5.icon(R.drawable.v5_lock, 22, tz.positive))
+        note.addView(v5.text("Los permisos los administra\nla persona protegida.", 12, tz.positive),
+             LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(14) })
+        consent.addView(note)
+        if (!linked) return
+        gap(body, 24)
         val person = store.prefs.getString("caregiver_shared_name", "").orEmpty().ifBlank { "Persona protegida" }
         val events = sharedEvents()
         val pending = pendingSharedAlerts(events)
@@ -1978,7 +2244,7 @@ class MainActivity : ComponentActivity() {
         (alertsTile.layoutParams as LinearLayout.LayoutParams).leftMargin = dp(8)
 
         if (pending.isNotEmpty()) {
-            tz.section(body, "Alertas que requieren seguimiento", null, "Historial") { activitySection = 1; selectTab(1) }
+            tz.section(body, "Alertas que requieren seguimiento", null, "Historial") { selectTab(1) }
             val alerts = card(body)
             pending.take(3).forEachIndexed { index, event ->
                 val followup = sharedAlertFollowups()
@@ -2002,7 +2268,7 @@ class MainActivity : ComponentActivity() {
                     showDivider = index < minOf(pending.size, 3) - 1,
                 ) { recordAlertFollowup(event.optString("id")) }
             }
-            alerts.addView(button("Abrir historial completo", false) { activitySection = 1; selectTab(1) })
+            alerts.addView(button("Abrir historial completo", false) { selectTab(1) })
         }
 
         tz.section(body, "Diagnóstico y sensores")
@@ -2054,9 +2320,233 @@ class MainActivity : ComponentActivity() {
             isFocusable = true
             setOnClickListener { action() }
         }
+
     private fun careFeaturesScreen(body: LinearLayout) {
+        v5.header(body, "Bitácora de cuidados", "Un lugar para tu seguimiento diario.", gapBelow = 30)
+        v5.segments(body, listOf("Bitácora", "Rutinas", "Tareas"), careSection) {
+            careSection = it
+            lastRenderKey = null
+            render()
+        }
+        gap(body, 22)
+        when (careSection) {
+            0 -> careJournal(body)
+            1 -> careRoutines(body, tasksOnly = false)
+            2 -> careRoutines(body, tasksOnly = true)
+        }
+    }
+
+    private fun careJournal(body: LinearLayout) {
+        val journalRowsAll = if (isCaregiver) sharedCareRecords().filter { it.optString("record_kind") == "journal" }
+            .mapNotNull { it.optJSONObject("record") } else careFeatures.rows("journal")
+        if (journalRowsAll.isEmpty()) {
+            val empty = v5.panel(body, radius = 28, padding = 24, margin = 24).apply { gravity = Gravity.CENTER_HORIZONTAL }
+            gap(empty, 11)
+            empty.addView(v5.art(R.drawable.v5_art_note), LinearLayout.LayoutParams(dp(105), dp(100)))
+            gap(empty, 23)
+            empty.addView(v5.title("Cada cuidado\ncuenta.", 26).apply { gravity = Gravity.CENTER })
+            gap(empty, 21)
+            empty.addView(v5.text(if (isCaregiver) "Aún no hay notas compartidas." else "Aún no hay notas de cuidado.", 13, muted).apply {
+                gravity = Gravity.CENTER
+            })
+            gap(empty, 24)
+        } else {
+            val journalCard = v5.panel(body)
+            journalCard.addView(button("Filtrar: ${careJournalFilter.ifBlank { "todos los tipos" }}", false) {
+                val available = arrayOf("Todos", "Observación", "Actividad", "Incidencia", "Cambio relevante", "Seguimiento de alerta", "Entrada a zona", "Salida de zona", "Rutina realizada")
+                AlertDialog.Builder(this).setTitle("Filtrar registros").setItems(available) { _, choice ->
+                    careJournalFilter = when (choice) { 0 -> ""; 6 -> "zona_entrada"; 7 -> "zona_salida"; else -> available[choice].lowercase(Locale.ROOT).replace(' ', '_') }
+                    render()
+                }.show()
+            })
+            val journalRows = journalRowsAll.filter { careJournalFilter.isBlank() || it.optString("type") == careJournalFilter }
+            if (journalRows.isEmpty()) {
+                journalCard.addView(text("Aún no hay registros en este filtro.", 14, color = muted))
+            } else journalRows.take(30).forEachIndexed { index, row ->
+                val timestamp = row.optLong("occurredAt", row.optLong("updatedAt"))
+                val date = if (timestamp > 0) SimpleDateFormat("d MMM yyyy · HH:mm", Locale("es", "MX")).format(Date(timestamp)) else "Fecha no disponible"
+                val comment = row.optString("comment").takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty()
+                journalCard.addView(text(row.optString("type", "Observación").replace('_', ' ').replaceFirstChar { it.uppercase() }, 16, true).apply {
+                    setPadding(0, dp(10), 0, 0)
+                })
+                journalCard.addView(text("${row.optString("description")}$comment\n$date", 14, color = muted))
+                journalCard.addView(statusPill(TzindaCopy(
+                    if (row.optString("syncState") == "synced") "Sincronizado" else "Pendiente de sincronizar",
+                    if (row.optString("syncState") == "synced") "Guardado en este teléfono y en la cuenta." else "Guardado en este teléfono; se enviará al recuperar conexión.",
+                    if (row.optString("syncState") == "synced") TzindaTone.POSITIVE else TzindaTone.WARNING,
+                )))
+                if (index < journalRows.take(30).size - 1) tz.divider(journalCard)
+            }
+
+
+        }
+        if (!isCaregiver) {
+            v5.action(body, "Agregar nota", R.drawable.ic_plus, margin = 32, action = ::createJournalEntry)
+            val tip = v5.panel(body, tz.brandSoft, padding = 0, margin = 18)
+            v5.row(tip, "Siempre a mano", "Guarda tus notas en el teléfono.\nSe sincronizan cuando vuelve Internet.",
+                R.drawable.v5_sync, minHeight = 96, titleColor = accent, emphasis = true)
+            body.addView(v5.text("Tú eliges qué notas compartir.", 12, muted))
+            gap(body, 16)
+        }
+    }
+
+    private fun mapZones(): List<MapZone> {
+        if (isCaregiver && CaregiverAccess(store).snapshot() == null) return emptyList()
+        val remote = if (isCaregiver) sharedCareRecords().filter { it.optString("record_kind") == "zone" }
+            .mapNotNull { it.optJSONObject("record") } else emptyList()
+        return (careFeatures.zones() + remote).distinctBy { it.optString("id") }.mapNotNull(MapZone::from)
+    }
+
+    private fun storedMapFix(): MapFix? {
+        val latitude = store.prefs.getString("latitude", "").orEmpty().toDoubleOrNull() ?: return null
+        val longitude = store.prefs.getString("longitude", "").orEmpty().toDoubleOrNull() ?: return null
+        val point = MapPoint.of(latitude, longitude) ?: return null
+        return MapFix(point, store.prefs.getLong("location_time", 0L))
+    }
+
+    private fun requestMapFix(result: (MapFix?) -> Unit) {
+        if (!hasLocation()) {
+            if (mapLocationPermission == null) {
+                mapLocationPermission = result
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+                    REQUEST_MAP_LOCATION)
+            }
+            return
+        }
+        cancelMapFix?.invoke()
+        val location = mapLocation.value
+        location.latest()?.let { result(it); return }
+        fun finish(fix: MapFix?) {
+            cancelMapFix?.invoke()
+            result(fix)
+        }
+        val stop = location.observe { location.latest()?.let(::finish) }
+        val cached = location.latest()
+        if (cached != null || stop == null) { stop?.invoke(); result(cached); return }
+        val timeout = Runnable { finish(null) }
+        cancelMapFix = {
+            stop()
+            handler.removeCallbacks(timeout)
+            cancelMapFix = null
+        }
+        handler.postDelayed(timeout, 10_000)
+    }
+
+    private fun hasSharedMapCache(): Boolean {
+        val scope = CaregiverAccess(store).snapshot() ?: return false
+        return store.prefs.getString("caregiver_cache_owner_id", "") == scope.owner &&
+            store.prefs.getString("caregiver_cache_link_id", "") == scope.link
+    }
+
+    private fun sharedMapFix(): MapFix? {
+        if (!hasSharedMapCache()) return null
+        val location = runCatching { JSONObject(store.prefs.getString("caregiver_shared_location", "{}").orEmpty()) }.getOrNull() ?: return null
+        val point = MapPoint.from(location) ?: return null
+        val captured = isoMillis(location.optString("captured_at"))
+        val accuracy = location.optDouble("accuracy_m").takeIf { it.isFinite() && it >= 0 }
+        return MapFix(point, captured, accuracy).takeIf { it.isRecent() }
+    }
+
+    private fun sharedMapPerson(): MapPerson {
+        val name = store.prefs.getString("caregiver_shared_name", "").orEmpty()
+            .takeIf { hasSharedMapCache() && it.isNotBlank() } ?: "Persona protegida"
+        val fix = sharedMapFix()
+        val zone = fix?.let { position ->
+            mapZones().filter(MapZone::enabled).minByOrNull { item ->
+                GeoFencePolicy.distanceMeters(position.point.latitude, position.point.longitude, item.point.latitude, item.point.longitude)
+            }
+        }
+        return MapPerson(name, fix, zone)
+    }
+
+    private fun newLocationMap(): TzindaV11 {
+        val account = store
+        val role = store.role()
+        val expectedLink = if (isCaregiver) CaregiverAccess(account).snapshot() else null
+        locationMap?.close()
+        return TzindaV11(this, v5, mapService.value, mapLocation.value, ::requestMapFix,
+            sharedFix = if (isCaregiver) ::sharedMapFix else null) {
+            store === account && AccountStorage.isCurrent(account.appContext) && store.role() == role &&
+                (!isCaregiver || CaregiverAccess(account).snapshot() == expectedLink)
+        }.also { locationMap = it }
+    }
+
+    private fun openSafeZones() {
+        if (isCameraRole) return
+        drawSafeZones(newLocationMap())
+    }
+
+    private fun drawSafeZones(map: TzindaV11, back: () -> Unit = map::close) {
+        if (isCaregiver) refreshCaregiverSharedData()
+        val account = store
+        val owner = careFeatures.currentOwner()?.takeIf { !isCaregiver || CaregiverAccess(store).snapshot() != null }
+        val write: ((MapZone) -> Boolean)? = owner?.let { expectedOwner ->
+            { zone ->
+                val saved = store === account && AccountStorage.isCurrent(account.appContext) &&
+                    careFeatures.currentOwner() == expectedOwner && persistCare("zone", zone.record(expectedOwner))
+                if (saved) SyncScheduler.enqueue(applicationContext, immediate = true)
+                saved
+            }
+        }
+        val delete: ((MapZone) -> Boolean)? = owner?.let { expectedOwner ->
+            { zone ->
+                val removed = store === account && AccountStorage.isCurrent(account.appContext) &&
+                    careFeatures.currentOwner() == expectedOwner && runCatching { careFeatures.delete("zone", zone.id, expectedOwner) }
+                    .onFailure { toast(it.message ?: "No se pudo eliminar la zona.", true) }.isSuccess
+                if (removed) SyncScheduler.enqueue(applicationContext, immediate = true)
+                removed
+            }
+        }
+        map.zones(::mapZones, write, delete, back,
+            readFix = if (isCaregiver) ::sharedMapFix else mapLocation.value::latest, shared = isCaregiver)
+    }
+
+    private fun retryMapLocation(complete: () -> Unit) {
+        refreshCaregiverSharedData(force = true, completed = complete)
+    }
+
+    private fun openSharedMap(event: LocationAlert? = null) {
+        if (!isCaregiver) return
+        val map = newLocationMap()
+        fun showPerson() {
+            map.person(::sharedMapPerson, ::retryMapLocation, { drawSafeZones(map, ::showPerson) })
+        }
+        if (event == null || event.type == LocationAlertType.ARRIVAL) showPerson()
+        else map.incident(::sharedMapPerson, event, ::retryMapLocation)
+    }
+
+    private fun careRoutines(body: LinearLayout, tasksOnly: Boolean) {
+        val routines = card(body)
+        routines.addView(text(if (tasksOnly) "Tareas programadas para hoy" else "Rutinas", 20, true))
+        if (!isCaregiver && !tasksOnly) routines.addView(button("Crear rutina", false) { createRoutine() })
+        val routineRows = if (isCaregiver) sharedCareRecords().filter { it.optString("record_kind") == "routine" }.mapNotNull { it.optJSONObject("record") }
+            else careFeatures.rows("routine")
+        var shown = 0
+        if (routineRows.isEmpty()) {
+            routines.addView(text("Sin rutinas registradas. La app solo mostrará actividades marcadas por la persona.", 14, color = muted))
+        } else routineRows.forEach routineLoop@{ routine ->
+            val repeatDays = routine.optJSONArray("days")
+            val days = if (repeatDays == null || repeatDays.length() == 0) emptySet() else (0 until repeatDays.length()).mapNotNull { repeatDays.optInt(it).takeIf { day -> day in 1..7 } }.toSet()
+            val todayMinute = java.time.LocalTime.now().let { it.hour * 60 + it.minute }
+            val routineMinute = runCatching { java.time.LocalTime.parse(routine.optString("time")).let { it.hour * 60 + it.minute } }.getOrNull()
+            val due = routineMinute?.let { RoutinePolicy.dueToday(days, it, todayMinute) } == true
+            if (tasksOnly && !due) return@routineLoop
+            shown++
+            routines.addView(text(routine.optString("name"), 16, true).apply { setPadding(0, dp(10), 0, 0) })
+            routines.addView(text("${routine.optString("time", "hora no definida")} · Días: ${days.sorted().joinToString(", ").ifBlank { "sin horario semanal" }}", 13, color = muted))
+            if (due) routines.addView(statusPill(TzindaCopy("Programada hoy", "La persona puede marcarla como realizada.", TzindaTone.INFO)))
+            if (!isCaregiver) routines.addView(button("Marcar como realizada", false) {
+                if (!persistCare("journal", JSONObject().put("ownerUserId", routine.optString("ownerUserId")).put("type", "rutina_realizada").put("description", routine.optString("name"))
+                    .put("occurredAt", System.currentTimeMillis()).put("source", "user_action").put("sharedWithCaregiver", routine.optBoolean("sharedWithCaregiver")))) return@button
+                SyncScheduler.enqueue(applicationContext); toast("Actividad registrada."); render()
+            })
+        }
+        if (tasksOnly && routineRows.isNotEmpty() && shown == 0) routines.addView(text("Aún no tienes tareas para hoy.", 14, color = muted))
+    }
+
+    private fun careSettings(body: LinearLayout) {
         val linkedCaregiver = isCaregiver && store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank()
-        heading(body, "CUIDADOS Y ACTIVIDAD", "Bitácora y rutinas", "Registros guardados primero en este teléfono y sincronizados al volver a tener Internet.")
+        heading(body, "CUIDADOS Y ACTIVIDAD", "Ajustes de cuidados", "Registros guardados primero en este teléfono y sincronizados al volver a tener Internet.")
         val careState = careFeatures.syncState()
         val pending = careState.pending
         val sync = card(body)
@@ -2097,105 +2587,10 @@ class MainActivity : ComponentActivity() {
             sync.addView(button("Actualizar ubicación ahora", false) { requestLocation() })
         }
 
-        val journalCard = card(body)
-        journalCard.addView(text("Bitácora de cuidados", 20, true))
-        journalCard.addView(button("Filtrar: ${careJournalFilter.ifBlank { "todos los tipos" }}", false) {
-            val available = arrayOf("Todos", "Observación", "Actividad", "Incidencia", "Cambio relevante", "Seguimiento de alerta", "Entrada a zona", "Salida de zona", "Rutina realizada")
-            AlertDialog.Builder(this).setTitle("Filtrar registros").setItems(available) { _, choice ->
-                careJournalFilter = when (choice) { 0 -> ""; 6 -> "zona_entrada"; 7 -> "zona_salida"; else -> available[choice].lowercase(Locale.ROOT).replace(' ', '_') }
-                render()
-            }.show()
-        })
-        if (!isCaregiver) journalCard.addView(button("Registrar observación", false) { createJournalEntry() })
-        val journalRowsAll = if (isCaregiver) sharedCareRecords().filter { it.optString("record_kind") == "journal" }.mapNotNull { it.optJSONObject("record") }
-            else careFeatures.rows("journal")
-        val journalRows = journalRowsAll.filter { careJournalFilter.isBlank() || it.optString("type") == careJournalFilter }
-        if (journalRows.isEmpty()) {
-            journalCard.addView(text("Aún no hay registros en este filtro.", 14, color = muted))
-        } else journalRows.take(30).forEachIndexed { index, row ->
-            val timestamp = row.optLong("occurredAt", row.optLong("updatedAt"))
-            val date = if (timestamp > 0) SimpleDateFormat("d MMM yyyy · HH:mm", Locale("es", "MX")).format(Date(timestamp)) else "Fecha no disponible"
-            val comment = row.optString("comment").takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty()
-            journalCard.addView(text(row.optString("type", "Observación").replace('_', ' ').replaceFirstChar { it.uppercase() }, 16, true).apply {
-                setPadding(0, dp(10), 0, 0)
-            })
-            journalCard.addView(text("${row.optString("description")}$comment\n$date", 14, color = muted))
-            journalCard.addView(statusPill(TzindaCopy(
-                if (row.optString("syncState") == "synced") "Sincronizado" else "Pendiente de sincronizar",
-                if (row.optString("syncState") == "synced") "Guardado en este teléfono y en la cuenta." else "Guardado en este teléfono; se enviará al recuperar conexión.",
-                if (row.optString("syncState") == "synced") TzindaTone.POSITIVE else TzindaTone.WARNING,
-            )))
-            if (index < journalRows.take(30).size - 1) tz.divider(journalCard)
-        }
 
-        val zonesCard = card(body)
-        zonesCard.addView(text("Zonas seguras", 20, true))
-        val canManageZones = !isCaregiver || linkedCaregiver
-        if (canManageZones) {
-            zonesCard.addView(text(
-                if (isCaregiver) "Puedes crear, editar o pausar las zonas que la persona comparte contigo."
-                else "Una zona es un círculo alrededor de un punto, por ejemplo tu casa o la de un familiar.",
-                14, color = muted,
-            ))
-            zonesCard.addView(button("Agregar zona", false) { editSafeZone(null) })
-        }
-        val linkedOwnerForZones = store.prefs.getString("caregiver_owner_id", "").orEmpty()
-        val zones = if (isCaregiver) {
-            val local = careFeatures.zones().filter { linkedOwnerForZones.isNotBlank() && it.optString("ownerUserId") == linkedOwnerForZones }
-            val remote = sharedCareRecords().filter { it.optString("record_kind") == "zone" }.mapNotNull { it.optJSONObject("record") }
-            (local + remote).distinctBy { it.optString("id") }
-        } else careFeatures.zones()
-        if (zones.isEmpty()) zonesCard.addView(text("Sin zonas configuradas.", 14, color = muted))
-        zones.forEach { zone ->
-            val last = zone.optLong("lastLocationAt")
-            val lastText = if (last > 0) "Último punto: ${SimpleDateFormat("d MMM · HH:mm", Locale("es", "MX")).format(Date(last))}" else "Aún sin ubicación válida"
-            zonesCard.addView(text(zone.optString("name"), 16, true).apply { setPadding(0, dp(10), 0, 0) })
-            zonesCard.addView(text("${zone.optInt("radius", 150)} m · $lastText", 13, color = muted))
-            zonesCard.addView(statusPill(TzindaCopy(
-                if (zone.optBoolean("enabled", true)) "Activa" else "Pausada",
-                if (zone.optBoolean("enabled", true)) "Se evalúa cuando hay una ubicación válida." else "No se evalúa hasta activarla.",
-                if (zone.optBoolean("enabled", true)) TzindaTone.POSITIVE else TzindaTone.NEUTRAL,
-            )))
-            if (canManageZones) zonesCard.addView(button("Administrar ${zone.optString("name")}", false) {
-                AlertDialog.Builder(this).setTitle(zone.optString("name")).setItems(arrayOf("Editar", if (zone.optBoolean("enabled", true)) "Pausar" else "Activar", "Eliminar")) { _, choice ->
-                    when (choice) {
-                        0 -> editSafeZone(zone)
-                        1 -> { if (persistCare("zone", JSONObject(zone.toString()).put("enabled", !zone.optBoolean("enabled", true)))) { SyncScheduler.enqueue(applicationContext, immediate = true); render() } }
-                        2 -> AlertDialog.Builder(this).setMessage("¿Eliminar esta zona?").setNegativeButton("Cancelar", null).setPositiveButton("Eliminar") { _, _ -> runCatching { careFeatures.delete("zone", zone.optString("id"), zone.optString("ownerUserId")) }.onSuccess { SyncScheduler.enqueue(applicationContext, immediate = true); render() }.onFailure { toast(it.message ?: "No se pudo eliminar la zona.", true) } }.show()
-                    }
-                }.show()
-            })
-        }
-        if (isCaregiver && linkedCaregiver) zonesCard.addView(text("Los cambios se guardan en este teléfono y se sincronizan con la cuenta de la persona.", 13, color = muted))
-        if (!linkedCaregiver && isCaregiver) zonesCard.addView(text("Vincula a la persona para consultar y administrar sus zonas compartidas.", 13, color = muted))
-
-        val routines = card(body)
-        routines.addView(text("Rutinas", 20, true))
-        if (!isCaregiver) routines.addView(button("Crear rutina", false) { createRoutine() })
-        val routineRows = if (isCaregiver) sharedCareRecords().filter { it.optString("record_kind") == "routine" }.mapNotNull { it.optJSONObject("record") }
-            else careFeatures.rows("routine")
-        if (routineRows.isEmpty()) {
-            routines.addView(text("Sin rutinas registradas. La app solo mostrará actividades marcadas por la persona.", 14, color = muted))
-        } else routineRows.forEach { routine ->
-            val repeatDays = routine.optJSONArray("days")
-            val days = if (repeatDays == null || repeatDays.length() == 0) emptySet() else (0 until repeatDays.length()).mapNotNull { repeatDays.optInt(it).takeIf { day -> day in 1..7 } }.toSet()
-            val todayMinute = java.time.LocalTime.now().let { it.hour * 60 + it.minute }
-            val routineMinute = runCatching { java.time.LocalTime.parse(routine.optString("time")).let { it.hour * 60 + it.minute } }.getOrNull()
-            val due = routineMinute?.let { RoutinePolicy.dueToday(days, it, todayMinute) } == true
-            routines.addView(text(routine.optString("name"), 16, true).apply { setPadding(0, dp(10), 0, 0) })
-            routines.addView(text("${routine.optString("time", "hora no definida")} · Días: ${days.sorted().joinToString(", ").ifBlank { "sin horario semanal" }}", 13, color = muted))
-            if (due) routines.addView(statusPill(TzindaCopy("Programada hoy", "La persona puede marcarla como realizada.", TzindaTone.INFO)))
-            if (!isCaregiver) routines.addView(button("Marcar como realizada", false) {
-                if (!persistCare("journal", JSONObject().put("ownerUserId", routine.optString("ownerUserId")).put("type", "rutina_realizada").put("description", routine.optString("name"))
-                    .put("occurredAt", System.currentTimeMillis()).put("source", "user_action").put("sharedWithCaregiver", routine.optBoolean("sharedWithCaregiver")))) return@button
-                SyncScheduler.enqueue(applicationContext); toast("Actividad registrada."); render()
-            })
-        }
-        val notices = card(body)
-        notices.addView(text("Avisos de inactividad", 19, true))
-        notices.addView(text("No se generan avisos automáticos: la app todavía no tiene una fuente fiable que distinga inactividad física de falta de datos o de conexión.", 14, color = muted))
-        if (isCaregiver) notices.addView(text("Solo aparecen los registros que la persona haya compartido y que el vínculo permita consultar.", 13, color = muted))
+        v5.action(body, "Volver a Bitácora", fill = tz.cardColor, fg = accent) { navigateBack() }
     }
+
     private fun sharedCareRecords(): List<JSONObject> {
         if (isCaregiver && (store.prefs.getString("caregiver_link_id", "").orEmpty().isBlank() || store.prefs.getString("caregiver_owner_id", "").orEmpty().isBlank())) return emptyList()
         val array = runCatching { JSONArray(store.prefs.getString("caregiver_shared_care_records", "[]")) }.getOrDefault(JSONArray())
@@ -2355,93 +2750,6 @@ class MainActivity : ComponentActivity() {
         }.show()
     }
 
-    private fun editSafeZone(existing: JSONObject?) {
-        val formOwner = careFeatures.currentOwner() ?: return
-        val panel = column().apply { setPadding(dp(2), dp(4), dp(2), dp(4)) }
-        panel.addView(text("La zona se calcula en este teléfono. Compartirla permite que el cuidador vinculado consulte si la persona está dentro o fuera; no activa un rastreo continuo.", 14, color = muted))
-        val name = field(
-            panel, "Nombre de la zona", existing?.optString("name").orEmpty(),
-            tag = "zone_name", hintText = "Ej. Casa",
-        )
-        val lastLat = store.prefs.getString("latitude", "").orEmpty().toDoubleOrNull()
-        val lastLon = store.prefs.getString("longitude", "").orEmpty().toDoubleOrNull()
-        val latitudeText = existing?.takeIf { it.has("latitude") }?.optDouble("latitude")?.toString().orEmpty()
-        val longitudeText = existing?.takeIf { it.has("longitude") }?.optDouble("longitude")?.toString().orEmpty()
-        val lat = field(
-            panel, "Latitud del centro", latitudeText.ifBlank { lastLat?.toString().orEmpty() },
-            InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED,
-            hintText = "Ej. 19.4326",
-        )
-        val lon = field(
-            panel, "Longitud del centro", longitudeText.ifBlank { lastLon?.toString().orEmpty() },
-            InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED,
-            hintText = "Ej. -99.1332",
-        )
-        val locationStatus = text(
-            if (latitudeText.isNotBlank() || lastLat != null) "Puedes ajustar las coordenadas o volver a tomar la ubicación."
-            else "Este teléfono aún no tiene una ubicación guardada.",
-            13, color = muted,
-        )
-        panel.addView(button("Usar la ubicación de este teléfono", false) {
-            val currentLat = store.prefs.getString("latitude", "").orEmpty().toDoubleOrNull()
-            val currentLon = store.prefs.getString("longitude", "").orEmpty().toDoubleOrNull()
-            if (currentLat != null && currentLon != null) {
-                lat.setText(currentLat.toString())
-                lon.setText(currentLon.toString())
-                locationStatus.text = "Ubicación aplicada. Ajusta el radio según el tamaño del lugar."
-            } else {
-                requestLocation()
-                locationStatus.text = "Buscando la ubicación… vuelve a pulsar en unos segundos."
-            }
-        })
-        panel.addView(locationStatus)
-        val radius = field(
-            panel, "Radio de la zona (metros)", existing?.takeIf { it.has("radius") }?.optInt("radius")?.toString() ?: "150",
-            InputType.TYPE_CLASS_NUMBER, hintText = "Entre 25 y 20000",
-            helper = "150 m cubre una casa; 300 m, una cuadra. La zona se evalúa con ubicaciones válidas.",
-        )
-        val enabled = tz.switchRow(
-            panel,
-            "Seguimiento activo",
-            "Si lo desactivas, la zona queda guardada pero no genera avisos.",
-            value = existing?.optBoolean("enabled", true) ?: true,
-            action = {},
-        )
-        val share = tz.switchRow(
-            panel,
-            if (isCaregiver) "Mantener visible para la persona" else "Compartir con cuidador/a",
-            if (isCaregiver) "La persona verá esta zona en su propia lista y podrá editarla."
-            else "El cuidador vinculado podrá consultar y administrar esta zona.",
-            value = existing?.optBoolean("sharedWithCaregiver", isCaregiver) ?: isCaregiver,
-            action = {},
-        )
-        val dialog = AlertDialog.Builder(this).setTitle(if (existing == null) "Nueva zona" else "Editar zona")
-            .setView(ScrollView(this).apply { addView(panel) })
-            .setNegativeButton("Cancelar", null).setPositiveButton("Guardar", null).create()
-        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val a = lat.text.toString().toDoubleOrNull()
-            val o = lon.text.toString().toDoubleOrNull()
-            val r = radius.text.toString().toDoubleOrNull()
-            var valid = true
-            if (name.text.isBlank()) { name.error = "Escribe un nombre para la zona."; valid = false }
-            if (a == null || a !in -90.0..90.0) { lat.error = "Latitud entre -90 y 90."; valid = false }
-            if (o == null || o !in -180.0..180.0) { lon.error = "Longitud entre -180 y 180."; valid = false }
-            if (r == null || r !in 25.0..20_000.0) { radius.error = "Radio entre 25 y 20000 metros."; valid = false }
-            if (!valid) { tz.announce(name, "Revisa los campos marcados."); return@setOnClickListener }
-            val item = JSONObject().put("id", existing?.optString("id").orEmpty()).put("name", name.text.toString().trim().take(100))
-                .put("latitude", a).put("longitude", o).put("radius", r!!.toInt()).put("enabled", enabled.isChecked)
-                .put("sharedWithCaregiver", share.isChecked)
-                .put("ownerUserId", existing?.optString("ownerUserId")?.takeIf { it.isNotBlank() }
-                    ?: formOwner)
-            if (!persistCare("zone", item)) return@setOnClickListener
-            SyncScheduler.enqueue(applicationContext, immediate = true)
-            dialog.dismiss()
-            toast("Zona guardada en este teléfono.")
-            render()
-        } }
-        dialog.show()
-    }
-
     private fun createRoutine() {
         val formOwner = careFeatures.currentOwner() ?: return
         val panel = column().apply { setPadding(dp(2), dp(4), dp(2), dp(4)) }
@@ -2527,18 +2835,31 @@ class MainActivity : ComponentActivity() {
      * view tree from the network callback would wipe input and fight with the user's scroll.
      * Only explicit “Actualizar” actions ask for a visual re-render when the fetch finishes.
      */
-    private fun refreshCaregiverSharedData(force: Boolean = false, renderWhenDone: Boolean = false) {
+    private fun refreshCaregiverSharedData(
+        force: Boolean = false,
+        renderWhenDone: Boolean = false,
+        completed: (() -> Unit)? = null,
+    ) {
         val requestStore = store
         val access = CaregiverAccess(requestStore)
         val scope = access.snapshot() ?: run {
             if (sessions.read() == null) caregiverSharedStatusView?.text = "Sesión no disponible: inicia sesión para actualizar los datos compartidos."
+            completed?.invoke()
             return
         }
         val requestBackend = SupabaseBackend(sessions, expectedUserId = scope.actor)
         val now = System.currentTimeMillis()
-        if (caregiverRefreshScope == scope && (caregiverRefreshInFlight || !force && now - caregiverRefreshAt < 10_000L)) return
+        if (caregiverRefreshScope == scope && caregiverRefreshInFlight) {
+            if (completed != null) caregiverMapRetry = caregiverRefreshRequest to completed
+            return
+        }
+        if (caregiverRefreshScope == scope && !force && now - caregiverRefreshAt < 10_000L) {
+            completed?.invoke()
+            return
+        }
         caregiverRefreshScope = scope
         val requestId = ++caregiverRefreshRequest
+        caregiverMapRetry = completed?.let { requestId to it }
         caregiverRefreshInFlight = true
         caregiverRefreshAt = now
         // The first successful fetch may fill an empty screen, so it is safe to draw the result.
@@ -2579,8 +2900,10 @@ class MainActivity : ComponentActivity() {
                     .put("link_device_id", linkedDeviceId ?: "").put("device_id", locationDevice)
             }
             runOnUiThread {
-                if (requestId != caregiverRefreshRequest) return@runOnUiThread
+                if (isDestroyed || requestId != caregiverRefreshRequest) return@runOnUiThread
                 caregiverRefreshInFlight = false
+                val mapRetry = caregiverMapRetry?.takeIf { it.first == requestId }?.second
+                caregiverMapRetry = null
                 if (store !== requestStore || !access.isCurrent(scope)) return@runOnUiThread
                 result.onSuccess { data ->
                     val latestEvents = data.optJSONArray("events") ?: JSONArray()
@@ -2627,6 +2950,7 @@ class MainActivity : ComponentActivity() {
                     if (renderWhenDone) render()
                     else caregiverSharedStatusView?.text = store.prefs.getString("caregiver_shared_status", "").orEmpty()
                 }
+                mapRetry?.invoke()
             }
         }
     }
@@ -2775,23 +3099,16 @@ class MainActivity : ComponentActivity() {
         val statusView = text("Sin datos", 17, true, muted).also { locationCard.addView(it) }
         val coordinatesView = text("—", 15, true).also { locationCard.addView(it) }
         val freshnessView = text("Sin datos de ubicación", 14, color = muted).also { locationCard.addView(it) }
-        val mapButton = button("Abrir en el mapa", false) {} .also { it.isEnabled = false; locationCard.addView(it) }
+        val mapButton = button("Ver ubicación en el mapa", false) { openSharedMap() }.also { locationCard.addView(it) }
         locationCard.addView(button("Actualizar datos compartidos", false) { refreshCaregiverSharedData(force = true, renderWhenDone = true) })
         locationCard.addView(text("Las coordenadas son aproximadas y dependen de la señal del teléfono de la persona.", 12, color = muted))
 
         fun applyLocation() {
-            val row = runCatching { JSONObject(store.prefs.getString("caregiver_shared_location", "{}").orEmpty()) }.getOrDefault(JSONObject())
-            val capturedAt = isoMillis(row.optString("captured_at"))
-            val latitude = row.optDouble("latitude", Double.NaN)
-            val longitude = row.optDouble("longitude", Double.NaN)
-            val hasCoordinates = latitude.isFinite() && longitude.isFinite() && capturedAt > 0L
-            val ageMs = if (hasCoordinates) (System.currentTimeMillis() - capturedAt).coerceAtLeast(0L) else Long.MAX_VALUE
-            val live = hasCoordinates && ageMs <= 90_000L
-            statusView.text = if (!hasCoordinates) "Sin datos" else if (live) "●  EN VIVO" else "Última ubicación"
-            statusView.setTextColor(if (live) accent else muted)
-            coordinatesView.text = if (hasCoordinates) "%.5f, %.5f".format(Locale.US, latitude, longitude) else "—"
-            freshnessView.text = when {
-                !hasCoordinates -> when {
+            val fix = sharedMapFix()
+            statusView.text = if (fix == null) "Sin una posición reciente" else "Ubicación compartida"
+            statusView.setTextColor(if (fix != null) accent else muted)
+            coordinatesView.text = fix?.point?.coordinates() ?: "—"
+            freshnessView.text = fix?.freshness() ?: when {
                     store.prefs.getString("caregiver_link_id", "").orEmpty().isBlank() ->
                         "Vincula a la persona para recibir su ubicación."
                     sessions.read() == null ->
@@ -2799,15 +3116,9 @@ class MainActivity : ComponentActivity() {
                     store.prefs.getLong("caregiver_shared_fetched_at", 0L) == 0L ->
                         "Aún no se descargaron datos. Usa «Actualizar datos compartidos»."
                     else ->
-                        "La persona aún no comparte su ubicación. Necesita el monitoreo activo y el permiso de ubicación."
-                }
-                ageMs < 60_000L -> "Actualizada hace menos de un minuto"
-                ageMs < 3_600_000L -> "Actualizada hace ${ageMs / 60_000L} min"
-                else -> "Actualizada hace ${ageMs / 3_600_000L} h"
+                        "La ubicación se comparte con el monitoreo activo y el permiso de ubicación."
             }
-            mapButton.isEnabled = hasCoordinates
-            mapButton.text = if (hasCoordinates) "Abrir en el mapa  →" else "Sin ubicación para abrir"
-            mapButton.setOnClickListener { if (hasCoordinates) openMap(latitude, longitude) }
+            mapButton.text = if (fix != null) "Ver ubicación en el mapa" else "Ver disponibilidad de ubicación"
         }
         caregiverSharedLocationView = statusView
         caregiverLocationCoordinatesView = coordinatesView
@@ -2817,47 +3128,124 @@ class MainActivity : ComponentActivity() {
         applyLocation()
     }
 
-    /** Tries a native map app first and falls back to a web map, so the button works on any phone. */
-    private fun openMap(latitude: Double, longitude: Double) {
-        val native = Uri.parse("geo:$latitude,$longitude?q=$latitude,$longitude(TzindaApp)")
-        val web = Uri.parse("https://www.google.com/maps/search/?api=1&query=$latitude,$longitude")
-        val opened = runCatching { startActivity(Intent(Intent.ACTION_VIEW, native)) }.isSuccess ||
-            runCatching { startActivity(Intent(Intent.ACTION_VIEW, web)) }.isSuccess
-        if (!opened) toast("No hay una aplicación de mapas o un navegador disponible.", true)
+    private fun caregiverLocationAlerts(): List<LocationAlert> {
+        if (!hasSharedMapCache()) return emptyList()
+        val now = System.currentTimeMillis()
+        val person = sharedMapPerson()
+        val followups = AlertFollowupPolicy.latestByEvent(sharedAlertFollowups())
+        val latestHelp = sharedEvents().firstOrNull { event ->
+            val age = now - isoMillis(event.optString("occurred_at"))
+            event.optString("classification") == "manual" && event.optString("confirmation_status") == "confirmed" &&
+                age in 0L..86_400_000L && followups[event.optString("id")]?.optString("status") !in
+                setOf("attended", "closed", "dismissed", "false_alarm", "cancelled", "canceled")
+        }?.let { event ->
+            val timestamp = formatSharedMoment(event.optString("occurred_at"))
+            val detail = person.fix?.let { "$timestamp · ${it.freshness()}" } ?: timestamp
+            LocationAlert(LocationAlertType.HELP, "${person.firstName} solicitó ayuda", detail)
+        }
+        val zones = mapZones().filter(MapZone::shared).associateBy(MapZone::name)
+        val journal = sharedCareRecords().asSequence()
+            .filter { it.optString("record_kind") == "journal" }
+            .mapNotNull { it.optJSONObject("record") }
+            .filter { now - it.optLong("occurredAt") in 0L..172_800_000L }
+            .sortedByDescending { it.optLong("occurredAt") }
+            .mapNotNull { entry ->
+                val type = when (entry.optString("type")) {
+                    "zona_salida" -> LocationAlertType.EXIT
+                    "zona_entrada" -> LocationAlertType.ARRIVAL
+                    else -> return@mapNotNull null
+                }
+                val isExit = type == LocationAlertType.EXIT
+                val name = entry.optString("description").removePrefix(if (isExit) "Salida de " else "Entrada a ")
+                    .trim().ifBlank { "zona segura" }
+                val stamp = formatSharedMoment(java.time.Instant.ofEpochMilli(entry.optLong("occurredAt")).toString())
+                val verb = if (isExit) "salió de" else "llegó a"
+                LocationAlert(type, "${person.firstName} $verb $name", stamp, zones[name])
+            }.take(8).toList()
+        return listOfNotNull(latestHelp) + journal
     }
+
     private fun caregiverActivity(body: LinearLayout) {
         refreshCaregiverSharedData()
-        val linked = store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank()
-        if (!linked) {
-            statusBanner(
-                body,
-                TzindaCopy("Sin vínculo activo", "Vincula a la persona protegida para consultar sus alertas compartidas.", TzindaTone.NEUTRAL),
-                "Vincular persona",
-            ) { selectTab(2) }
+        val linked = caregiverLinkAvailable()
+        val locationAlerts = if (linked) caregiverLocationAlerts() else emptyList()
+        if (locationAlerts.isNotEmpty() && !showOtherCaregiverAlerts) {
+            TzindaV11(this, v5, mapService.value, mapLocation.value, ::requestMapFix)
+                .alertFeed(body, sharedMapPerson(), locationAlerts, { selectTab(TzindaTabs.HOME) }, ::openSharedMap)
+            gap(body, 12)
+            v5.action(body, "Ver todos los avisos", R.drawable.v5_bell, fill = tz.cardColor, fg = accent) {
+                showOtherCaregiverAlerts = true
+                render()
+            }
             return
         }
+        caregiverHeader(body, "Alertas compartidas", "Los avisos de tu círculo, en un lugar.")
+        if (locationAlerts.isNotEmpty()) {
+            v5.action(body, "Alertas de ubicación", R.drawable.v5_pin, fill = tz.cardColor, fg = accent) {
+                showOtherCaregiverAlerts = false
+                render()
+            }
+        }
+        val summary = v5.panel(body, tz.primaryFill, radius = 28, padding = 18, margin = 18)
+        val hero = v5.horizontal().apply { minimumHeight = dp(98) }
+        hero.addView(column().apply {
+            addView(v5.label("CENTRO DE ACTIVIDAD", v5.onBlueMuted))
+            gap(this, 12)
+            addView(v5.title("Atento a lo\nque importa.", 25, Color.WHITE))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { bottomMargin = dp(4) })
+        hero.addView(v5.badge(R.drawable.v5_bell, 0xFF2665BA.toInt(), Color.WHITE, 68, 51, 99),
+            LinearLayout.LayoutParams(dp(68), dp(68)).apply { marginEnd = dp(8) })
+        summary.addView(hero)
+
         val person = store.prefs.getString("caregiver_shared_name", "").orEmpty().ifBlank { "Persona protegida" }
-        val events = sharedEvents()
+        val events = if (linked) sharedEvents() else emptyList()
         val pending = pendingSharedAlerts(events)
-        val linkCopy = TzindaStatusCopy.link(true, person, store.prefs.getLong("caregiver_shared_fetched_at", 0L))
-        statusBanner(body, linkCopy)
-        if (pending.isNotEmpty()) {
-            statusBanner(
-                body,
-                TzindaCopy("${TzindaText.count(pending.size, "alerta")} sin confirmar", "Revisa el evento y registra el seguimiento que corresponde.", TzindaTone.CRITICAL),
-            )
+        val link = v5.panel(body, padding = 0, margin = 18)
+        v5.row(link, if (linked) person else "Sin persona vinculada",
+            when {
+                !linked -> "Conecta tu círculo para recibir avisos."
+                pending.isEmpty() -> "Sin alertas pendientes de seguimiento."
+                else -> TzindaText.count(pending.size, "alerta pendiente", "alertas pendientes")
+            }, R.drawable.v5_people, minHeight = 72, inset = 16, emphasis = true, badgeSize = 42, titleSize = 14, detailSize = 12)
+
+        v5.section(body, "Actividad reciente", titleSize = 19)
+        gap(body, 3)
+        val filter = activityFilter.coerceIn(0, 2)
+        v5.segments(body, listOf("Todos", "Detecciones", "Dispositivos"), filter) {
+            activityFilter = it
+            render()
         }
-        body.addView(button("Actualizar datos compartidos", false) {
-            refreshCaregiverSharedData(force = true, renderWhenDone = true)
-        })
-        tz.section(body, "Historial de alertas y actividad", TzindaText.count(events.size, "evento compartido", "eventos compartidos"))
-        if (events.isEmpty()) {
-            tz.emptyState(body, "Sin eventos compartidos", "La persona aún no ha compartido detecciones o alertas. No se muestran eventos de ejemplo.")
-            return
+        gap(body, 18)
+        val visible = if (filter == 0) events else events.filter {
+            val classification = it.optString("classification").lowercase(Locale.ROOT)
+            val device = classification.contains("device") || classification.contains("disconnect")
+            if (filter == 2) device else !device
+        }
+        if (visible.isEmpty()) {
+            val empty = v5.panel(body, radius = 28, padding = 0, margin = 25)
+            val content = v5.horizontal().apply {
+                gravity = Gravity.TOP
+                minimumHeight = tz.controlScale(109)
+                setPadding(dp(27), dp(18), dp(15), dp(12))
+            }
+            content.addView(v5.badge(R.drawable.v5_bell, tz.brandSoft, accent, 48, 34, 99))
+            content.addView(column().apply {
+                addView(v5.title(if (filter == 0) "Aún no hay avisos" else "Sin avisos en esta categoría", 19))
+                gap(this, 12)
+                addView(v5.text("Aquí aparecerán las alertas\nque te autoricen compartir.", 12, muted))
+            }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(16) })
+            empty.addView(content)
+            empty.addView(View(this).apply { setBackgroundColor(tz.outline) },
+                LinearLayout.LayoutParams(-1, dp(1)).apply { setMargins(dp(19), 0, dp(19), 0) })
+            val foot = v5.horizontal().apply { minimumHeight = dp(40); setPadding(dp(17), dp(4), dp(10), dp(4)) }
+            foot.addView(v5.icon(R.drawable.v5_sync, 25, muted))
+            foot.addView(v5.text("Se actualiza con conexión en ambos teléfonos.", 11, muted),
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(7) })
+            empty.addView(foot)
         }
         val latestFollowups = AlertFollowupPolicy.latestByEvent(sharedAlertFollowups())
         var lastDay = ""
-        events.forEach { event ->
+        visible.forEach { event ->
             val day = dayLabel(isoMillis(event.optString("occurred_at")))
             if (day != lastDay) {
                 lastDay = day
@@ -2892,40 +3280,68 @@ class MainActivity : ComponentActivity() {
                 recordAlertFollowup(event.optString("id"))
             })
         }
-        if (caregiverEventsHasMore) {
+        if (linked && events.isNotEmpty() && caregiverEventsHasMore) {
             body.addView(button(if (caregiverEventsPageInFlight) "Cargando eventos…" else "Cargar 100 eventos anteriores", false) {
                 loadMoreCaregiverEvents()
             }.apply { isEnabled = !caregiverEventsPageInFlight })
         } else if (events.size >= CAREGIVER_EVENT_CACHE_LIMIT) {
             body.addView(text("Se muestran hasta $CAREGIVER_EVENT_CACHE_LIMIT eventos en este teléfono.", 13, color = muted))
         }
+        v5.action(body, "Revisar vínculo", R.drawable.v5_link, tz.cardColor, accent, margin = 0, action = ::openSupervisionCenter)
+        if (linked) {
+            gap(body, 18)
+            addCaregiverSyncControls(body)
+        }
     }
     private fun caregiverPersonScreen(body: LinearLayout) {
         refreshCaregiverSharedData()
-        val remoteLinked = store.prefs.getString("caregiver_link_id", "").orEmpty().isNotBlank()
+        val remoteLinked = caregiverLinkAvailable()
         val person = store.prefs.getString("caregiver_shared_name", "").orEmpty().ifBlank { "Persona protegida" }
-        heading(body, "VINCULACIÓN", "Persona vinculada", "Administra el vínculo y consulta solo los datos autorizados.")
-        val status = card(body)
-        status.addView(statusPill(TzindaStatusCopy.link(
-            remoteLinked,
-            person,
-            store.prefs.getLong("caregiver_shared_fetched_at", 0L),
-        )))
-        status.addView(text(if (remoteLinked) "La persona conserva el control de sus medicamentos, cámara y ubicación. Puedes consultar datos compartidos y registrar sus tomas; no puedes editar medicamentos ni horarios." else "Aún no hay una persona conectada a este teléfono.", 14, color = muted).apply { setPadding(0, dp(8), 0, 0) })
-
-        val connect = card(body)
-        connect.addView(text("Vincular una persona", 20, true))
-        connect.addView(text("Escanea el QR o escribe el código de 8 caracteres generado en su teléfono.", 14, color = muted))
-        connect.addView(button("Escanear QR") { scanPairingQr("caregiver") })
-        val code = field(connect, "Código de vinculación", "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS, "caregiver_invite_code")
+        v5.header(body, "Vincular persona", "Un vínculo de confianza, paso a paso.", gapBelow = 26)
+        val intro = v5.panel(body, tz.brandSoft, radius = 28, padding = 18, margin = 22).apply { minimumHeight = dp(135) }
+        val introRow = v5.horizontal().apply { gravity = Gravity.TOP }
+        introRow.addView(v5.badge(R.drawable.v5_link, tz.cardColor, accent, 48, 27, 17))
+        introRow.addView(column().apply {
+            addView(v5.title("Conecta tu círculo", 20, accent))
+            gap(this, 9)
+            addView(v5.text("Pide el código a la persona\nque quieres acompañar.", 12, muted))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(17) })
+        intro.addView(introRow)
+        gap(intro, 18)
+        intro.addView(v5.text("Solo accederás a lo que decida compartir.", 11, muted))
+        body.addView(v5.title("Código de vinculación", 19))
+        gap(body, 23)
+        val code = v5.field(body, "Generado en el teléfono de la persona", "", "Escribe el código",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS, trailingIcon = R.drawable.v5_link,
+            tag = "caregiver_invite_code", marginBelow = 20).apply {
+            contentDescription = "Código de vinculación"
+            minimumHeight = tz.controlScale(58)
+            textSize = tz.textScale(16f)
+        }
         code.filters = arrayOf(android.text.InputFilter.LengthFilter(9))
         formatPairingCode(code)
-        val actionStatus = text("Código de un solo uso.", 14, color = muted).also { connect.addView(it) }
-        connect.addView(button("Continuar") {
+        v5.action(body, "Continuar", R.drawable.ic_chevron, margin = 36) {
             val invite = code.text.toString().filter(Char::isLetterOrDigit)
-            if (invite.length != 8) actionStatus.text = "Escribe los 8 caracteres del código."
-            else showPairingConfirmation("caregiver", invite)
-        })
+            if (invite.length != 8) {
+                code.error = "Escribe los 8 caracteres del código."
+                code.requestFocus()
+            } else showPairingConfirmation("caregiver", invite)
+        }
+        v5.section(body, "¿Dónde encuentro el código?", titleSize = 19)
+        val instructions = v5.panel(body, padding = 17, margin = 30).apply { minimumHeight = dp(124) }
+        listOf("Abre Tzinda en el otro teléfono.", "En Dispositivos, genera un código.").forEachIndexed { index, description ->
+            val step = v5.horizontal().apply { minimumHeight = dp(42) }
+            step.addView(v5.text((index + 1).toString(), 12, accent, bold = true).apply {
+                background = rounded(tz.brandSoft, 99)
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(dp(24), dp(24)))
+            step.addView(v5.text(description, 13), LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(13) })
+            instructions.addView(step)
+        }
+        v5.note(body, "El vínculo requiere la autorización\nde la persona protegida.", R.drawable.v5_lock, margin = 26)
+        val connect = v5.panel(body)
+        v5.action(connect, "Escanear QR", R.drawable.v5_link, margin = 0) { scanPairingQr("caregiver") }
+        if (remoteLinked) connect.addView(statusPill(TzindaStatusCopy.link(true, person, store.prefs.getLong("caregiver_shared_fetched_at", 0L))))
         if (remoteLinked) connect.addView(button("Desvincular persona", false) {
             AlertDialog.Builder(this).setTitle("Desvincular persona")
                 .setMessage("Se dejarán de mostrar sus eventos y mediciones compartidas. Ella conserva sus datos y su monitoreo local.")
@@ -3146,6 +3562,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun refreshPatientVitals() {
+        if (patientPulseValue == null && patientSpo2Value == null && patientVitalsStatus == null) return
         val now = SystemClock.elapsedRealtime()
         if (now - patientVitalsRefreshAt < 5_000L) return
         patientVitalsRefreshAt = now
@@ -3162,6 +3579,9 @@ class MainActivity : ComponentActivity() {
         patientSpo2Spark?.setPoints(history.mapNotNull { it.spo2Percent?.toFloat() })
         patientPulseValue?.text = number("bpm") ?: "—"
         patientSpo2Value?.text = number("spo2") ?: "—"
+        vitalTileUpdates.getOrNull(0)?.invoke(number("bpm") ?: "—")
+        vitalTileUpdates.getOrNull(1)?.invoke(number("spo2") ?: "—")
+        updateVitalsCaption?.invoke(hasReading)
         val statusCopy = TzindaStatusCopy.vitals(hasReading, capturedAt, arduinoConnectionAvailable())
         patientVitalsStatus?.text = "${statusCopy.title}. ${statusCopy.detail}"
     }
@@ -3189,6 +3609,177 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
+    private fun circleScreen(body: LinearLayout) {
+        if (!isCaregiver) refreshWearerLinkedData()
+        v5.header(body, "Tu círculo", "Cuidar se siente más cerca.", "TZINDA / CUIDADOS",
+            gapBelow = 37, eyebrowGap = 29, settings = ::openSettings)
+        val panel = v5.panel(body, v5.darkHero, radius = 28, padding = 16, margin = 27).apply {
+            setPadding(paddingLeft, paddingTop, paddingRight, tz.space(5))
+        }
+        val hero = v5.horizontal()
+        hero.addView(column().apply {
+            addView(v5.label("UN VÍNCULO\nDE CONFIANZA", 0xFF90DFC0.toInt()))
+            gap(this, 12)
+            addView(v5.title("Acompaña\na tu persona.", 27, Color.WHITE))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        hero.addView(v5.art(R.drawable.v5_art_circle), LinearLayout.LayoutParams(dp(101), dp(98)))
+        panel.addView(hero)
+        gap(panel, 22)
+        panel.addView(v5.text("Consulta solo lo que decida compartir.", 12, 0xFFDFE7E6.toInt()))
+        gap(panel, 15)
+        v5.action(panel, "Vincular persona", R.drawable.v5_people, Color.WHITE, Color.BLACK, margin = 0) {
+            if (isCaregiver) selectTab(TzindaTabs.CONTACTS) else showCreateCaregiverInvite(panel)
+        }
+
+        v5.section(body, "Dispositivos")
+        fun device(label: String, detail: String, icon: Int, fg: Int, open: () -> Unit): LinearLayout =
+            column().apply {
+                minimumHeight = dp(116)
+                background = rounded(tz.cardColor, 24)
+                setPadding(dp(15), dp(15), dp(15), dp(15))
+                addView(v5.icon(icon, 25, fg))
+                gap(this, 10)
+                addView(v5.text(label, 14, bold = true))
+                gap(this, 6)
+                addView(v5.text(detail, 12, muted))
+                contentDescription = "$label. $detail"
+                v5.activate(this, open)
+            }
+        v5.twoColumns(body,
+            device("Pulsera Tzinda", if (isCaregiver) "Sin conexión" else braceletConnectionLabel(), R.drawable.v5_watch, accent) {
+                if (isCaregiver) openDeviceLinkScreen() else selectTab(TzindaTabs.BRACELET_PAIR)
+            },
+            device("Cámara de estancia", "Detección local", R.drawable.v5_camera, tz.positive) {
+                if (isCaregiver) openDeviceLinkScreen() else openCameraScreen()
+            })
+        gap(body, 24)
+        v5.section(body, "Acompañamiento")
+        val support = v5.panel(body, padding = 0)
+        v5.row(support, "Alertas compartidas", "", R.drawable.v5_bell, tz.criticalSurface, tz.onCriticalSurface,
+            minHeight = 58, divider = true) { selectTab(TzindaTabs.ACTIVITY) }
+        v5.row(support, "Salud compartida", "", R.drawable.v5_pulse, tz.mint, tz.positive,
+            minHeight = 58, divider = true) { selectTab(MEDICATIONS_TAB) }
+        v5.row(support, "Supervisión y permisos", "", R.drawable.v5_supervision, minHeight = 58) {
+            openDeviceLinkScreen()
+        }
+        if (!isCaregiver) {
+            val additional = v5.panel(body, padding = 0, margin = 0)
+            v5.row(additional, "Zonas seguras", "Tus lugares de confianza", R.drawable.v5_pin, divider = true) {
+                selectTab(TzindaTabs.SAFE_ZONES)
+            }
+            v5.row(additional, "Contactos de confianza", "Tu red de ayuda", R.drawable.v5_people) { selectTab(TzindaTabs.CONTACTS) }
+        }
+    }
+
+    private fun braceletPair(body: LinearLayout) {
+        val bluetooth = store.braceletConnectionMode() == AppStore.BRACELET_MODE_BLE
+        val channel = if (bluetooth) "Bluetooth LE" else "Wi-Fi"
+        v5.header(body, "Vincular pulsera", "Conecta Tzinda por $channel.", gapBelow = 34)
+        val art = v5.panel(body, tz.brandSoft, radius = 28, padding = 17, margin = 30).apply { gravity = Gravity.CENTER_HORIZONTAL }
+        art.addView(v5.art(R.drawable.v5_art_pair), LinearLayout.LayoutParams(dp(219), dp(156)))
+        gap(art, 7)
+        art.addView(v5.text("Cerca de ti. Conectada contigo.", 16, accent, bold = true).apply { gravity = Gravity.CENTER })
+        v5.section(body, "Antes de conectar")
+        val steps = v5.timeline(body, margin = 26)
+        if (bluetooth) {
+            v5.row(steps, "Activa Bluetooth", "Comprueba los ajustes de tu teléfono.", R.drawable.v5_bluetooth, minHeight = 80, round = true) {
+                runCatching { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+                    .onFailure { toast("No se pudieron abrir los ajustes Bluetooth.") }
+            }
+            v5.row(steps, "Empareja tu pulsera", "Desde los ajustes Bluetooth del sistema.", R.drawable.v5_watch, minHeight = 80, round = true)
+        } else {
+            v5.row(steps, "Conecta a la red Wi-Fi", "Usa la misma red que la pulsera.", R.drawable.ic_wifi, minHeight = 80, round = true)
+            v5.row(steps, "Revisa la configuración", "Comprueba la dirección de tu dispositivo.", R.drawable.v5_settings, minHeight = 80,
+                round = true, action = ::openDeviceLinkScreen)
+        }
+        v5.row(steps, "Conecta desde Tzinda", "Busca la pulsera y consulta su estado.", R.drawable.v5_link, minHeight = 80, round = true)
+        v5.action(body, "Buscar pulsera", R.drawable.v5_bluetooth) {
+            selectTab(TzindaTabs.BRACELET_DIAGNOSTIC)
+            requestBraceletService(GuardianMonitorService.ACTION_BRACELET_CONNECT)
+        }
+        v5.action(body, "Ver diagnóstico", fill = tz.cardColor, fg = accent) { selectTab(TzindaTabs.BRACELET_DIAGNOSTIC) }
+    }
+
+    private fun braceletIllustration(body: LinearLayout): TextView {
+        val card = v5.panel(body, radius = 28, padding = 18, margin = 28)
+        val state = v5.text(braceletConnectionLabel(), 11, tz.warning, bold = true).apply {
+            background = rounded(tz.warningSurface, 99)
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+        }
+        card.addView(state, LinearLayout.LayoutParams(-2, -2))
+        gap(card, 7)
+        card.addView(v5.art(R.drawable.v5_art_disconnected), LinearLayout.LayoutParams(dp(183), dp(128)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
+        gap(card, 9)
+        card.addView(v5.text("Acerca tu pulsera al teléfono", 16, bold = true).apply { gravity = Gravity.CENTER })
+        return state
+    }
+
+    private fun braceletDiagnosis(body: LinearLayout) {
+        v5.header(body, "Diagnóstico de pulsera", "Conexión y validez de los datos recibidos.", gapBelow = 31, titleSize = 32)
+        val state = braceletIllustration(body)
+        v5.section(body, "Estado del dispositivo")
+        val entries = v5.panel(body, padding = 0, margin = 25)
+        val review = v5.text("Revisar", 12, tz.warning, bold = true)
+        val connectionTitle = if (store.braceletConnectionMode() == AppStore.BRACELET_MODE_BLE) "Vínculo Bluetooth" else "Vínculo Wi-Fi"
+        val connection = v5.row(entries, connectionTitle, braceletConnectionLabel(), R.drawable.v5_bluetooth,
+            tz.warningSurface, tz.warning, minHeight = 68, divider = true, trailing = review) {
+            openDeviceLinkScreen()
+        }
+        val label = (connection.getChildAt(1) as LinearLayout).let { it.getChildAt(it.childCount - 1) as TextView }
+        braceletStatusPillUpdaters.add {
+            val connected = arduinoConnectionAvailable()
+            state.text = braceletConnectionLabel()
+            state.setTextColor(if (connected) tz.positive else tz.warning)
+            state.background = rounded(if (connected) tz.mint else tz.warningSurface, 99)
+            label.text = state.text
+            connection.contentDescription = tz.safeDescription(connectionTitle, label.text.toString())
+            review.visibility = if (connected) View.GONE else View.VISIBLE
+        }
+        val snapshot = vitalSnapshot(false, JSONArray())
+        val hasReading = snapshot.pulse != "—" || snapshot.oxygen != "—"
+        val detail = if (hasReading) snapshot.pulse + " lpm · " + snapshot.oxygen + " %" else "Sin datos válidos"
+        v5.row(entries, "Pulso y SpO₂", detail, R.drawable.v5_pulse, tz.criticalSurface, tz.onCriticalSurface,
+            minHeight = 68, divider = true, trailing = if (hasReading) null else v5.text("—", 14, tz.onCriticalSurface, bold = true)) {
+            selectTab(MEDICATIONS_TAB)
+        }
+        val timestamp = snapshot.capturedAt.takeIf { it > 0L }?.let {
+            SimpleDateFormat("d MMM · HH:mm", Locale("es", "MX")).format(Date(it))
+        } ?: "No disponible"
+        v5.row(entries, "Última lectura", timestamp, R.drawable.v5_clock, minHeight = 68,
+            trailing = if (snapshot.capturedAt > 0L) null else v5.text("—", 14, accent, bold = true))
+        v5.note(body, "Calibración manual\nPropuesta visual.")
+        v5.action(body, "Buscar de nuevo", R.drawable.v5_bluetooth) { requestBraceletService(GuardianMonitorService.ACTION_BRACELET_RECONNECT) }
+        if (arduinoConnectionAvailable()) v5.action(body, "Desconectar pulsera", fill = tz.cardColor, fg = accent) {
+            requestBraceletService(GuardianMonitorService.ACTION_BRACELET_DISCONNECT)
+        }
+    }
+
+    private fun braceletNotice(body: LinearLayout) {
+        val event = selectedEvent
+        val time = event?.let(::eventTime) ?: "Sin hora disponible"
+        val day = event?.let { dayLabel(it.optLong("time")) }
+        val moment = listOfNotNull(day, time).joinToString(", ")
+        v5.header(body, "Pulsera desconectada", "Aviso de dispositivo · $moment", gapBelow = 29)
+        braceletIllustration(body).text = "Sin conexión"
+        v5.section(body, "Información del aviso")
+        val entries = v5.panel(body, padding = 0, margin = 29)
+        v5.row(entries, "Dispositivo", "Pulsera Tzinda", R.drawable.v5_watch, minHeight = 67, divider = true)
+        v5.row(entries, "Último intento", moment, R.drawable.v5_clock, minHeight = 67, divider = true)
+        val channel = event?.optString("message").orEmpty().let {
+            when {
+                it.contains("Bluetooth", ignoreCase = true) -> "Bluetooth LE"
+                it.contains("Wi-Fi", ignoreCase = true) -> "Wi-Fi"
+                else -> "No especificado"
+            }
+        }
+        v5.row(entries, "Canal de conexión", channel, R.drawable.v5_bluetooth, minHeight = 67)
+        v5.action(body, "Revisar la pulsera", R.drawable.v5_watch) { selectTab(TzindaTabs.BRACELET_DIAGNOSTIC) }
+        v5.action(body, "Volver a Alertas", fill = tz.cardColor, fg = accent) { resetNavigation(TzindaTabs.ACTIVITY) }
+    }
+
     private fun deviceLinkScreen(body: LinearLayout) {
         refreshRemoteDevicesIfStale()
         cameraRegistryRenderedRevision = store.prefs.getLong("camera_registry_revision", 0L)
@@ -3206,7 +3797,7 @@ class MainActivity : ComponentActivity() {
                 deviceCopy = ::sharedDeviceCopy,
                 lastSignal = ::deviceLastSignal,
                 onManageLink = { selectTab(2) },
-                onOpenCameraEvents = { activitySection = 1; selectTab(1) },
+                onOpenCameraEvents = { selectTab(1) },
                 onRefresh = { refreshCaregiverSharedData(force = true, renderWhenDone = true) },
                 onOpenSupervision = { openSupervisionCenter() },
             ).render(body)
@@ -3530,130 +4121,360 @@ class MainActivity : ComponentActivity() {
             }.onFailure { toast("No se pudo abrir el marcador del teléfono.", true) }
         })
     }
+
     private fun activity(body: LinearLayout) {
         if (isCameraRole) { cameraActivity(body); return }
-        if (isCaregiver) refreshCaregiverSharedData()
-        heading(
-            body,
-            if (isCaregiver) "SEGUIMIENTO" else "SUPERVISIÓN",
-            if (isCaregiver) "Actividad de la persona" else "Historial y registros",
-            if (isCaregiver) "Consulta los datos compartidos por la persona que acompañas."
-            else "Revisa tus signos vitales o consulta por separado el historial de avisos.",
-        )
-        tz.segmented(body, listOf("Signos vitales", "Notificaciones"), activitySection) {
-            activitySection = it; render()
+        if (isCaregiver) caregiverActivity(body) else alerts(body, history = false)
+    }
+
+    private enum class EventCategory { DEVICE, FALL, OTHER }
+
+    private fun eventCategory(event: JSONObject): EventCategory {
+        val message = event.optString("message").lowercase(Locale.ROOT)
+        return when {
+            message.contains("caída") || message.startsWith("alerta cancelada") -> EventCategory.FALL
+            listOf("pulsera", "bluetooth", "arduino", "conexión").any(message::contains) -> EventCategory.DEVICE
+            else -> EventCategory.OTHER
         }
-        if (activitySection == 0) {
-            vitalsUnavailableCard(body, caregiver = isCaregiver)
-            if (isCaregiver) {
-                addSharedLocationCard(body)
-                addSharedPhoneMotionCard(body)
-                addCaregiverSyncControls(body)
-            } else {
-                body.addView(text("Las lecturas se guardan en este teléfono y se comparten con tu cuidador cuando hay Internet. Solo se muestran lecturas válidas recibidas.", 14, color = muted).apply {
-                    setPadding(dp(4), dp(10), dp(4), dp(8))
+    }
+
+    private fun disconnectedEvent(event: JSONObject): Boolean {
+        val copy = event.optString("message").lowercase(Locale.ROOT)
+        return eventCategory(event) == EventCategory.DEVICE && (
+            "desconect" in copy || "sin conexión" in copy || "no se pudo conectar" in copy
+        )
+    }
+
+    private fun alerts(body: LinearLayout, history: Boolean) {
+        val eventCount = store.eventHistoryCount()
+        val offset = if (history) historyOffset else 0
+        val records = store.eventHistory(limit = 100, offset = offset)
+        if (history) {
+            v5.header(body, "Historial de alertas", "Cada evento, con su contexto.", gapBelow = 31)
+            val hero = v5.panel(body, tz.primaryFill, radius = 25)
+            val row = v5.horizontal()
+            row.addView(v5.icon(R.drawable.v5_clock, 39, Color.WHITE))
+            row.addView(column().apply {
+                addView(v5.text("Tu actividad en orden", 18, Color.WHITE, bold = true))
+                gap(this, 8)
+                addView(v5.text("Avisos, cancelaciones y dispositivos", 12, v5.onBlueMuted))
+            }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(14) })
+            hero.addView(row)
+        } else {
+            v5.header(body, "Alertas", "Tu actividad de protección, en orden.", settings = ::openSettings, gapBelow = 30)
+            val hero = v5.panel(body, tz.primaryFill, radius = 27, padding = 18, margin = 18)
+            val row = v5.horizontal().apply { minimumHeight = dp(92) }
+            row.addView(column().apply {
+                addView(v5.label("ACTIVIDAD DE PROTECCIÓN", v5.onBlueMuted))
+                val count = v5.horizontal()
+                count.addView(v5.text(eventCount.toString(), 52, Color.WHITE, bold = true))
+                count.addView(v5.text("eventos\nregistrados", 15, Color.WHITE).apply {
+                    setPadding(dp(10), 0, 0, 0)
                 })
-                refreshPatientVitals()
+                addView(count)
+                addView(v5.text(TzindaText.count(records.count { eventCategory(it) == EventCategory.DEVICE }, "dispositivo") + " · " +
+                    TzindaText.count(records.count { eventCategory(it) == EventCategory.FALL }, "detección", "detecciones"),
+                    11, v5.onBlueMuted))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(v5.art(R.drawable.v5_art_alert), LinearLayout.LayoutParams(dp(88), dp(94)).apply { marginEnd = dp(15) })
+            hero.addView(row)
+        }
+        val categories = if (history) listOf(null, EventCategory.FALL, EventCategory.DEVICE)
+            else listOf(null, EventCategory.DEVICE, EventCategory.FALL)
+        val filteredBy = categories.indexOf(EventCategory.entries.getOrNull(activityFilter - 1)).coerceAtLeast(0)
+        v5.segments(body, if (history) listOf("Todos", "Caídas", "Dispositivos") else listOf("Todo", "Dispositivos", "Caídas"),
+            filteredBy, blue = !history) { index ->
+            activityFilter = categories[index]?.let { it.ordinal + 1 } ?: 0
+            render()
+        }
+        gap(body, 16)
+        val visible = records.filter { candidate -> categories[filteredBy]?.let { it == eventCategory(candidate) } ?: true }
+            .let { if (history) it else it.take(2) }
+        if (visible.isEmpty()) {
+            val empty = v5.panel(body)
+            empty.addView(v5.title(if (records.isEmpty()) "Aún no hay alertas" else "Sin eventos en esta categoría", 18))
+            gap(empty, 8)
+            empty.addView(v5.text("Aquí aparecerán las detecciones y avisos que registre este teléfono.", 13, muted))
+        }
+        visible.groupBy { dayLabel(it.optLong("time")) }.forEach { (day, events) ->
+            body.addView(if (history) v5.title(day, 20) else v5.label(day.uppercase(Locale("es", "MX"))))
+            gap(body, 12)
+            if (history) {
+                val group = v5.panel(body, padding = 0, margin = 20)
+                events.forEachIndexed { index, event ->
+                    val disconnected = disconnectedEvent(event)
+                    val fall = eventCategory(event) == EventCategory.FALL
+                    val subtitle = event.optString("message")
+                    val title = eventTitle(event)
+                    val cancelled = title == "Alerta cancelada"
+                    v5.row(group, title, eventTime(event), when {
+                        disconnected -> R.drawable.v5_watch
+                        cancelled -> R.drawable.v5_check
+                        fall -> R.drawable.v5_warning
+                        else -> R.drawable.v5_bell
+                    }, fill = when {
+                        disconnected -> tz.warningSurface
+                        cancelled -> tz.mint
+                        fall -> tz.criticalSurface
+                        else -> tz.brandSoft
+                    }, fg = when {
+                        disconnected -> tz.warning
+                        cancelled -> tz.positive
+                        fall -> tz.onCriticalSurface
+                        else -> accent
+                    }, divider = index < events.lastIndex, minHeight = 78) { openAlertEvent(event) }
+                        .contentDescription = "$title. $subtitle"
+                }
+            } else {
+                events.forEach { event -> alertPreview(body, event) }
             }
-            return
         }
-        if (isCaregiver) { caregiverActivity(body); return }
-
-        val progress = card(body)
-        progress.addView(text("EMERGENCIA EN PROCESO", 12, true, tz.critical))
-        progress.addView(text("Avisos en curso", 21, true, ink))
-        emergencyProgressStatus = text("Solicitando SMS y llamadas a tus contactos.", 15, color = muted).also { progress.addView(it) }
-        progress.addView(text("El resultado depende de la SIM, la señal y la disponibilidad del teléfono. La app no puede confirmar que otra persona haya respondido.", 13, color = muted))
-        emergencyProgressCard = progress
-        progress.visibility = if (store.prefs.getString("dispatch_id", "").orEmpty().isNotBlank()) View.VISIBLE else View.GONE
-
-        val records = store.eventHistory(limit = activityHistoryLimit)
-        val summary = card(body)
-        val row = tz.twoColumns(summary)
-        tz.metricTile(row, "Eventos guardados", store.eventHistoryCount().toString(), "", "En este teléfono", TzindaDesign.Tone.INFO)
-        val state = tz.metricTile(
-            row,
-            "Monitoreo",
-            if (GuardianMonitorService.monitoring) "Activo" else "En pausa",
-            "",
-            if (GuardianMonitorService.monitoring) "Detectando caídas" else "Sin detección",
-            if (GuardianMonitorService.monitoring) TzindaDesign.Tone.SUCCESS else TzindaDesign.Tone.NEUTRAL,
-        )
-        (state.layoutParams as LinearLayout.LayoutParams).leftMargin = dp(8)
-
-        val filtersRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(2), 0, dp(2))
-        }
-        listOf("Todos", "Alertas", "Cámara", "Pulsera").forEachIndexed { index, label ->
-            tz.filterChip(filtersRow, label, activityFilter == index) { activityFilter = index; render() }
-        }
-        body.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(filtersRow)
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-
-        val filtered = records.filter { event ->
-            val message = event.optString("message").lowercase(Locale.ROOT)
-            when (activityFilter) {
-                1 -> listOf("caída", "alerta", "sms", "llamada", "cancelad").any { message.contains(it) }
-                2 -> listOf("cámara ia", "detector con cámara", "modelo local", "cámara").any { message.contains(it) }
-                3 -> listOf("arduino", "pulsera", "sensor", "servicio", "permiso").any { message.contains(it) }
-                else -> true
+        if (!history) {
+            val link = v5.panel(body, tz.brandSoft, padding = 0, margin = 0)
+            v5.row(link, "Historial completo", "Consulta todos tus eventos", R.drawable.v5_clock,
+                fill = tz.cardColor, minHeight = 76, titleColor = accent, emphasis = true) { selectTab(TzindaTabs.ALERT_HISTORY) }
+        } else {
+            if (historyOffset > 0) {
+                v5.action(body, "Eventos más recientes", fill = tz.cardColor, fg = accent) {
+                    historyOffset = (historyOffset - 100).coerceAtLeast(0)
+                    lastRenderKey = null
+                    render()
+                }
             }
-        }
-        tz.section(body, "Registro detallado", TzindaText.count(filtered.size, "evento"))
-        if (filtered.isEmpty()) {
-            tz.emptyState(
-                body,
-                if (records.isEmpty()) "Todo empieza aquí" else "No hay eventos en este filtro",
-                if (records.isEmpty()) "Cuando actives el monitoreo o envíes una alerta, aquí aparecerá el registro del proceso." else "Prueba otra categoría para ver más actividad.",
-                if (records.isNotEmpty()) "Ver todos" else null,
-                action = { activityFilter = 0; render() },
-            )
-        }
-        var lastDay = ""
-        filtered.forEach { event ->
-            val day = dayLabel(event.optLong("time"))
-            if (day != lastDay) {
-                lastDay = day
-                body.addView(tz.eyebrow(day).apply { setPadding(0, dp(12), 0, dp(2)) })
+            if (eventCount > historyOffset + 100) {
+                v5.action(body, "Cargar eventos anteriores", fill = tz.cardColor, fg = accent) {
+                    historyOffset += 100
+                    lastRenderKey = null
+                    render()
+                }
             }
-            val message = event.optString("message", "Evento de TzindaApp")
-            val date = Date(event.optLong("time"))
-            val alert = isPendingLocalAlert(event, records)
-            val cancelled = message.startsWith("Alerta cancelada")
-            val item = card(body)
-            item.addView(text(SimpleDateFormat("EEEE, d MMM · HH:mm", Locale("es", "MX")).format(date), 13, true, accent))
-            item.addView(text(message, 17, true))
-            item.addView(statusPill(TzindaCopy(
-                when {
-                    alert -> "Requiere atención"
-                    cancelled -> "Alerta cancelada"
-                    else -> "Registro informativo"
-                },
-                when {
-                    alert -> "Revisa si el aviso fue atendido o cancelado."
-                    cancelled -> "La persona confirmó que estaba bien; no se enviaron avisos nuevos."
-                    else -> "Guardado en este teléfono."
-                },
-                when {
-                    alert -> TzindaTone.WARNING
-                    cancelled -> TzindaTone.POSITIVE
-                    else -> TzindaTone.NEUTRAL
-                },
-            )))
+            v5.action(body, "Preparar un reporte", R.drawable.v5_report, tz.cardColor, accent) { selectTab(TzindaTabs.REPORT) }
         }
-        if (store.eventHistoryCount() > activityHistoryLimit) {
-            body.addView(button("Cargar 100 eventos anteriores", false) {
-                activityHistoryLimit = minOf(store.eventHistoryCount(), activityHistoryLimit + 100)
-                render()
+    }
+
+    private fun alertPreview(body: LinearLayout, event: JSONObject) {
+        val category = eventCategory(event)
+        val device = category == EventCategory.DEVICE
+        val fall = category == EventCategory.FALL
+        val fg = when { device -> tz.warning; fall -> tz.onCriticalSurface; else -> accent }
+        val tint = when { device -> tz.warningSurface; fall -> tz.criticalSurface; else -> tz.brandSoft }
+        val panel = v5.panel(body, padding = 14, margin = 16)
+        val row = v5.horizontal()
+        row.addView(v5.badge(when { device -> R.drawable.v5_watch; fall -> R.drawable.v5_motion; else -> R.drawable.v5_bell },
+            tint, fg, 61, 37, 18))
+        val description = column().apply {
+            addView(v5.label(when { device -> "DISPOSITIVO"; fall -> "DETECCIÓN"; else -> "ACTIVIDAD" }, fg))
+            gap(this, 6)
+            addView(v5.title(eventTitle(event), 17))
+            gap(this, 6)
+            val message = event.optString("message")
+            addView(v5.text(message.substringAfter('·', message).trim(), 12, muted).apply {
+                maxLines = 2
+                ellipsize = TextUtils.TruncateAt.END
+            })
+            gap(this, 7)
+            addView(v5.text(eventTime(event), 11, muted))
+        }
+        row.addView(description, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(15) })
+        val arrow = v5.badge(R.drawable.ic_chevron, tz.brandSoft, accent, 25, 12, 99)
+        row.addView(arrow, LinearLayout.LayoutParams(dp(25), dp(25)).apply { gravity = Gravity.TOP })
+        panel.addView(row)
+        panel.contentDescription = eventTitle(event) + ". " + eventTime(event)
+        v5.activate(panel) { openAlertEvent(event) }
+    }
+
+    private fun eventTitle(event: JSONObject): String {
+        val message = event.optString("message", "Evento de Tzinda")
+        return when {
+            disconnectedEvent(event) -> "Pulsera desconectada"
+            message.startsWith("Posible caída") || message.startsWith("Detección con cámara IA señaló") -> "Posible caída"
+            message.startsWith("Alerta cancelada") -> "Alerta cancelada"
+            else -> message.substringBefore('·').trim()
+        }
+    }
+
+    private fun eventTime(event: JSONObject): String = event.optLong("time").takeIf { it > 0L }?.let {
+        SimpleDateFormat("HH:mm", Locale("es", "MX")).format(Date(it))
+    } ?: "Hora no disponible"
+
+    private fun openAlertEvent(event: JSONObject) {
+        selectedEvent = event
+        selectTab(if (disconnectedEvent(event)) TzindaTabs.BRACELET_ALERT else TzindaTabs.ALERT_DETAILS)
+    }
+
+    private fun incidentEntries(incidentId: String): List<JSONObject> = store.eventHistoryForIncident(incidentId)
+
+    private fun alertDetails(body: LinearLayout) {
+        val event = selectedEvent
+        val subtitle = event?.let { dayLabel(it.optLong("time")) + " · " + eventTime(it) }.orEmpty()
+        v5.header(body, "Detalle de la alerta", subtitle, gapBelow = 31)
+        val summary = v5.panel(body, tz.criticalSurface, radius = 29, padding = 18, margin = 22).apply {
+            minimumHeight = tz.controlScale(151)
+            setPadding(paddingLeft, dp(20), paddingRight, paddingBottom)
+        }
+        val category = event?.let(::eventCategory)
+        val tag = v5.horizontal()
+        tag.addView(v5.icon(if (category == EventCategory.FALL) R.drawable.v5_warning else R.drawable.v5_bell, 22, tz.onCriticalSurface))
+        tag.addView(v5.label(if (category == EventCategory.FALL) "DETECCIÓN EXPERIMENTAL" else "REGISTRO DE ACTIVIDAD",
+            tz.onCriticalSurface), LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(14) })
+        summary.addView(tag)
+        gap(summary, 14)
+        summary.addView(v5.title(event?.let(::eventTitle) ?: "Registro no disponible", 27))
+        gap(summary, 14)
+        val eventInfo = v5.horizontal()
+        eventInfo.addView(v5.text(subtitle, 13, tz.onCriticalSurface), LinearLayout.LayoutParams(0, -2, 1f))
+        val source = event?.optString("message")?.takeIf { it.startsWith("Posible caída ·") }
+            ?.substringAfter('·')?.trim().orEmpty()
+        if (source.isNotEmpty()) {
+            eventInfo.addView(v5.text(source, 11, tz.onCriticalSurface, bold = true).apply {
+                setPadding(dp(11), dp(5), dp(11), dp(5))
+                maxWidth = dp(138)
             })
         }
-        body.addView(text("Los eventos locales describen lo que ocurrió en este teléfono. La recepción de un SMS o una llamada no se confirma desde la app.", 13, color = muted).apply {
-            setPadding(dp(4), dp(12), dp(4), dp(4))
-        })
+        summary.addView(eventInfo)
+        v5.section(body, "Recorrido del evento")
+        val entries = event?.let { incidentEntries(it.optString("incident")).ifEmpty { listOf(it) } }.orEmpty().asReversed()
+        if (entries.isNotEmpty()) {
+            val timeline = v5.timeline(body, margin = 25)
+            entries.forEach { item ->
+                val message = item.optString("message")
+                val res = when {
+                    "Llamada" in message -> R.drawable.v5_phone
+                    "SMS" in message -> R.drawable.v5_report
+                    else -> R.drawable.v5_motion
+                }
+                val title = when {
+                    message.startsWith("Llamada solicitada") -> "Intento de llamada"
+                    message.startsWith("SMS solicitado") -> "Aviso solicitado"
+                    else -> eventTitle(item)
+                }
+                val context = if (title == message.substringBefore('·').trim()) message.substringAfter('·', "").trim() else message
+                val detail = if (context.isBlank()) eventTime(item) else eventTime(item) + " · " + context
+                v5.row(timeline, title, detail, res, tz.criticalSurface, tz.onCriticalSurface, minHeight = 78, round = true)
+            }
+        }
+        val location = v5.panel(body, padding = 0)
+        v5.row(location, "Ubicación del evento", "No hay un dato de ubicación vinculado a este evento.",
+            R.drawable.v5_pin, minHeight = 76)
+        v5.action(body, "Abrir historial", R.drawable.v5_clock) { selectTab(TzindaTabs.ALERT_HISTORY) }
     }
+
+    private fun helpRequest(body: LinearLayout) {
+        val entries = incidentEntries(helpIncident)
+        helpSignature = entries.map { it.optString("message") }
+        v5.header(body, "Solicitud de ayuda", "Consulta el estado de los avisos solicitados.", gapBelow = 33)
+        val summary = v5.panel(body, tz.criticalSurface, radius = 27, padding = 18, margin = 33)
+        val row = v5.horizontal()
+        row.addView(column().apply {
+            addView(v5.label("AVISOS SOLICITADOS", tz.onCriticalSurface))
+            gap(this, 13)
+            addView(v5.title("Tu red está en el proceso de aviso.", 25))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(v5.badge(R.drawable.v5_phone, tz.cardColor, tz.onCriticalSurface, 57, 35, 99),
+            LinearLayout.LayoutParams(dp(57), dp(57)).apply { gravity = Gravity.TOP })
+        summary.addView(row)
+        gap(summary, 14)
+        summary.addView(v5.text("La recepción aún no está confirmada.", 12, tz.onCriticalSurface))
+        v5.section(body, "Estado de los intentos")
+        val attempts = v5.timeline(body, margin = 22)
+        helpDispatchActive = store.prefs.getString("dispatch_id", "").orEmpty() == helpIncident && helpIncident.isNotBlank()
+        fun attempt(label: String, requested: String, icon: Int) {
+            val result = helpSignature.firstOrNull { it.startsWith(requested) }
+            val title = when {
+                result != null -> requested
+                helpDispatchActive -> "$label en preparación"
+                else -> "$label sin confirmación de solicitud"
+            }
+            v5.row(attempts, title, result ?: if (helpDispatchActive) "Esperando registro" else "Consulta el registro del evento",
+                icon, tz.criticalSurface, tz.onCriticalSurface, minHeight = 80, round = true)
+        }
+        attempt("SMS", "SMS solicitado", R.drawable.v5_report)
+        attempt("Llamada", "Llamada solicitada", R.drawable.v5_phone)
+        v5.row(attempts, "Respuesta pendiente", "Sin confirmación disponible", R.drawable.v5_clock,
+            tz.criticalSurface, tz.onCriticalSurface, minHeight = 80, round = true)
+        v5.note(body, "La entrega depende de cobertura,\npermisos y operador.")
+        gap(body, 8)
+        v5.action(body, "Ver registro del evento", R.drawable.v5_motion) {
+            val event = entries.lastOrNull()
+            if (event != null) openAlertEvent(event) else selectTab(TzindaTabs.ALERT_HISTORY)
+        }
+        v5.action(body, "Volver a Inicio", fill = tz.cardColor, fg = accent) { resetNavigation(TzindaTabs.HOME) }
+    }
+
+    private fun readingScreen(body: LinearLayout, pulse: Boolean) {
+        val title = if (pulse) "Frecuencia cardíaca" else "Oxígeno en sangre"
+        val icon = if (pulse) R.drawable.v5_pulse else R.drawable.v5_oxygen
+        val tone = if (pulse) tz.criticalSurface else tz.brandSoft
+        val ink = if (pulse) tz.onCriticalSurface else accent
+        val history = store.telemetry.recentArduinoVitalHistory(30).reversed()
+        val samples = history.mapNotNull {
+            val value = if (pulse) it.heartRateBpm else it.spo2Percent
+            value?.takeIf(Double::isFinite)?.let { sample -> it.capturedAtMillis to sample }
+        }
+        val measurements = store.telemetry.latestArduinoVitals()
+        val key = if (pulse) "bpm" else "spo2"
+        val stamp = measurements.optLong(if (pulse) "heart_rate_at" else "spo2_at")
+        val value = measurements.optDouble(key).takeIf { it.isFinite() && it > 0 }
+        val latest = if (value != null && stamp > 0L) stamp to value else samples.lastOrNull()
+        val chartSamples = if (samples.isEmpty() && latest != null) listOf(latest) else samples
+        val unit = if (pulse) "lpm" else "SpO₂ · %"
+        val time = latest?.first?.let { SimpleDateFormat("d MMM · HH:mm", Locale("es", "MX")).format(Date(it)) }
+            ?: "Sin registros disponibles"
+        v5.header(body, title, "Lecturas válidas recibidas de tu pulsera.", gapBelow = 30)
+        val graph = v5.panel(body, radius = 29, padding = 18, margin = 25)
+        val header = v5.horizontal()
+        header.addView(v5.badge(icon, tone, ink, 45, 26))
+        header.addView(column().apply {
+            addView(v5.label("ÚLTIMA LECTURA"))
+            gap(this, 7)
+            addView(v5.text(time, 12, muted))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(16) })
+        graph.addView(header)
+        gap(graph, 18)
+        val metric = v5.horizontal().apply { gravity = Gravity.BOTTOM }
+        metric.addView(v5.text(latest?.second?.let(::vitalNumber) ?: "—", 38, bold = true))
+        metric.addView(v5.text(unit, 14, muted).apply { setPadding(dp(19), 0, 0, dp(6)) })
+        graph.addView(metric)
+        gap(graph, 47)
+        val plot = FrameLayout(this)
+        val grid = column()
+        repeat(3) { index ->
+            grid.addView(View(this).apply { setBackgroundColor(outline) }, LinearLayout.LayoutParams(-1, dp(1)))
+            if (index < 2) gap(grid, 40)
+        }
+        plot.addView(grid, FrameLayout.LayoutParams(-1, -2))
+        if (chartSamples.isEmpty()) {
+            plot.addView(v5.badge(icon, tone, ink, 54, 32, 99), FrameLayout.LayoutParams(dp(54), dp(54), Gravity.CENTER))
+        } else {
+            val spark = vitalSparkline(chartSamples.map { it.second.toFloat() }, tz.cardColor).apply {
+                lineColor = ink
+                contentDescription = "$title. " + chartSamples.size + " lecturas."
+            }
+            plot.addView(spark, FrameLayout.LayoutParams(-1, -1))
+        }
+        graph.addView(plot, LinearLayout.LayoutParams(-1, dp(84)))
+        if (chartSamples.isEmpty()) {
+            gap(graph, 4)
+            graph.addView(v5.text("Aún no hay lecturas", 14, muted).apply { gravity = Gravity.CENTER })
+        }
+        gap(graph, 30)
+        val ticks = v5.horizontal()
+        ticks.addView(v5.text(if (chartSamples.isEmpty()) "00:00" else "Primera lectura", 10, muted))
+        v5.push(ticks)
+        if (chartSamples.isEmpty()) {
+            ticks.addView(v5.text("12:00", 10, muted))
+            v5.push(ticks)
+        }
+        ticks.addView(v5.text(if (chartSamples.isEmpty()) "23:59" else "Más reciente", 10, muted))
+        graph.addView(ticks)
+        v5.section(body, "Sobre los datos")
+        val source = v5.panel(body, padding = 0, margin = 20)
+        v5.row(source, "Fuente", "Pulsera Tzinda", R.drawable.v5_watch, minHeight = 67, divider = true)
+        v5.row(source, "Última actualización", time, R.drawable.v5_clock, minHeight = 67)
+        v5.note(body, "Las lecturas aparecerán cuando\nla pulsera envíe datos válidos.", margin = 21)
+        v5.action(body, "Revisar conexión", R.drawable.v5_bluetooth) { selectTab(TzindaTabs.BRACELET_PAIR) }
+    }
+
     private fun cameraActivity(body: LinearLayout) {
         heading(body, "EVENTOS DE CÁMARA", "Historial de detecciones", "Cada detección se guarda primero en este teléfono y se sincroniza con la persona protegida cuando hay Internet.")
         val linked = store.prefs.getString("paired_camera_device_id", "").orEmpty().isNotBlank()
@@ -3691,8 +4512,115 @@ class MainActivity : ComponentActivity() {
             })
         }
     }
+
     private fun contacts(body: LinearLayout) {
         if (isCaregiver) { caregiverPersonScreen(body); return }
+        if (editingContacts) { contactManagement(body); return }
+        v5.header(body, "Tu red de confianza", "Elige a quién avisar si necesitas ayuda.", gapBelow = 30)
+        val contacts = store.contacts()
+        val recipients = store.recipients()
+        if (recipients.isEmpty()) {
+            val empty = v5.panel(body, radius = 27, padding = 20, margin = 24).apply { gravity = Gravity.CENTER_HORIZONTAL }
+            gap(empty, 6)
+            empty.addView(v5.art(R.drawable.v5_art_contacts), LinearLayout.LayoutParams(dp(202), dp(124)))
+            gap(empty, 19)
+            empty.addView(v5.title("Cuidarse también\nes estar conectado.", 25).apply { gravity = Gravity.CENTER })
+            gap(empty, 16)
+            empty.addView(v5.text("Aún no has añadido contactos.", 13, muted).apply { gravity = Gravity.CENTER })
+        } else {
+            val list = v5.panel(body, padding = 0, margin = 24)
+            recipients.forEachIndexed { i, item ->
+                val normalized = PhoneNumbers.key(item.phone)
+                val row = contacts.indexOfFirst { PhoneNumbers.key(it.phone) == normalized }
+                v5.row(list, item.name.ifBlank { "Contacto " + (i + 1) }, item.phone, R.drawable.v5_people,
+                    divider = i < recipients.lastIndex) {
+                    if (row >= 0) startContact(row) else openProfile()
+                }
+            }
+        }
+        v5.section(body, "Cómo funciona tu red")
+        val protocol = v5.panel(body, padding = 0, margin = 27)
+        v5.row(protocol, "Avisos por SMS", "Se solicitan a tus contactos registrados", R.drawable.v5_report, minHeight = 69, divider = true)
+        v5.row(protocol, "Intentos de llamada", "Según permisos, cobertura y operador", R.drawable.v5_phone, tz.mint, tz.positive, minHeight = 69)
+        v5.note(body, "Confirma con cada contacto\nque puede ayudarte.", R.drawable.v5_people)
+        gap(body, 13)
+        if (contacts.size < 5) v5.action(body, "Añadir contacto", R.drawable.ic_plus) { startContact(-1) }
+        if (recipients.isEmpty()) gap(body, 86)
+        v5.action(body, "Administrar contactos", fill = tz.cardColor, fg = accent) {
+            editingContacts = true
+            lastRenderKey = null
+            render()
+        }
+    }
+
+    private fun startContact(index: Int) {
+        contactIndex = index
+        contactNameDraft = store.contacts().getOrNull(index)?.name.orEmpty()
+        contactPhoneDraft = store.contacts().getOrNull(index)?.phone.orEmpty()
+        selectTab(TzindaTabs.ADD_CONTACT)
+    }
+
+    private fun addContactScreen(body: LinearLayout) {
+        val editing = contactIndex >= 0
+        v5.header(body, if (editing) "Editar contacto" else "Añadir contacto",
+            "Una persona que forma parte de tu red.", gapBelow = 31)
+        val hint = v5.panel(body, tz.brandSoft, radius = 27, padding = 20, margin = 25).apply {
+            minimumHeight = dp(118)
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val row = v5.horizontal()
+        row.addView(v5.badge(R.drawable.v5_people, tz.cardColor, accent, 69, 44, 99))
+        row.addView(column().apply {
+            addView(v5.title("Tu persona de confianza", 17))
+            gap(this, 7)
+            addView(v5.text("Podrá recibir tus avisos\ncuando necesites ayuda.", 12, muted))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(17) })
+        hint.addView(row)
+        v5.section(body, "Información de contacto")
+        gap(body, 9)
+        val name = v5.field(body, "Nombre", contactNameDraft, "Nombre del contacto", trailingIcon = R.drawable.v5_people, tag = "contact_name")
+        gap(body, 7)
+        val phone = v5.field(body, "Teléfono con código de país", contactPhoneDraft, "Ej. +52 55 0000 0000",
+            InputType.TYPE_CLASS_PHONE, trailingIcon = R.drawable.v5_phone, tag = "contact_phone")
+        contactNameInput = name
+        contactPhoneInput = phone
+        gap(body, 13)
+        v5.note(body, "Revisa que el número corresponda\na la persona que quieres añadir.")
+        gap(body, 20)
+        v5.action(body, if (editing) "Guardar cambios" else "Guardar contacto", R.drawable.v5_check) {
+            val normalized = PhoneNumbers.normalize(phone.text.toString())
+            if (normalized == null) {
+                phone.error = "Escribe un teléfono válido."
+                phone.requestFocus()
+                return@action
+            }
+            val contacts = store.contacts().toMutableList()
+            if (contacts.indices.any { it != contactIndex && PhoneNumbers.key(contacts[it].phone) == PhoneNumbers.key(normalized) }) {
+                phone.error = "Este teléfono ya está en tu red."
+                return@action
+            }
+            if ((editing && contactIndex !in contacts.indices) || (!editing && contacts.size >= 5)) {
+                toast("La lista de contactos cambió. Vuelve a abrirla.", true)
+                return@action
+            }
+            val contact = TrustedContact(name.text.toString(), normalized)
+            if (editing) contacts[contactIndex] = contact else contacts.add(contact)
+            runCatching { store.saveContacts(contacts) }.onSuccess {
+                contactDraft = it
+                editingContacts = false
+                updateServiceIfActive()
+                navigateBack()
+            }.onFailure { toast(it.message ?: "No se pudo guardar el contacto.", true) }
+        }
+        v5.action(body, "Cancelar", fill = tz.cardColor, fg = accent) { navigateBack() }
+        if (editing) v5.action(body, "Llamar", R.drawable.v5_phone, tz.cardColor, accent) {
+            val savedNumber = store.contacts().getOrNull(contactIndex)?.phone ?: return@action
+            runCatching { startActivity(Intent(Intent.ACTION_DIAL, Uri.fromParts("tel", savedNumber, null))) }
+                .onFailure { toast("No se pudo abrir el marcador.") }
+        }
+    }
+
+    private fun contactManagement(body: LinearLayout) {
         val recipients = store.recipients()
         val emergencyKey = PhoneNumbers.normalize(store.profile().text("emergencyContactPhone"))?.let { PhoneNumbers.key(it) }
         heading(body, "TU RED DE APOYO", "Contactos de confianza", "Estas personas reciben los SMS y las llamadas de alerta.")
@@ -3782,12 +4710,216 @@ class MainActivity : ComponentActivity() {
             contactDraft = null; editingContacts = false; hideKeyboard(); render()
         })
     }
+
     private fun settings(body: LinearLayout) {
+        v5.header(body, "Ajustes", gapBelow = 10)
+        val role = TzindaNavigationPolicy.roleLabel(TzindaNavigationPolicy.role(store.role()))
+        val account = v5.panel(body, padding = 0, margin = 16)
+        v5.row(account, role, "Modo de este teléfono", R.drawable.v5_shield,
+            tz.primaryFill, Color.WHITE, minHeight = 91, round = true, inset = 18, emphasis = true, badgeSize = 48,
+            trailing = v5.badge(R.drawable.ic_chevron, tz.brandSoft, accent, 32, 14, 99)) { selectTab(ROLE_TAB) }
+
+        v5.section(body, "Tu experiencia")
+        val experience = v5.panel(body, padding = 15, margin = 16).apply {
+            setPadding(paddingLeft, paddingTop, paddingRight, tz.space(13))
+        }
+        v5.toggleRow(experience, "Modo simplificado", "Texto y controles más grandes", R.drawable.v5_access,
+            simpleMode, height = 50, offColor = if (dark) outline else 0xFFC3CAD0.toInt()) { value ->
+            store.prefs.edit().putBoolean("simple_accessibility", value).apply()
+            render()
+        }
+        gap(experience, 5)
+        tz.horizontalRule(experience)
+        gap(experience, 11)
+        experience.addView(v5.text("Apariencia", 13, muted))
+        gap(experience, 16)
+        val modes = v5.horizontal()
+        listOf("Claro" to R.drawable.v5_sun, "Oscuro" to R.drawable.v5_moon).forEachIndexed { index, (title, icon) ->
+            val selectedDark = index == 1
+            val selected = selectedDark == dark
+            val control = tz.button(title, primary = selected, action = {
+                if (!selected) {
+                    store.prefs.edit().putBoolean("dark_mode", selectedDark).apply()
+                    recreate()
+                }
+            }, iconRes = icon).apply {
+                minHeight = dp(40)
+                minimumHeight = dp(40)
+                textSize = tz.textScale(13f)
+                setPadding(dp(12), dp(4), dp(12), dp(4))
+                background = rounded(if (selected) tz.primaryFill else tz.softSurface, 13)
+                setTextColor(if (selected) Color.WHITE else ink)
+                compoundDrawables[0]?.setTint(if (selected) Color.WHITE else muted)
+                isSelected = selected
+            }
+            modes.addView(control, LinearLayout.LayoutParams(0, -2, 1f).apply { if (index == 0) marginEnd = dp(11) })
+        }
+        experience.addView(modes)
+
+        v5.section(body, "Cuidado y protección")
+        val protection = v5.panel(body, padding = 0, margin = 18)
+        v5.row(protection, if (isCameraRole) "Vincular cámara" else if (isCaregiver) "Persona vinculada" else "Contactos de confianza",
+            if (isCameraRole) "Detecciones autorizadas" else "Tu red de confianza", R.drawable.v5_people,
+            tz.mint, tz.positive, minHeight = 59, divider = !isCameraRole) { selectTab(TzindaTabs.CONTACTS) }
+        if (!isCameraRole) v5.row(protection, "Práctica de alerta", "Propuesta visual", R.drawable.v5_play, minHeight = 59) {
+            selectTab(TzindaTabs.ALERT_PRACTICE)
+        }
+
+        v5.section(body, "Tus datos")
+        if (!isCaregiver && !isCameraRole) {
+            val data = v5.panel(body, padding = 0)
+            v5.row(data, "Ficha de emergencia", "Propuesta visual", R.drawable.v5_lock, minHeight = 59, divider = true) {
+                selectTab(TzindaTabs.EMERGENCY_CARD)
+            }
+            v5.row(data, "Exportar reporte", "Propuesta visual", R.drawable.v5_report,
+                fill = tz.softSurface, fg = tz.warning, minHeight = 59) { selectTab(TzindaTabs.REPORT) }
+        }
+        gap(body, 24)
+        val advanced = v5.panel(body, padding = 0)
+        v5.row(advanced, "Mi perfil", "Tu información", R.drawable.v5_people, divider = true, action = ::openProfile)
+        v5.row(advanced, "Ajustes avanzados", "Cuenta, permisos y dispositivos", R.drawable.v5_settings) {
+            selectTab(TzindaTabs.ADVANCED_SETTINGS)
+        }
+    }
+
+
+    private fun emergencyCard(body: LinearLayout) {
+        v5.header(body, "Ficha de emergencia", "Información que tú decides incluir.", gapBelow = 31)
+        val profile = store.profile()
+        val name = profile.text("fullName").trim()
+        val emergencyPhone = profile.text("emergencyContactPhone").trim()
+        val medications = medicationRepository.database.medications(medicationRepository.currentOwnerScope())
+            .filter { it.isActive && !it.isDeleted }
+        val allergies = listOf(profile.text("allergies"), profile.text("medicalConditions")).filter(String::isNotBlank)
+        val firstAid = v5.panel(body, tz.primaryFill, radius = 28, padding = 19, margin = 28)
+        val row = v5.horizontal()
+        row.addView(column().apply {
+            addView(v5.label("TU INFORMACIÓN ES TUYA", v5.onBlueMuted))
+            gap(this, 14)
+            addView(v5.title("Lo esencial,\na la mano.", 28, Color.WHITE))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(v5.badge(R.drawable.v5_shield, 0x33FFFFFF, Color.WHITE, 53, 33, 99),
+            LinearLayout.LayoutParams(dp(53), dp(53)).apply { gravity = Gravity.TOP })
+        firstAid.addView(row)
+        gap(firstAid, 15)
+        firstAid.addView(v5.text(if (name.isBlank()) "Ficha voluntaria · Sin configurar" else "Ficha voluntaria", 12, v5.onBlueMuted))
+        gap(firstAid, 4)
+        v5.section(body, "Datos de emergencia")
+        val fields = v5.panel(body, padding = 0, margin = 22)
+        v5.row(fields, "Identificación", name.ifBlank { "Por configurar" }, R.drawable.v5_people,
+            minHeight = 68, divider = true, action = ::openProfile)
+        v5.row(fields, "Alergias y condiciones", allergies.joinToString(" · ").ifBlank { "Por configurar" }, R.drawable.v5_warning,
+            tz.warningSurface, tz.warning, minHeight = 68, divider = true, action = ::openProfile)
+        v5.row(fields, "Medicamentos informados", if (medications.isEmpty()) "Por configurar" else TzindaText.count(medications.size, "medicamento"),
+            R.drawable.v5_pill, tz.mint, tz.positive, minHeight = 68, divider = true, action = ::openMedicationScreen)
+        v5.row(fields, "Contacto de emergencia", profile.text("emergencyContactName").ifBlank {
+            emergencyPhone.ifBlank { "Seleccionar un contacto" }
+        }, R.drawable.v5_phone, minHeight = 68, action = ::openProfile)
+        v5.note(body, "Elige qué datos incluir\ny con quién compartirlos.", R.drawable.v5_lock, margin = 25)
+        v5.action(body, "Volver a Ajustes", fill = tz.cardColor, fg = accent) { navigateBack() }
+    }
+
+    private fun prepareReport(body: LinearLayout) {
+        v5.header(body, "Preparar reporte", "Elige el periodo y qué quieres incluir.", gapBelow = 31)
+        val intro = v5.panel(body, tz.brandSoft, radius = 28, padding = 17, margin = 22)
+        val summary = v5.horizontal()
+        summary.addView(v5.art(R.drawable.v5_art_report),
+            LinearLayout.LayoutParams(dp(72), dp(90)).apply { marginStart = dp(5); marginEnd = dp(20) })
+        summary.addView(column().apply {
+            addView(v5.title("Un resumen a tu medida", 18, accent))
+            gap(this, 12)
+            addView(v5.text("Revisa el contenido antes\nde decidir con quién compartirlo.", 12, muted))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        intro.addView(summary)
+        body.addView(v5.text("Periodo", 13, muted))
+        gap(body, 10)
+        var reportDays = 0
+        val period = v5.action(body, "Seleccionar rango", R.drawable.v5_clock, tz.cardColor, accent,
+            margin = 29, trailingIcon = true) {}.apply { setTextColor(muted) }
+        period.setOnClickListener {
+            val choices = intArrayOf(7, 14, 30, 90)
+            AlertDialog.Builder(this).setTitle("Periodo del reporte")
+                .setItems(choices.map { "Últimos $it días" }.toTypedArray()) { _, i ->
+                    reportDays = choices[i]
+                    period.text = "Últimos $reportDays días"
+                    period.contentDescription = period.text
+                }.show()
+        }
+        v5.section(body, "Contenido del reporte")
+        fun option(title: String, detail: String, icon: Int, active: Boolean): CompoundButton {
+            val tile = v5.panel(body, padding = 12, margin = 12, radius = 22)
+            return v5.toggleRow(tile, title, detail, icon, active, height = 52)
+        }
+        val readings = option("Lecturas disponibles", "Frecuencia cardíaca y SpO₂", R.drawable.v5_pulse, true)
+        val alerts = option("Historial de alertas", "Eventos y estados técnicos", R.drawable.v5_bell, true)
+        val medicines = option("Registro de medicamentos", "Solo los registros que elijas", R.drawable.v5_pill, false)
+        gap(body, 10)
+        v5.note(body, "Puedes revisar el contenido\nantes de compartir.", R.drawable.v5_lock, margin = 25)
+        v5.action(body, "Previsualizar reporte", R.drawable.v5_report) {
+            if (reportDays == 0) {
+                period.performClick()
+                return@action
+            }
+            if (!readings.isChecked && !alerts.isChecked && !medicines.isChecked) {
+                toast("Selecciona al menos un contenido.")
+                return@action
+            }
+            val preview = reportPreview(reportDays, readings.isChecked, alerts.isChecked, medicines.isChecked)
+            AlertDialog.Builder(this).setTitle("Vista previa del reporte").setMessage(preview)
+                .setNegativeButton("Volver", null)
+                .setPositiveButton("Compartir") { _, _ ->
+                    val share = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, preview)
+                    startActivity(Intent.createChooser(share, "Compartir reporte de Tzinda"))
+                }.show()
+        }
+    }
+
+    private fun reportPreview(days: Int, readings: Boolean, alerts: Boolean, medicines: Boolean): String {
+        val end = System.currentTimeMillis()
+        val start = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -days) }.timeInMillis
+        val format = SimpleDateFormat("d MMM yyyy · HH:mm", Locale("es", "MX"))
+        return buildString {
+            appendLine("Tzinda · Reporte")
+            appendLine(format.format(Date(start)) + " — " + format.format(Date(end)))
+            if (readings) {
+                appendLine("\nLecturas disponibles")
+                val rows = store.telemetry.recentArduinoVitalHistory(300).filter { it.capturedAtMillis in start..end }
+                if (rows.isEmpty()) appendLine("Sin lecturas en el periodo.")
+                rows.forEach { reading ->
+                    val values = listOfNotNull(reading.heartRateBpm?.let { vitalNumber(it) + " lpm" },
+                        reading.spo2Percent?.let { vitalNumber(it) + " % SpO₂" })
+                    appendLine(format.format(Date(reading.capturedAtMillis)) + " · " + values.joinToString(" · "))
+                }
+                if (rows.size == 300) appendLine("Se muestran las 300 lecturas más recientes.")
+            }
+            if (alerts) {
+                appendLine("\nHistorial de alertas")
+                val rows = store.eventHistory(300).filter { it.optLong("time") in start..end }
+                if (rows.isEmpty()) appendLine("Sin eventos en el periodo.")
+                rows.forEach { appendLine(format.format(Date(it.optLong("time"))) + " · " + it.optString("message")) }
+                if (rows.size == 300) appendLine("Se muestran los 300 eventos más recientes.")
+            }
+            if (medicines) {
+                appendLine("\nRegistro de medicamentos")
+                val owner = medicationRepository.currentOwnerScope()
+                val medications = medicationRepository.database.medications(owner).associateBy { it.id }
+                val rows = medicationRepository.database.intakes(owner, start, end)
+                if (rows.isEmpty()) appendLine("Sin tomas en el periodo.")
+                rows.forEach {
+                    appendLine(format.format(Date(it.scheduledAtMillis)) + " · " +
+                        (medications[it.medicationId]?.name ?: "Medicamento") + " · " + TzindaStatusCopy.medicationStatus(it.status))
+                }
+                if (rows.size == 300) appendLine("Se muestran hasta 300 tomas del periodo.")
+            }
+        }.trimEnd()
+    }
+
+    private fun advancedSettings(body: LinearLayout) {
         heading(
             body,
             when { isCaregiver -> "CUIDADOR O FAMILIAR"; isCameraRole -> "DISPOSITIVO DE CÁMARA"; else -> "PERSONA PROTEGIDA" },
-            "Ajustes",
-            "Accesibilidad, privacidad, dispositivos y cuenta en un solo lugar.",
+            "Ajustes avanzados",
+            "Gestiona tu cuenta, los permisos y las conexiones.",
         )
         val accountProfile = store.profile()
         val accountName = accountProfile.text("fullName").trim()
@@ -3800,6 +4932,20 @@ class MainActivity : ComponentActivity() {
             leadingText = initials(accountName.ifBlank { "Tz" }),
             showDivider = false,
         ) { openProfile() }
+        v5.action(body, "Volver a ver el tutorial", R.drawable.v5_info, tz.cardColor, accent) {
+            tutorialReturnTab = tab
+            tutorialStep = 0
+            render()
+        }
+        if (!isCameraRole) {
+            val care = v5.panel(body, padding = 0)
+            v5.row(care, "Zonas seguras", "Tus lugares de confianza", R.drawable.v5_pin, divider = true) {
+                selectTab(TzindaTabs.SAFE_ZONES)
+            }
+            v5.row(care, "Ajustes de cuidados", "Ubicación y permisos", R.drawable.v5_settings) {
+                selectTab(TzindaTabs.CARE_SETTINGS)
+            }
+        }
         val accessibility = card(body)
         tz.cardHeader(accessibility, R.drawable.ic_profile, "Accesibilidad", "Texto, controles y densidad", TzindaDesign.Tone.INFO)
         accessibility.addView(text("Aumenta texto y controles, y reduce la densidad de las pantallas. Se guarda en este teléfono.", 14, color = muted))
@@ -3851,7 +4997,7 @@ class MainActivity : ComponentActivity() {
             tz.cardHeader(cameraCard, R.drawable.ic_camera, "Cámara de este teléfono", "Activación bajo demanda", TzindaDesign.Tone.BRAND)
             cameraCard.addView(statusPill(TzindaStatusCopy.cameraLink(linked, store.prefs.getString("paired_camera_name", "").orEmpty())))
             cameraCard.addView(button(if (linked) "Abrir cámara" else "Vincular cámara", false) { if (linked) openCameraScreen() else selectTab(2) })
-            cameraCard.addView(button("Ver eventos de cámara", false) { activitySection = 1; selectTab(1) })
+            cameraCard.addView(button("Ver eventos de cámara", false) { selectTab(1) })
         }
 
         val deviceAccess = card(body)
@@ -3994,95 +5140,144 @@ class MainActivity : ComponentActivity() {
      * The camera opens as a full-screen viewfinder: the live image fills the window and the
      * controls float above it. The previous 16:9 card wasted most of a phone screen.
      */
+
     private fun cameraFullscreen(stage: FrameLayout) {
-        stage.setBackgroundColor(Color.BLACK)
+        stage.setBackgroundColor(v5.cameraSurface)
         val preview = PreviewView(this).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FILL_CENTER
             contentDescription = "Vista en vivo de la cámara"
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
+        cameraPreviewView?.previewStreamState?.removeObservers(this)
         cameraPreviewView = preview
         stage.addView(preview, FrameLayout.LayoutParams(-1, -1))
+        cameraRoomBackdrop = v5.art(R.drawable.v5_art_room).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+        }.also { stage.addView(it, FrameLayout.LayoutParams(-1, -1)) }
         val overlay = PoseOverlayView(this)
         cameraOverlayView = overlay
         stage.addView(overlay, FrameLayout.LayoutParams(-1, -1))
-        cameraPlaceholder = text("La cámara está apagada\nToca “Iniciar cámara” para usarla", 15, true, Color.WHITE).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(20), dp(14), dp(20), dp(14))
-            background = rounded(tz.colorWithAlpha(Color.BLACK, .58f), 18)
+        val guide = object : View(this) {
+            private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xAFFFFFFF.toInt()
+                strokeWidth = dp(2).toFloat()
+            }
+            override fun onDraw(canvas: Canvas) {
+                val edge = dp(29).toFloat()
+                val length = dp(38).toFloat()
+                val top = height * .27f
+                val bottom = height * .62f
+                fun corner(x: Float, y: Float, xDir: Int, yDir: Int) {
+                    canvas.drawLine(x, y, x + xDir * length, y, paint)
+                    canvas.drawLine(x, y, x, y + yDir * length, paint)
+                }
+                corner(edge, top, 1, 1)
+                corner(width - edge, top, -1, 1)
+                corner(edge, bottom, 1, -1)
+                corner(width - edge, bottom, -1, -1)
+            }
         }
-        stage.addView(cameraPlaceholder, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
-
-        val topRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        stage.addView(guide, FrameLayout.LayoutParams(-1, -1))
+        val shade = View(this).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xA0173038.toInt(), Color.TRANSPARENT, Color.TRANSPARENT, 0xD0183139.toInt()))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        val close = TextView(this).apply {
-            text = "‹  Cerrar"
-            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, tz.textScale(15f))
-            typeface = tz.boldTypeface()
-            setTextColor(tz.royalBlue)
-            gravity = Gravity.CENTER
-            background = rounded(Color.WHITE, 24)
-            minHeight = dp(48)
-            setPadding(dp(16), dp(10), dp(16), dp(10))
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { selectTab(cameraReturnTab.coerceIn(0, 3)) }
-            contentDescription = "Cerrar cámara y volver"
-        }
-        topRow.addView(close, LinearLayout.LayoutParams(-2, -2))
-        topRow.addView(Space(this), LinearLayout.LayoutParams(0, 1, 1f))
-        cameraStatusTitle = text("Cámara apagada", 13, true, Color.WHITE).apply {
-            gravity = Gravity.CENTER
-            background = rounded(tz.colorWithAlpha(Color.BLACK, .62f), 24)
-            minHeight = dp(40)
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            contentDescription = "Estado de la cámara: apagada"
-        }
-        topRow.addView(cameraStatusTitle, LinearLayout.LayoutParams(-2, -2))
-        stage.addView(topRow, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
-            leftMargin = dp(14); rightMargin = dp(14); topMargin = dp(14)
+        stage.addView(shade, FrameLayout.LayoutParams(-1, -1))
+        val top = v5.horizontal()
+        top.addView(v5.iconButton(R.drawable.ic_close, "Cerrar cámara y volver", Color.WHITE, Color.BLACK, 18) { navigateBack() },
+            LinearLayout.LayoutParams(dp(44), dp(44)))
+        val labels = column().apply { gravity = Gravity.CENTER }
+        labels.addView(v5.text("Cámara de estancia", 16, Color.WHITE, bold = true).apply { gravity = Gravity.CENTER })
+        gap(labels, 5)
+        cameraPlaceholder = v5.text("Vista de ejemplo", 11, 0xFFE0E9E9.toInt()).apply { gravity = Gravity.CENTER }
+            .also(labels::addView)
+        top.addView(labels, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
+        cameraStateBadge = v5.text("•  En pausa", 11, Color.BLACK, bold = true).apply {
+            background = rounded(Color.WHITE, 99)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+        }.also { top.addView(it) }
+        stage.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
+            leftMargin = dp(20); rightMargin = dp(20); topMargin = dp(55)
         })
 
-        // Controls float over the lower part of the image so the viewfinder stays full-bleed.
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(16), dp(18), dp(16))
-            background = rounded(tz.colorWithAlpha(tz.royalBlue, .90f), 22)
+        val bottom = column()
+        val status = v5.panel(bottom, v5.cameraSurface, radius = 25, padding = 16, margin = 18)
+        val statusRow = v5.horizontal()
+        statusRow.addView(View(this).apply { background = rounded(v5.teal, 99) }, LinearLayout.LayoutParams(dp(8), dp(8)))
+        statusRow.addView(column().apply {
+            cameraStatusTitle = v5.text("Detección en pausa", 16, Color.WHITE, bold = true).also(::addView)
+            gap(this, 7)
+            cameraStatusDetail = v5.text("Vista de ejemplo. Inicia el procesamiento local.", 12, 0xFFDCE6E6.toInt()).also(::addView)
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(15) })
+        status.addView(statusRow)
+        val panel = v5.panel(bottom, v5.cameraSurface, radius = 26, padding = 8, margin = 12)
+        val controls = v5.horizontal()
+        fun control(label: String, res: Int, size: Int, fill: Int, color: Int, action: () -> Unit): LinearLayout {
+            val button = column().apply { gravity = Gravity.CENTER; contentDescription = label }
+            val frame = FrameLayout(this).apply { background = rounded(fill, 99) }
+            val glyph = v5.icon(res, if (size > 50) 34 else 27, color)
+            frame.addView(glyph, FrameLayout.LayoutParams(glyph.layoutParams.width, glyph.layoutParams.height, Gravity.CENTER))
+            button.addView(frame, LinearLayout.LayoutParams(dp(size), dp(size)))
+            gap(button, 6)
+            val copy = v5.text(label, 11, Color.WHITE, bold = size > 50)
+            button.addView(copy)
+            if (size > 50) {
+                cameraActionButton = copy
+                cameraControlIcon = glyph
+                button.tag = "camera_ai_toggle"
+            }
+            controls.addView(button, LinearLayout.LayoutParams(0, -2, 1f))
+            v5.activate(button, action)
+            return button
         }
-        cameraStatusDetail = text(
-            "Activa la cámara solo cuando quieras. La imagen se procesa en este teléfono.",
-            14, color = Color.argb(226, 255, 255, 255),
-        ).also { panel.addView(it) }
-        cameraActionButton = button("Iniciar cámara") { toggleCameraDetection() }.apply {
-            tag = "camera_ai_toggle"
-            minHeight = dp(56)
-        }.also { panel.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) }) }
-        panel.addView(text(
-            "No se guarda ni se comparte el video. La detección puede equivocarse y no sustituye la pulsera ni los servicios de emergencia.",
-            12, color = Color.argb(196, 255, 255, 255),
-        ).apply { setPadding(0, dp(10), 0, 0) })
-        if (isCameraRole) {
-            val linked = store.prefs.getString("paired_camera_device_id", "").orEmpty().isNotBlank()
-            panel.addView(button(if (linked) "Ver eventos de cámara" else "Vincular esta cámara", false) {
-                if (linked) { activitySection = 1; selectTab(1) } else selectTab(2)
-            }.apply {
-                // Secondary action on the dark viewfinder needs explicit light text.
-                setTextColor(Color.WHITE)
-                background = tz.rounded(Color.TRANSPARENT, 16).apply { setStroke(dp(1), Color.argb(120, 255, 255, 255)) }
-            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        control("Historial", R.drawable.v5_clock, 50, 0xFF304B54.toInt(), Color.WHITE) { selectTab(TzindaTabs.ACTIVITY) }
+        val toggle = control("Iniciar", R.drawable.v5_play, 66, tz.primaryFill, Color.WHITE) { toggleCameraDetection() }
+        control("Detener", R.drawable.v5_stop, 50, Color.WHITE, tz.imperialRed) {
+            stopCameraDetection()
+            navigateBack()
         }
-        stage.addView(panel, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
-            leftMargin = dp(14); rightMargin = dp(14); bottomMargin = dp(18)
+        panel.addView(controls)
+        bottom.addView(v5.text("Los fotogramas se procesan en este teléfono.", 11, Color.WHITE).apply {
+            gravity = Gravity.CENTER
         })
-
+        stage.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
+            marginStart = dp(20); marginEnd = dp(20); bottomMargin = dp(29)
+        })
+        preview.previewStreamState.observe(this) { state ->
+            if (cameraPreviewView === preview) {
+                val streaming = cameraRequested && state == PreviewView.StreamState.STREAMING
+                if (streaming && cameraStatusTitle?.text == "Preparando cámara") {
+                    cameraStatusTitle?.text = "Detección activa"
+                    cameraStatusDetail?.text = "Procesando la imagen en este teléfono."
+                }
+                updateCameraControls(active = streaming, preparing = cameraRequested && !streaming)
+            }
+        }
         if (!packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) {
             cameraStatusTitle?.text = "Cámara no disponible"
-            cameraActionButton?.isEnabled = false
-            cameraStatusDetail?.text = "Este dispositivo no tiene una cámara compatible. Puedes seguir usando la pulsera y los avisos locales."
+            cameraStatusDetail?.text = "Este dispositivo no tiene una cámara compatible."
+            toggle.isEnabled = false
         }
     }
+
+    private fun updateCameraControls(active: Boolean, preparing: Boolean = false) {
+        cameraRoomBackdrop?.visibility = if (active) View.GONE else View.VISIBLE
+        cameraPreviewView?.importantForAccessibility =
+            if (active) View.IMPORTANT_FOR_ACCESSIBILITY_AUTO else View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        cameraPlaceholder?.text = if (active) "Vista en vivo" else "Vista de ejemplo"
+        cameraStateBadge?.text = when {
+            active -> "•  Activa"
+            preparing -> "Preparando"
+            else -> "•  En pausa"
+        }
+        val pause = active || preparing
+        cameraActionButton?.text = if (pause) "Pausar" else "Iniciar"
+        (cameraActionButton?.parent as? View)?.contentDescription = if (pause) "Pausar detección" else "Iniciar detección"
+        cameraControlIcon?.setImageResource(if (pause) R.drawable.v5_pause else R.drawable.v5_play)
+    }
+
     private fun toggleCameraDetection() {
         if (cameraRequested) {
             stopCameraDetection()
@@ -4112,9 +5307,9 @@ class MainActivity : ComponentActivity() {
             store.event("Cámara de apoyo iniciada")
             cameraSessionLogged = true
         }
-        cameraPlaceholder?.visibility = View.GONE
-        cameraActionButton?.text = "Detener cámara"
-        cameraStatusDetail?.text = "Procesando la imagen en este teléfono. No se guarda ni se comparte."
+        cameraStatusTitle?.text = "Preparando cámara"
+        cameraStatusDetail?.text = "Iniciando el procesamiento local."
+        updateCameraControls(active = false, preparing = true)
         if (cameraController == null) {
             val preview = cameraPreviewView ?: return
             val overlay = cameraOverlayView ?: return
@@ -4122,20 +5317,27 @@ class MainActivity : ComponentActivity() {
                 activity = this,
                 previewView = preview,
                 overlay = overlay,
-                onStatus = { title, _, running ->
+                onStatus = { title, detail, running ->
+                    val failure = title == "Cámara no disponible" || title == "No se pudo iniciar"
+                    if (failure) cameraRequested = false
+                    val streaming = running && cameraRequested &&
+                        preview.previewStreamState.value == PreviewView.StreamState.STREAMING
+                    val preparing = running && cameraRequested && !streaming
+                    val detected = title.contains("caída", ignoreCase = true)
                     cameraStatusTitle?.text = when {
-                        title.contains("caída", ignoreCase = true) -> "Posible caída"
-                        title.contains("prepar", ignoreCase = true) -> "Preparando cámara"
-                        running -> "Cámara activa"
+                        detected -> "Posible caída"
+                        failure -> title
+                        streaming -> "Detección activa"
+                        preparing -> "Preparando cámara"
                         else -> "Cámara detenida"
                     }
-                    cameraPlaceholder?.visibility = if (running) View.GONE else View.VISIBLE
-                    cameraActionButton?.text = if (cameraRequested) "Detener cámara" else "Iniciar cámara"
-                    cameraStatusTitle?.contentDescription = "Estado de la cámara: ${cameraStatusTitle?.text?.toString().orEmpty()}"
+                    updateCameraControls(active = streaming, preparing = preparing)
                     cameraStatusDetail?.text = when {
-                        title.contains("caída", ignoreCase = true) -> "Se registró un evento para revisión. La cámara se detuvo."
-                        running -> "Procesando la imagen en este teléfono. No se guarda ni se comparte."
-                        else -> "La cámara se activa solo cuando la abres. La imagen se procesa en este teléfono y no se guarda ni se comparte."
+                        detected -> "Se registró un evento para revisión. La cámara se detuvo."
+                        failure -> detail
+                        streaming -> "Procesando la imagen en este teléfono."
+                        preparing -> "Iniciando el procesamiento local."
+                        else -> "La cámara se activa solo cuando la abres."
                     }
                 },
                 onFall = {
@@ -4143,10 +5345,9 @@ class MainActivity : ComponentActivity() {
                         cameraFallHandled = true
                         cameraRequested = false
                         cameraController?.stop()
-                        cameraPlaceholder?.visibility = View.VISIBLE
+                        updateCameraControls(active = false)
                         cameraStatusTitle?.text = "Posible caída detectada"
                         cameraStatusDetail?.text = "La detección puede equivocarse. Revisa a la persona y mantén la pulsera puesta."
-                        cameraActionButton?.text = "Iniciar cámara"
                         store.event("Detección con cámara IA señaló una posible caída")
                         if (isCameraRole) {
                             CameraAlertNotifier.show(applicationContext)
@@ -4163,8 +5364,7 @@ class MainActivity : ComponentActivity() {
         cameraRequested = false
         cameraSessionLogged = false
         cameraController?.stop()
-        cameraPlaceholder?.visibility = View.VISIBLE
-        cameraActionButton?.text = "Iniciar cámara"
+        updateCameraControls(active = false)
         if (cameraStatusTitle?.text?.toString() != "Posible caída detectada") {
             cameraStatusTitle?.text = "Cámara detenida"
             cameraStatusTitle?.contentDescription = "Estado de la cámara: detenida"
@@ -4177,12 +5377,16 @@ class MainActivity : ComponentActivity() {
         cameraSessionLogged = false
         cameraController?.shutdown()
         cameraController = null
+        cameraPreviewView?.previewStreamState?.removeObservers(this)
         cameraPreviewView = null
+        cameraRoomBackdrop = null
         cameraOverlayView = null
         cameraPlaceholder = null
         cameraStatusTitle = null
         cameraStatusDetail = null
         cameraActionButton = null
+        cameraStateBadge = null
+        cameraControlIcon = null
     }
     private fun saveContactForm() {
         try {
@@ -4379,7 +5583,11 @@ class MainActivity : ComponentActivity() {
     }
     private fun prepareAlert(action: String) {
         if (smsRequestInFlight || resumeAlertSetup) return
-        if (store.recipients().isEmpty()) { toast("Guarda al menos un contacto de confianza o de emergencia.", true); editingContacts = true; selectTab(2); return }
+        if (store.recipients().isEmpty()) {
+            toast("Guarda al menos un contacto de confianza o de emergencia.", true)
+            startContact(-1)
+            return
+        }
         pendingAction = action
         if (smsPermissionState() != SmsPermissionPolicy.State.GRANTED) { requestSmsPermission(REQUEST_ALERT_SMS); return }
         requestRemainingAlertPermissions(action)
@@ -4558,13 +5766,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_STARTUP_PERMISSIONS) {
+            startupPermissionInFlight = false
+            recordSmsPermissionResult(permissions, grantResults)
+            if (!isFinishing && !isDestroyed) render()
+            return
+        }
         if (requestCode == REQUEST_SMS_ONLY || requestCode == REQUEST_ALERT_SMS) {
             smsRequestInFlight = false
-            // Android can return empty arrays when a request is interrupted. This is not a denial.
-            if (grantResults.isNotEmpty() && permissions.contains(Manifest.permission.SEND_SMS)) {
-                smsRequestedInSession = !has(Manifest.permission.SEND_SMS)
-                runCatching { File(noBackupFilesDir, "sms-permission-requested").writeText(if (smsRequestedInSession) "requested" else "granted") }
-            }
+            recordSmsPermissionResult(permissions, grantResults)
             refreshPermissionUi()
             if (!has(Manifest.permission.SEND_SMS)) {
                 pendingAction = null
@@ -4575,6 +5785,13 @@ class MainActivity : ComponentActivity() {
         }
         if (isFinishing || isDestroyed) return
         when (requestCode) {
+            REQUEST_MAP_LOCATION -> {
+                val callback = mapLocationPermission
+                mapLocationPermission = null
+                if (callback != null) {
+                    if (hasLocation()) requestMapFix(callback) else callback(null)
+                }
+            }
             REQUEST_MEDICATION_SCAN -> {
                 val callback = medicationScanCallback
                 medicationScanCallback = null
@@ -4631,6 +5848,15 @@ class MainActivity : ComponentActivity() {
             REQUEST_CALLS -> if (!has(Manifest.permission.CALL_PHONE)) toast("Las llamadas no están autorizadas. El envío por SMS sigue disponible.", true)
         }
     }
+    private fun recordSmsPermissionResult(permissions: Array<String>, grantResults: IntArray) {
+        // An interrupted Android request can return empty arrays without a decision.
+        if (grantResults.isEmpty() || Manifest.permission.SEND_SMS !in permissions) return
+        smsRequestedInSession = !has(Manifest.permission.SEND_SMS)
+        runCatching {
+            File(noBackupFilesDir, "sms-permission-requested").writeText(if (smsRequestedInSession) "requested" else "granted")
+        }
+    }
+
     private fun smsPermissionState(): SmsPermissionPolicy.State {
         val feature = if (Build.VERSION.SDK_INT >= 33) PackageManager.FEATURE_TELEPHONY_MESSAGING else PackageManager.FEATURE_TELEPHONY
         return SmsPermissionPolicy.evaluate(
@@ -4833,7 +6059,7 @@ class MainActivity : ComponentActivity() {
 
     /** Day bucket label used to group the alert feed like the design (HOY / AYER / date). */
     private fun dayLabel(millis: Long): String {
-        if (millis <= 0L) return "SIN FECHA"
+        if (millis <= 0L) return "Sin fecha"
         val cal = java.util.Calendar.getInstance().apply { timeInMillis = millis }
         val today = java.util.Calendar.getInstance()
         val yesterday = java.util.Calendar.getInstance().apply { add(java.util.Calendar.DAY_OF_YEAR, -1) }
@@ -4841,8 +6067,8 @@ class MainActivity : ComponentActivity() {
             a.get(java.util.Calendar.YEAR) == cal.get(java.util.Calendar.YEAR) &&
                 a.get(java.util.Calendar.DAY_OF_YEAR) == cal.get(java.util.Calendar.DAY_OF_YEAR)
         return when {
-            sameDay(today) -> "HOY"
-            sameDay(yesterday) -> "AYER"
+            sameDay(today) -> "Hoy"
+            sameDay(yesterday) -> "Ayer"
             else -> SimpleDateFormat("EEEE d 'de' MMMM", Locale("es", "MX")).format(Date(millis))
                 .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale("es", "MX")) else it.toString() }
         }
@@ -4868,19 +6094,40 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun toast(message: String, long: Boolean = false) { Toast.makeText(this, message, if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show() }
+
     private inner class CountdownRing(context: Context) : View(context) {
         var progress: Float = 1f
             set(value) { field = value.coerceIn(0f, 1f); invalidate() }
-        private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeWidth = dp(13).toFloat(); color = softSurface }
-        private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeWidth = dp(13).toFloat(); color = critical }
+
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val bounds = RectF()
+
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val side = minOf(width, height).toFloat()
-            val inset = dp(10).toFloat() + track.strokeWidth / 2f
-            bounds.set((width - side) / 2f + inset, (height - side) / 2f + inset, (width + side) / 2f - inset, (height + side) / 2f - inset)
-            canvas.drawArc(bounds, -90f, 360f, false, track)
-            canvas.drawArc(bounds, -90f, 360f * progress, false, arc)
+            val x = width / 2f
+            val y = height / 2f
+            val radius = minOf(dp(80).toFloat(), y - dp(8), x - dp(8))
+            if (radius <= 0f) return
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.color = 0x24FFFFFF
+            canvas.drawCircle(x, y, radius + dp(38), paint)
+            canvas.drawCircle(x, y, radius + dp(63), paint)
+            bounds.set(x - radius, y - radius, x + radius, y + radius)
+            paint.strokeWidth = dp(7).toFloat()
+            paint.color = 0x42FFFFFF
+            canvas.drawOval(bounds, paint)
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.color = Color.WHITE
+            val angle = 360f * progress
+            canvas.drawArc(bounds, -90f, angle, false, paint)
+            val radians = Math.toRadians((angle - 90).toDouble())
+            val dotX = x + radius * kotlin.math.cos(radians).toFloat()
+            val dotY = y + radius * kotlin.math.sin(radians).toFloat()
+            paint.style = Paint.Style.FILL
+            canvas.drawCircle(dotX, dotY, dp(7).toFloat(), paint)
+            paint.color = tz.imperialRed
+            canvas.drawCircle(dotX, dotY, dp(4).toFloat(), paint)
         }
     }
     companion object {
@@ -4910,6 +6157,9 @@ class MainActivity : ComponentActivity() {
         private const val REQUEST_ALERT_SMS = 107
         private const val REQUEST_BRACELET_BLE = 111
         private const val REQUEST_MEDICATION_SCAN = 113
+        private const val REQUEST_MAP_LOCATION = 114
+        private const val REQUEST_STARTUP_PERMISSIONS = 115
         private const val REQUEST_CAMERA_NOTIFICATIONS = 112
+        private const val STARTUP_PERMISSIONS_FINISHED = "finished"
     }
 }

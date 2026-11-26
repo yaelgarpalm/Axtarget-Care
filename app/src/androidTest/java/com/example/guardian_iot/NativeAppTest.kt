@@ -72,30 +72,41 @@ class NativeAppTest {
         store.saveContacts(listOf(TrustedContact("Nuevo", "5500003344")))
         assertEquals("Nuevo", AppStore(context).contacts().first().name)
     }
-    @Test fun saveFromNativeSettingsAndReopenActivity() {
+    @Test fun saveFromTrustNetworkAndReopenActivity() {
         val store = AppStore(context)
         store.prefs.edit().putBoolean("contacts_offered", true).commit()
         store.saveRole(AppStore.ROLE_WEARER)
         activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         instrumentation.runOnMainSync {
+            clickByDescription("Ajustes")
+            clickByDescription("Contactos de confianza. Tu red de confianza")
+            clickByDescription("Añadir contacto")
             val root = activity!!.findViewById<android.view.View>(R.id.root)
-            root.findViewWithTag<Button>("open_contacts").performClick()
-            root.findViewWithTag<Button>("edit_contacts").performClick()
-            root.findViewWithTag<EditText>("contact_name_0").setText("Contacto prueba")
-            root.findViewWithTag<EditText>("contact_phone_0").setText("+52 55 0000 1122")
-            root.findViewWithTag<Button>("save_contacts").performClick()
+            root.findViewWithTag<EditText>("contact_name").setText("Contacto prueba")
+            root.findViewWithTag<EditText>("contact_phone").setText("+52 55 0000 1122")
+            clickByDescription("Guardar contacto")
         }
         assertEquals(listOf(TrustedContact("Contacto prueba", "+525500001122")), store.contacts())
         instrumentation.runOnMainSync { activity!!.finish() }
         instrumentation.waitForIdleSync()
         activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         instrumentation.runOnMainSync {
+            clickByDescription("Ajustes")
+            clickByDescription("Contactos de confianza. Tu red de confianza")
+            clickByDescription("Contacto prueba. +525500001122")
             val root = activity!!.findViewById<android.view.View>(R.id.root)
-            root.findViewWithTag<Button>("open_contacts").performClick()
-            root.findViewWithTag<Button>("edit_contacts").performClick()
-            assertEquals("+525500001122", root.findViewWithTag<EditText>("contact_phone_0").text.toString())
+            assertEquals("+525500001122", root.findViewWithTag<EditText>("contact_phone").text.toString())
         }
     }
+
+    private fun clickByDescription(label: String) {
+        val root = activity!!.findViewById<android.view.View>(R.id.root)
+        val candidate = arrayListOf<android.view.View>()
+        root.findViewsWithText(candidate, label, android.view.View.FIND_VIEWS_WITH_CONTENT_DESCRIPTION)
+        val match = candidate.single { it.contentDescription?.toString() == label && it.isShown && it.isClickable }
+        assertTrue(match.performClick())
+    }
+
     @Test fun caregiverDeviceLinksViewRendersSharedDevicesAndRoutesCameraEvents() {
         activity = instrumentation.startActivitySync(
             Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -131,37 +142,33 @@ class NativeAppTest {
         }
         assertEquals("La acción debe delegarse al host", 1, cameraEventsOpened)
     }
-    @Test fun wearerAlertsTabDefaultsToNotificationsAndKeepsVitalsOption() {
+    @Test fun wearerCanOpenAlertHistoryAndHealthFromPrimaryNavigation() {
         AppStore(context).saveRole(AppStore.ROLE_WEARER)
         activity = instrumentation.startActivitySync(
             Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         ) as MainActivity
         instrumentation.runOnMainSync {
             activity!!.findViewById<Button>(R.id.nav_activity).performClick()
-            val root = activity!!.findViewById<android.view.View>(R.id.root)
-            fun descriptions(view: android.view.View): List<String> = buildList {
-                view.contentDescription?.toString()?.let(::add)
-                if (view is android.view.ViewGroup) {
-                    for (index in 0 until view.childCount) addAll(descriptions(view.getChildAt(index)))
-                }
-            }
-            fun exactButton(label: String): Button {
-                val matches = ArrayList<android.view.View>()
-                root.findViewsWithText(matches, label, android.view.View.FIND_VIEWS_WITH_TEXT)
-                return matches.filterIsInstance<Button>().single { it.text.toString() == label }
-            }
-            assertTrue("Alertas debe abrir Notificaciones por defecto", descriptions(root).contains("Notificaciones, seleccionado"))
-            exactButton("Signos vitales").performClick()
-            assertTrue("La opción de signos vitales debe seguir disponible", descriptions(root).contains("Signos vitales, seleccionado"))
-            exactButton("Notificaciones").performClick()
-            assertTrue("La subpestaña elegida debe conservarse al cambiar", descriptions(root).contains("Notificaciones, seleccionado"))
+            assertTrue(activity!!.findViewById<Button>(R.id.nav_activity).isSelected)
+            clickByDescription("Historial completo. Consulta todos tus eventos")
+            val back = activity!!.findViewById<android.view.View>(R.id.app_bar_back)
+            assertEquals("Volver a Alertas", back.contentDescription)
+            back.performClick()
+            activity!!.findViewById<Button>(R.id.nav_health).performClick()
+            assertTrue(activity!!.findViewById<Button>(R.id.nav_health).isSelected)
+            clickByDescription("Medicamentos. Tomas y recordatorios")
+            assertEquals("Volver a Salud", back.contentDescription)
         }
     }
-    @Test fun roleSelectionButtonsHaveDistinctAccessibleNames() {
+
+    @Test fun firstRunKeepsAccessibleRolesAndResumesTheCaregiverTutorial() {
         activity = instrumentation.startActivitySync(
             Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         ) as MainActivity
         instrumentation.runOnMainSync {
+            val intro = findText("Un poco más\nde tranquilidad.")
+            assertTrue(intro.isShown)
+            assertTrue(findText("Omitir").performClick())
             val root = activity!!.findViewById<android.view.View>(R.id.root)
             val descriptions = ArrayList<String>()
             fun collect(view: android.view.View) {
@@ -173,10 +180,36 @@ class NativeAppTest {
             collect(root)
             val modeNames = descriptions.filter { it.startsWith("Elegir modo:") }
             assertEquals("Cada perfil debe tener una etiqueta distinta", 3, modeNames.distinct().size)
-            assertTrue(modeNames.contains("Elegir modo: Llevo el teléfono"))
-            assertTrue(modeNames.contains("Elegir modo: Acompaño a otra persona"))
-            assertTrue(modeNames.contains("Elegir modo: Este teléfono es una cámara"))
+            assertTrue(modeNames.contains("Elegir modo: Persona protegida"))
+            assertTrue(modeNames.contains("Elegir modo: Cuidador"))
+            assertTrue(modeNames.contains("Elegir modo: Cámara independiente"))
+            clickByDescription("Elegir modo: Cuidador")
+            assertTrue(findText("1 de 3").isShown)
+            clickByDescription("Siguiente")
+            assertTrue(findText("2 de 3").isShown)
+            activity!!.finish()
         }
+        instrumentation.waitForIdleSync()
+        activity = instrumentation.startActivitySync(
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ) as MainActivity
+        instrumentation.runOnMainSync {
+            assertTrue(findText("2 de 3").isShown)
+            clickByDescription("Siguiente")
+            assertTrue(findText("3 de 3").isShown)
+            clickByDescription("Ir a mi círculo")
+            assertTrue(findText("Tu círculo").isShown)
+            clickByDescription("Vincular persona")
+            assertTrue(findText("¿Dónde encuentro el código?").isShown)
+        }
+        assertFalse(AppStore(context).prefs.contains(FIRST_TUTORIAL_STEP))
+    }
+
+    private fun findText(label: String): android.widget.TextView {
+        val root = activity!!.findViewById<android.view.View>(R.id.root)
+        val matches = ArrayList<android.view.View>()
+        root.findViewsWithText(matches, label, android.view.View.FIND_VIEWS_WITH_TEXT)
+        return matches.filterIsInstance<android.widget.TextView>().first { it.text.toString() == label }
     }
     @Test fun profileEditorUsesOneClearPageTitle() {
         AppStore(context).saveRole(AppStore.ROLE_WEARER)
@@ -184,12 +217,13 @@ class NativeAppTest {
             Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         ) as MainActivity
         instrumentation.runOnMainSync {
-            activity!!.findViewById<android.view.View>(R.id.app_bar_profile).performClick()
+            clickByDescription("Ajustes")
+            clickByDescription("Mi perfil. Tu información")
             val root = activity!!.findViewById<android.view.View>(R.id.root)
             val oldTitle = ArrayList<android.view.View>()
             root.findViewsWithText(oldTitle, "Mi perfil", android.view.View.FIND_VIEWS_WITH_TEXT)
-            assertEquals("El nombre de navegación debe aparecer una sola vez", 1,
-                oldTitle.filterIsInstance<android.widget.TextView>().count { it.text.toString() == "Mi perfil" })
+            assertTrue("El encabezado no repite el título",
+                oldTitle.filterIsInstance<android.widget.TextView>().count { it.text.toString() == "Mi perfil" } <= 1)
             val pageTitle = ArrayList<android.view.View>()
             root.findViewsWithText(pageTitle, "Tu información", android.view.View.FIND_VIEWS_WITH_TEXT)
             assertTrue("La pantalla conserva un título de contenido claro", pageTitle.any {
@@ -443,9 +477,8 @@ class NativeAppTest {
         store.saveRole(AppStore.ROLE_WEARER)
         activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         instrumentation.runOnMainSync {
-            activity!!.findViewById<android.view.View>(R.id.app_bar_profile).performClick()
-            val root = activity!!.findViewById<android.view.View>(R.id.root)
-            root.findViewWithTag<android.view.View>("open_app_settings").performClick()
+            clickByDescription("Ajustes")
+            clickByDescription("Ajustes avanzados. Cuenta, permisos y dispositivos")
             val settingsRoot = activity!!.findViewById<android.view.View>(R.id.root)
             val status = settingsRoot.findViewWithTag<android.widget.TextView>("sms_permission_status")
             val enable = settingsRoot.findViewWithTag<Button>("enable_sms")

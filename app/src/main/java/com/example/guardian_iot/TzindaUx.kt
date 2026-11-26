@@ -18,6 +18,22 @@ object TzindaTabs {
     const val MEDICATIONS = 8
     const val CARE = 9
     const val SUPERVISION = 10
+    const val MEDICATION_RECORDS = 11
+    const val PULSE = 12
+    const val OXYGEN = 13
+    const val ALERT_HISTORY = 14
+    const val ALERT_DETAILS = 15
+    const val HELP_REQUEST = 16
+    const val ALERT_PRACTICE = 17
+    const val BRACELET_ALERT = 18
+    const val BRACELET_PAIR = 19
+    const val BRACELET_DIAGNOSTIC = 20
+    const val SAFE_ZONES = 21
+    const val ADD_CONTACT = 22
+    const val EMERGENCY_CARD = 23
+    const val REPORT = 24
+    const val ADVANCED_SETTINGS = 25
+    const val CARE_SETTINGS = 26
 }
 
 enum class TzindaRole { WEARER, CAREGIVER, CAMERA }
@@ -49,22 +65,22 @@ object TzindaNavigationPolicy {
      */
     fun items(role: TzindaRole): List<TzindaNavItem> = when (role) {
         TzindaRole.CAREGIVER -> listOf(
-            TzindaNavItem(TzindaNavKey.HOME, "Inicio", R.drawable.ic_home, TzindaTabs.HOME),
-            TzindaNavItem(TzindaNavKey.ACTIVITY, "Alertas", R.drawable.ic_alert, TzindaTabs.ACTIVITY),
-            TzindaNavItem(TzindaNavKey.MEDICATIONS, "Salud", R.drawable.ic_heart, TzindaTabs.MEDICATIONS),
-            TzindaNavItem(TzindaNavKey.SUPERVISION, "Supervisión", R.drawable.ic_supervision, TzindaTabs.SUPERVISION),
+            TzindaNavItem(TzindaNavKey.HOME, "Inicio", R.drawable.v5_home, TzindaTabs.HOME),
+            TzindaNavItem(TzindaNavKey.ACTIVITY, "Alertas", R.drawable.v5_bell, TzindaTabs.ACTIVITY),
+            TzindaNavItem(TzindaNavKey.MEDICATIONS, "Salud", R.drawable.v5_pulse, TzindaTabs.MEDICATIONS),
+            TzindaNavItem(TzindaNavKey.SUPERVISION, "Supervisión", R.drawable.v5_supervision, TzindaTabs.SUPERVISION),
         )
         TzindaRole.CAMERA -> listOf(
-            TzindaNavItem(TzindaNavKey.CAMERA, "Inicio", R.drawable.ic_home, TzindaTabs.HOME),
-            TzindaNavItem(TzindaNavKey.EVENTS, "Alertas", R.drawable.ic_alert, TzindaTabs.ACTIVITY),
-            TzindaNavItem(TzindaNavKey.LINK, "Vincular", R.drawable.ic_bluetooth, TzindaTabs.CONTACTS),
-            TzindaNavItem(TzindaNavKey.SETTINGS, "Ajustes", R.drawable.ic_settings, TzindaTabs.SETTINGS),
+            TzindaNavItem(TzindaNavKey.CAMERA, "Inicio", R.drawable.v5_home, TzindaTabs.HOME),
+            TzindaNavItem(TzindaNavKey.EVENTS, "Alertas", R.drawable.v5_bell, TzindaTabs.ACTIVITY),
+            TzindaNavItem(TzindaNavKey.LINK, "Vincular", R.drawable.v5_link, TzindaTabs.CONTACTS),
+            TzindaNavItem(TzindaNavKey.SETTINGS, "Ajustes", R.drawable.v5_settings, TzindaTabs.SETTINGS),
         )
         TzindaRole.WEARER -> listOf(
-            TzindaNavItem(TzindaNavKey.HOME, "Inicio", R.drawable.ic_home, TzindaTabs.HOME),
-            TzindaNavItem(TzindaNavKey.ACTIVITY, "Alertas", R.drawable.ic_alert, TzindaTabs.ACTIVITY),
-            TzindaNavItem(TzindaNavKey.MEDICATIONS, "Salud", R.drawable.ic_heart, TzindaTabs.MEDICATIONS),
-            TzindaNavItem(TzindaNavKey.SUPERVISION, "Supervisión", R.drawable.ic_supervision, TzindaTabs.SUPERVISION),
+            TzindaNavItem(TzindaNavKey.HOME, "Inicio", R.drawable.v5_home, TzindaTabs.HOME),
+            TzindaNavItem(TzindaNavKey.ACTIVITY, "Alertas", R.drawable.v5_bell, TzindaTabs.ACTIVITY),
+            TzindaNavItem(TzindaNavKey.MEDICATIONS, "Salud", R.drawable.v5_pulse, TzindaTabs.MEDICATIONS),
+            TzindaNavItem(TzindaNavKey.SUPERVISION, "Supervisión", R.drawable.v5_supervision, TzindaTabs.SUPERVISION),
         )
     }
 
@@ -78,20 +94,6 @@ object TzindaNavigationPolicy {
         TzindaTabs.CONTACTS -> if (role == TzindaRole.CAMERA) 2 else -1
         TzindaTabs.CAMERA -> if (role == TzindaRole.CAMERA) 0 else -1
         else -> -1
-    }
-
-    /** The compact top-bar title used by the mockups (e.g. "Resumen", "Supervisión y ajustes"). */
-    fun barTitle(role: TzindaRole, tab: Int): String = when (tab) {
-        TzindaTabs.HOME -> when (role) {
-            TzindaRole.CAREGIVER -> "Resumen"
-            TzindaRole.CAMERA -> "Cámara"
-            TzindaRole.WEARER -> "Resumen"
-        }
-        TzindaTabs.SUPERVISION -> when (role) {
-            TzindaRole.CAREGIVER -> "Supervisión y ajustes"
-            else -> "Supervisión"
-        }
-        else -> screenName(role, tab)
     }
 
     fun screenName(role: TzindaRole, tab: Int): String = when (tab) {
@@ -118,6 +120,22 @@ object TzindaNavigationPolicy {
         TzindaTabs.CARE -> "Cuidados y rutinas"
         TzindaTabs.SUPERVISION -> "Supervisión"
         TzindaTabs.ROLE -> "Modo de este teléfono"
+        TzindaTabs.MEDICATION_RECORDS -> "Medicamentos"
+        TzindaTabs.PULSE -> "Frecuencia cardíaca"
+        TzindaTabs.OXYGEN -> "Oxígeno en sangre"
+        TzindaTabs.ALERT_HISTORY -> "Historial de alertas"
+        TzindaTabs.ALERT_DETAILS -> "Detalle de la alerta"
+        TzindaTabs.HELP_REQUEST -> "Solicitud de ayuda"
+        TzindaTabs.ALERT_PRACTICE -> "Simulacro SOS"
+        TzindaTabs.BRACELET_ALERT -> "Pulsera desconectada"
+        TzindaTabs.BRACELET_PAIR -> "Vincular pulsera"
+        TzindaTabs.BRACELET_DIAGNOSTIC -> "Diagnóstico de pulsera"
+        TzindaTabs.SAFE_ZONES -> "Zonas seguras"
+        TzindaTabs.ADD_CONTACT -> "Añadir contacto"
+        TzindaTabs.EMERGENCY_CARD -> "Ficha de emergencia"
+        TzindaTabs.REPORT -> "Preparar reporte"
+        TzindaTabs.ADVANCED_SETTINGS -> "Ajustes avanzados"
+        TzindaTabs.CARE_SETTINGS -> "Ajustes de cuidados"
         else -> "Inicio"
     }
 
@@ -149,7 +167,7 @@ class TzindaNavigationHistory {
 
     fun restore(tabs: IntArray?) {
         previousTabs.clear()
-        (tabs ?: intArrayOf()).takeLast(MAX_DEPTH).filter { it in 0..TzindaTabs.SUPERVISION }.forEach { previousTabs.add(it) }
+        (tabs ?: intArrayOf()).takeLast(MAX_DEPTH).filter { it in 0..TzindaTabs.CARE_SETTINGS }.forEach { previousTabs.add(it) }
     }
 
     private companion object { const val MAX_DEPTH = 32 }

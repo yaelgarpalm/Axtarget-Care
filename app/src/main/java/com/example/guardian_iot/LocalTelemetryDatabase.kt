@@ -218,6 +218,23 @@ class LocalTelemetryDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     @Synchronized
+    fun appEventsForIncident(incidentId: String): List<JSONObject> = readableDatabase.rawQuery(
+        "SELECT id, captured_at, payload_json FROM readings WHERE source=? AND payload_json LIKE ? " +
+            "ORDER BY captured_at DESC, id DESC LIMIT 100",
+        arrayOf(SOURCE_APP_EVENT, "%" + JSONObject.quote(incidentId) + "%"),
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) {
+                val item = runCatching { JSONObject(cursor.getString(2).orEmpty()) }.getOrNull() ?: continue
+                if (item.optString("incident") != incidentId) continue
+                item.put("id", item.optString("id").ifBlank { cursor.getLong(0).toString() })
+                item.put("time", cursor.getLong(1))
+                add(item)
+            }
+        }
+    }
+
+    @Synchronized
     fun appEventCount(): Int = readableDatabase.rawQuery(
         "SELECT COUNT(*) FROM readings WHERE source=?", arrayOf(SOURCE_APP_EVENT),
     ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
