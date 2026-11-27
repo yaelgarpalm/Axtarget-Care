@@ -20,12 +20,13 @@ android {
         if (auditBuild) applicationIdSuffix = ".audit"
         minSdk = 24
         targetSdk = 36
-        versionCode = 17
-        versionName = "2.1.13"
+        versionCode = 18
+        versionName = "2.1.14"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "SUPABASE_URL", buildConfigString(configValue("TZINDA_SUPABASE_URL")))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", buildConfigString(configValue("TZINDA_SUPABASE_PUBLISHABLE_KEY")))
         buildConfigField("String", "SUPABASE_REDIRECT_URL", buildConfigString(configValue("TZINDA_SUPABASE_REDIRECT_URL").ifBlank { "com.guardian.tzindaapp.v2://auth-callback" }))
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", buildConfigString(configValue("TZINDA_GOOGLE_WEB_CLIENT_ID")))
     }
     buildFeatures { buildConfig = true
         mlModelBinding = true
@@ -58,6 +59,9 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     implementation("androidx.activity:activity:1.10.1")
     implementation("androidx.core:core:1.17.0")
+    implementation("androidx.credentials:credentials:1.6.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
     implementation("androidx.camera:camera-camera2:1.6.2")
     implementation("androidx.camera:camera-core:1.6.2")
     implementation("androidx.camera:camera-lifecycle:1.6.2")

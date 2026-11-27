@@ -88,6 +88,15 @@ class SupabaseBackend(
         return parseAndSaveSession(response) ?: throw BackendFailure(BackendFailure.Category.UNKNOWN)
     }
 
+    internal fun signInWithGoogle(idToken: String, nonce: String): AuthSession {
+        val response = request(
+            "POST", "/auth/v1/token?grant_type=id_token",
+            JSONObject().put("provider", "google").put("id_token", idToken).put("nonce", nonce),
+            needsSession = false, followRedirects = false,
+        )
+        return parseAndSaveSession(response) ?: throw BackendFailure(BackendFailure.Category.UNKNOWN)
+    }
+
     internal fun googleSignInUrl(): Uri = synchronized(AccountStorage.lock) {
         if (!isConfigured) throw BackendFailure(BackendFailure.Category.CONFIGURATION)
         if (sessions.read() != null) throw BackendFailure(BackendFailure.Category.SESSION)

@@ -14,6 +14,10 @@
 # Flogger's caller lookup needs its original stack frames during Graph initialization.
 -keep class com.google.common.flogger.** { *; }
 
+# Credential Manager discovers the Play services provider from its metadata.
+-if class androidx.credentials.CredentialManager
+-keep class androidx.credentials.playservices.** { *; }
+
 # ML Kit discovers its text and image components from manifest metadata.
 -keep class com.google.mlkit.** implements com.google.firebase.components.ComponentRegistrar {
     public <init>();

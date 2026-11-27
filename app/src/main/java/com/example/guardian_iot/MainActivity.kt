@@ -31,6 +31,9 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
 import androidx.core.content.FileProvider
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.lifecycle.lifecycleScope
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -38,6 +41,8 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.example.deteccioncaidas.CameraFallController
 import com.example.deteccioncaidas.PoseOverlayView
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -281,6 +286,7 @@ class MainActivity : ComponentActivity() {
             it.getString("account_scope", "") == AccountStorage.key(store.appContext)
         }
         backend = SupabaseBackend(sessions)
+        backend.cancelGoogleSignIn()
         medicationRepository = MedicationRepository(this, backend, store)
         careFeatures = CareFeatureStore(this)
         finishingGoogleSignIn = restoredState?.getBoolean("finishing_google_sign_in", false) == true
@@ -1550,7 +1556,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startGoogleSignIn() {
         if (authSubmitting || (authMode != AuthMode.LOGIN && authMode != AuthMode.REGISTER)) return
-        if (!backend.isConfigured) {
+        if (!backend.isConfigured || !GoogleSignIn.isConfigured) {
             setAuthStatus("Google todavía no está configurado en esta versión. Puedes iniciar sesión con correo.", true)
             return
         }
@@ -1574,17 +1580,28 @@ class MainActivity : ComponentActivity() {
 
     private fun signInWithGoogle() {
         if (authSubmitting) return
-        try {
-            val url = backend.googleSignInUrl()
-            hideKeyboard()
-            startActivity(Intent(Intent.ACTION_VIEW, url).addCategory(Intent.CATEGORY_BROWSABLE))
-            setAuthStatus("Completa el acceso en tu navegador para volver a la app.")
-        } catch (_: ActivityNotFoundException) {
-            backend.cancelGoogleSignIn()
-            setAuthStatus("No hay un navegador disponible. Puedes iniciar sesión con correo.", true)
-        } catch (_: Exception) {
-            backend.cancelGoogleSignIn()
-            setAuthStatus("No se pudo abrir Google. Inténtalo de nuevo o entra con correo.", true)
+        updateAuthButtons(true)
+        setAuthStatus("Elige una cuenta de Google…")
+        lifecycleScope.launch {
+            try {
+                val session = GoogleSignIn.signIn(this@MainActivity, backend)
+                updateAuthButtons(false)
+                completeSignIn(session, consented = true)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: GetCredentialCancellationException) {
+                setAuthStatus("Inicio de sesión con Google cancelado.")
+            } catch (_: GetCredentialException) {
+                setAuthStatus("No se pudo abrir el selector de cuentas de Google. Actualiza Google Play Services o inicia sesión con correo.", true)
+            } catch (failure: BackendFailure) {
+                val message = if (failure.category == BackendFailure.Category.NETWORK) failure.message
+                    else "Supabase no pudo validar tu cuenta de Google. Revisa el Client ID Web del proveedor Google."
+                setAuthStatus(message.orEmpty(), true)
+            } catch (_: Exception) {
+                setAuthStatus("No se recibió una credencial válida de Google. Inténtalo de nuevo.", true)
+            } finally {
+                updateAuthButtons(false)
+            }
         }
     }
 
@@ -4900,6 +4917,7 @@ class MainActivity : ComponentActivity() {
             .setPositiveButton("Cerrar sesión") { _, _ ->
                 val signingOutBackend = backend
                 val session = signingOutBackend.clearLocalSession()
+                lifecycleScope.launch { runCatching { GoogleSignIn.clear(this@MainActivity) } }
                 discardSharedAccountData()
                 store.prefs.edit().putBoolean("local_only_mode", false).putBoolean("v9_intro_seen", true).apply()
                 authEmailDraft = ""

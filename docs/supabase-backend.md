@@ -50,11 +50,12 @@ También se puede configurar Gradle con las variables de entorno de los mismos n
 
 ## Inicio de sesión con Google en Android
 
-1. Configura la audiencia y el nombre de la app en Google Auth Platform. Crea un cliente OAuth de tipo **Web** y registra como URI de redirección el callback que muestra Supabase en **Authentication → Sign In / Providers → Google**.
-2. Activa el proveedor Google en Supabase y guarda ahí el Client ID Web y su secreto. [Google en Supabase Auth](https://supabase.com/docs/guides/auth/social-sign-in/auth-google)
-3. Agrega `com.guardian.tzindaapp.v2://auth-callback` a **Authentication → URL Configuration → Redirect URLs**. Gradle usa ese valor por defecto para `TZINDA_SUPABASE_REDIRECT_URL`. [URLs de redirección](https://supabase.com/docs/guides/auth/redirect-urls)
+1. En Google Auth Platform, crea un cliente OAuth de tipo **Web**. En **Authorized redirect URIs** registra exactamente `https://vhppdgbmmtfrbzocitob.supabase.co/auth/v1/callback`. Google requiere coincidencia exacta del URI.
+2. Activa el proveedor Google en Supabase y guarda ahí el mismo Client ID Web y su secreto. [Google en Supabase Auth](https://supabase.com/docs/guides/auth/social-sign-in/auth-google)
+3. Agrega `com.guardian.tzindaapp.v2://auth-callback` a **Authentication → URL Configuration → Redirect URLs**. Gradle usa ese valor por defecto para `TZINDA_SUPABASE_REDIRECT_URL`. Este es el retorno desde Supabase hacia Android. [URLs de redirección](https://supabase.com/docs/guides/auth/redirect-urls)
+4. Configura `TZINDA_GOOGLE_WEB_CLIENT_ID` con el Client ID Web en el entorno de compilación Android. Es público. El Client Secret solo se guarda en Supabase.
 
-En Android, **Continuar con Google** abre el navegador para elegir la cuenta. Al volver a la app, AxTarget Care intercambia el código de un solo uso con Supabase y guarda la sesión cifrada. [Flujo PKCE en Supabase](https://supabase.com/docs/guides/auth/sessions/pkce-flow)
+En Android, **Continuar con Google** abre el selector de cuentas nativo. La app envía el ID token y el nonce a Supabase, que valida la identidad y devuelve una sesión cifrada. No requiere usar un navegador integrado para acceder a Google. [Google en Supabase Auth](https://supabase.com/docs/guides/auth/social-sign-in/auth-google)
 
 ## Pruebas
 
