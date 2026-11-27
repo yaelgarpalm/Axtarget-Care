@@ -1,0 +1,29 @@
+:root{color-scheme:light;--ink:#12223c;--muted:#435573;--blue:#1045ad;--line:#d8e3f2;--paper:#f4f8fd}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:1rem/1.65 system-ui,sans-serif}
+a{color:var(--blue);text-underline-offset:.2em}
+a:focus-visible{outline:3px solid var(--blue);outline-offset:4px}
+.shell{width:min(100% - 2rem,68rem);margin-inline:auto}
+.top,.foot{display:flex;align-items:center;flex-wrap:wrap;gap:1rem;padding-block:1rem}
+.top{justify-content:space-between;border-bottom:1px solid var(--line)}
+.top nav{display:flex;gap:1rem}
+.brand{color:var(--ink);font-size:1.1rem;font-weight:750;text-decoration:none;display:flex;align-items:center;gap:.6rem}
+.brand img,.hero img{object-fit:contain}
+.skip{position:absolute;left:1rem;top:-6rem;padding:.5rem;background:white}
+.skip:focus{top:.5rem}
+.hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2rem;align-items:center;padding:clamp(1.5rem,5vw,4.5rem);margin-block:2rem;background:white;border:1px solid var(--line);border-radius:1.5rem}
+h1,h2,h3{line-height:1.15;margin:0 0 .75rem}
+h1{font-size:clamp(2rem,5vw,3.6rem);letter-spacing:-.035em}
+h2{font-size:1.5rem}
+h3{font-size:1.15rem}
+p{margin:.6rem 0 1rem}
+.kicker{font-size:.8rem;font-weight:800;letter-spacing:.09em;color:var(--blue)}
+.lead{color:var(--muted);font-size:1.15rem;max-width:47rem}
+.primary{display:inline-block;background:var(--blue);color:white;border-radius:.65rem;padding:.65rem 1rem;font-weight:650;text-decoration:none}
+.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}
+.cards article,.panel,.legal{background:white;padding:clamp(1rem,3vw,2rem);border:1px solid var(--line);border-radius:1rem}
+.panel,.legal{margin-block:2rem}
+.legal{max-width:50rem;margin-inline:auto}
+.legal h2{margin-top:1.6rem}
+.foot{color:var(--muted);border-top:1px solid var(--line);font-size:.9rem}
+@media(max-width:660px){.hero,.cards{grid-template-columns:1fr}.hero img{width:100px;height:100px;grid-row:1}.legal h1{overflow-wrap:anywhere}}

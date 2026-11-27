@@ -1534,8 +1534,16 @@ class MainActivity : ComponentActivity() {
 
     private fun showPrivacyNotice(manageAccount: Boolean = false) {
         val dialog = AlertDialog.Builder(this).setTitle("Privacidad y uso de AxTarget Care")
-            .setMessage("Al iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador vinculado puede registrar tomas compartidas; no puede editar el medicamento ni sus horarios. Puedes retirar el permiso de compartir editando el registro. AxTarget Care no recomienda ni modifica dosis. Al escanear una caja o receta puedes elegir procesar la foto en el teléfono sin enviarla. Si eliges la lectura en la nube con sesión iniciada, la foto pasa por Supabase y NVIDIA para extraer texto; AxTarget Care no la almacena y vuelve a la lectura local si falla la nube.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. AxTarget Care es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
+            .setMessage("Si continúas con Google, Supabase valida el token de identidad y utiliza tu identificador, correo y perfil básico para reconocer o crear tu cuenta.\n\nAl iniciar sesión, Supabase puede almacenar tu nombre y rol, contactos de confianza con teléfono, eventos de caída y estados técnicos de SMS/llamada, lecturas válidas de pulso/SpO₂ del UNO Q y la ubicación en vivo cuando la autorizas y el monitoreo está activo.\n\nSi registras medicamentos, el nombre, dosis indicada, presentación, horarios, instrucciones e historial de tomas se guardan en este teléfono y se sincronizan con Supabase. Cada medicamento permanece privado hasta que actives “Compartir con mi cuidador/a”; solo una cuenta con vínculo activo podrá consultarlo. El cuidador vinculado puede registrar tomas compartidas; no puede editar el medicamento ni sus horarios. Puedes retirar el permiso de compartir editando el registro. AxTarget Care no recomienda ni modifica dosis. Al escanear una caja o receta puedes elegir procesar la foto en el teléfono sin enviarla. Si eliges la lectura en la nube con sesión iniciada, la foto pasa por Supabase y NVIDIA para extraer texto; AxTarget Care no la almacena y vuelve a la lectura local si falla la nube.\n\nEl domicilio, fecha de nacimiento, video y muestras crudas de movimiento no se sincronizan. Las funciones locales siguen disponibles sin Internet. AxTarget Care es experimental y no sustituye servicios de emergencia ni atención médica. Puedes cerrar sesión o solicitar la eliminación de la cuenta y los datos remotos desde Ajustes.")
             .setPositiveButton("Entendido", null)
+            .setNegativeButton("Política en línea") { _, _ ->
+                val policy = Uri.parse("https://axtarget-care.vercel.app/privacidad")
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, policy))
+                } catch (_: ActivityNotFoundException) {
+                    toast("No hay un navegador disponible para abrir la política de privacidad.")
+                }
+            }
         if (manageAccount && sessions.read() != null) {
             dialog.setNeutralButton("Eliminar cuenta") { _, _ -> confirmAccountDeletion() }
         }
@@ -1572,7 +1580,7 @@ class MainActivity : ComponentActivity() {
             signInWithGoogle()
         } else {
             AlertDialog.Builder(this).setTitle("Continuar con Google")
-                .setMessage("Si es tu primera vez, se creará una cuenta de AxTarget Care con tu correo de Google. Revisa el aviso de privacidad antes de continuar.")
+                .setMessage("Usamos tu identificador de Google, correo y perfil básico para iniciar sesión y reconocer o crear tu cuenta. Supabase valida el token de Google. Consulta el aviso para conocer cómo puedes eliminar la cuenta y sus datos.")
                 .setNeutralButton("Ver aviso") { _, _ -> showPrivacyNotice() }
                 .setNegativeButton("Cancelar", null)
                 .setPositiveButton("Aceptar y continuar") { _, _ -> signInWithGoogle() }

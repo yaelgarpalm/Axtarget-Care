@@ -51,9 +51,11 @@ También se puede configurar Gradle con las variables de entorno de los mismos n
 ## Inicio de sesión con Google en Android
 
 1. En Google Auth Platform, crea un cliente OAuth de tipo **Web**. En **Authorized redirect URIs** registra exactamente `https://vhppdgbmmtfrbzocitob.supabase.co/auth/v1/callback`. Google requiere coincidencia exacta del URI.
-2. Activa el proveedor Google en Supabase y guarda ahí el mismo Client ID Web y su secreto. [Google en Supabase Auth](https://supabase.com/docs/guides/auth/social-sign-in/auth-google)
-3. Agrega `com.guardian.tzindaapp.v2://auth-callback` a **Authentication → URL Configuration → Redirect URLs**. Gradle usa ese valor por defecto para `TZINDA_SUPABASE_REDIRECT_URL`. Este es el retorno desde Supabase hacia Android. [URLs de redirección](https://supabase.com/docs/guides/auth/redirect-urls)
-4. Configura `TZINDA_GOOGLE_WEB_CLIENT_ID` con el Client ID Web en el entorno de compilación Android. Es público. El Client Secret solo se guarda en Supabase.
+2. Crea también un cliente OAuth **Android** en el mismo proyecto. Usa el paquete `com.guardian.tzindaapp.v2` y el SHA-1 del certificado que firma el APK que vas a distribuir. Si Google Play firma la app, registra el SHA-1 de la firma de Play.
+3. Activa Google en Supabase y configura **Client IDs** con el ID Web primero y el ID Android después, separados por una coma. Guarda el secreto del cliente Web en Supabase. [Google en Supabase Auth](https://supabase.com/docs/guides/auth/social-sign-in/auth-google)
+4. Agrega `com.guardian.tzindaapp.v2://auth-callback` a **Authentication → URL Configuration → Redirect URLs**. Gradle usa ese valor por defecto para `TZINDA_SUPABASE_REDIRECT_URL`. Este es el retorno desde Supabase hacia Android. [URLs de redirección](https://supabase.com/docs/guides/auth/redirect-urls)
+5. Configura `TZINDA_GOOGLE_WEB_CLIENT_ID` con el ID Web para compilar Android.
+6. Para el acceso público, configura **Público → En producción** en Google Auth Platform. En **Información de la marca** registra [el sitio oficial](https://axtarget-care.vercel.app/), [la política de privacidad](https://axtarget-care.vercel.app/privacidad) y [las condiciones](https://axtarget-care.vercel.app/terminos). El sitio está en `web/`. Conserva la etiqueta de Search Console en `web/index.html` al volver a desplegarlo. [Configuración de marca de Google](https://support.google.com/cloud/answer/15549049)
 
 En Android, **Continuar con Google** abre el selector de cuentas nativo. La app envía el ID token y el nonce a Supabase, que valida la identidad y devuelve una sesión cifrada. No requiere usar un navegador integrado para acceder a Google. [Google en Supabase Auth](https://supabase.com/docs/guides/auth/social-sign-in/auth-google)
 
