@@ -42,7 +42,9 @@ import com.journeyapps.barcodescanner.ScanOptions
 import com.example.deteccioncaidas.CameraFallController
 import com.example.deteccioncaidas.PoseOverlayView
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -1584,15 +1586,19 @@ class MainActivity : ComponentActivity() {
         setAuthStatus("Elige una cuenta de Google…")
         lifecycleScope.launch {
             try {
-                val session = GoogleSignIn.signIn(this@MainActivity, backend)
+                val session = withTimeout(GOOGLE_AUTH_TIMEOUT_MS) {
+                    GoogleSignIn.signIn(this@MainActivity, backend)
+                }
                 updateAuthButtons(false)
                 completeSignIn(session, consented = true)
+            } catch (_: TimeoutCancellationException) {
+                setAuthStatus("Google tardó demasiado en responder. Comprueba tu conexión y vuelve a intentarlo.", true)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: GetCredentialCancellationException) {
                 setAuthStatus("Inicio de sesión con Google cancelado.")
             } catch (_: GetCredentialException) {
-                setAuthStatus("No se pudo abrir el selector de cuentas de Google. Actualiza Google Play Services o inicia sesión con correo.", true)
+                setAuthStatus("No se pudo abrir Google. Revisa que exista el cliente OAuth de Android con el paquete y la huella SHA‑1 de esta app; también actualiza Google Play Services.", true)
             } catch (failure: BackendFailure) {
                 val message = if (failure.category == BackendFailure.Category.NETWORK) failure.message
                     else "Supabase no pudo validar tu cuenta de Google. Revisa el Client ID Web del proveedor Google."
@@ -6087,6 +6093,7 @@ class MainActivity : ComponentActivity() {
         // A code exchange must survive Activity recreation; its result is stored independently.
         private val authCallbackIo = Executors.newSingleThreadExecutor()
         private val googleExchangeRunning = AtomicBoolean()
+        private const val GOOGLE_AUTH_TIMEOUT_MS = 45_000L
         private const val RETIRED_ADVANCED_SETTINGS = 25
         private const val CAMERA_TAB = TzindaTabs.CAMERA
         private const val CAREGIVER_EVENT_PAGE_SIZE = 100

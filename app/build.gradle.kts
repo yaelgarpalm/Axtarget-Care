@@ -20,8 +20,8 @@ android {
         if (auditBuild) applicationIdSuffix = ".audit"
         minSdk = 24
         targetSdk = 36
-        versionCode = 18
-        versionName = "2.1.14"
+        versionCode = 19
+        versionName = "2.1.15"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "SUPABASE_URL", buildConfigString(configValue("TZINDA_SUPABASE_URL")))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", buildConfigString(configValue("TZINDA_SUPABASE_PUBLISHABLE_KEY")))
